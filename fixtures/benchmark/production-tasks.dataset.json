@@ -1,0 +1,151 @@
+{
+ "protocol": "aiedu.benchmark.package.v1",
+ "label": "engineering",
+ "calibration": "uncalibrated",
+ "deidentified": true,
+ "notes": "production runner 固定失效集（任务书 05 切片 B）。全部脱敏合成：题面为自编占位内容，不含真实用户数据。零答案/盲解/仲裁等需真实模型的条目标注 not_run，本轮不执行、不伪造。gold/期望只在本 runner 判定侧比对，不进 prompts/材料/经验集。",
+ "independent_evaluation": {
+  "required": true,
+  "status": "not_run",
+  "note": "真实专业能力仍需独立盲评；本文件只承载工程回归。"
+ },
+ "tasks": [
+  {
+   "id": "prod-exam-score-table-mixed",
+   "kind": "paper_replay",
+   "task_type": "exam",
+   "dimension": "correctness",
+   "domain_key": "math_logic",
+   "paper": [
+    {
+     "title": "占位卷",
+     "blocks": [
+      {
+       "type": "text",
+       "title": "占位卷",
+       "body": "> 该节由真实生成链路重写，用于触发解析/修复/验收链（L0/L1）。"
+      }
+     ]
+    },
+    {
+     "title": "试卷二（固定失效样本）",
+     "blocks": [
+      {
+       "type": "text",
+       "title": "试卷二",
+       "body": "> 本卷满分 100 分，考试时间 120 分钟，共 14 题。\n\n| 题型 | 题号 | 题量 | 每题分值 | 小计 |\n|---|---|---|---|---|\n| 填空题 | 1–8 | 8 | 4 | 32 |\n| 证明题 | 9–14 | 6 | 10、10、11、11、11、15 | 68 |\n| 合计 | 1–14 | 14 | — | 100 |\n\n### 填空题\n\n**1.**（4 分）题面一 ______。\n\n**2.**（4 分）题面二 ______。\n\n**3.**（4 分）题面三 ______。\n\n**4.**（4 分）题面四 ______。\n\n**5.**（4 分）题面五 ______。\n\n**6.**（4 分）题面六 ______。\n\n**7.**（4 分）题面七 ______。\n\n**8.**（4 分）题面八 ______。\n\n### 证明题\n\n**9.**（10 分）证明题面一。\n\n**10.**（10 分）证明题面二。\n\n**11.**（11 分）证明题面三。\n\n**12.**（11 分）证明题面四。\n\n**13.**（11 分）证明题面五。\n\n**14.**（15 分）证明题面六。\n\n### 参考答案\n\n**1.** 甲\n\n**2.** 乙\n\n**3.** 丙\n\n**4.** 丁\n\n**5.** 戊\n\n**6.** 己\n\n**7.** 庚\n\n**8.** 辛\n\n**9.** 证明一。\n\n**10.** 证明二。\n\n**11.** 证明三。\n\n**12.** 证明四。\n\n**13.** 证明五。\n\n**14.** 证明六。\n"
+      }
+     ]
+    }
+   ],
+   "run_budget": {
+    "max_calls": null,
+    "timeout_s": 120
+   },
+   "expectations": {
+    "issues_codes_excludes": [
+     "E008",
+     "E016"
+    ]
+   }
+  },
+  {
+   "id": "prod-exam-declared-no-answers",
+   "kind": "paper_replay",
+   "task_type": "exam",
+   "dimension": "correctness",
+   "domain_key": "math_logic",
+   "paper": [
+    {
+     "title": "占位卷",
+     "blocks": [
+      {
+       "type": "text",
+       "title": "占位卷",
+       "body": "> 该节由真实生成链路重写，用于触发解析/修复/验收链（L0/L1）。"
+      }
+     ]
+    },
+    {
+     "title": "试卷二（固定失效样本）",
+     "blocks": [
+      {
+       "type": "text",
+       "title": "试卷二",
+       "body": "> 本卷满分 100 分，考试时间 120 分钟，共 14 题。\n\n| 题型 | 题号 | 题量 | 每题分值 | 小计 |\n|---|---|---|---|---|\n| 填空题 | 1–8 | 8 | 4 | 32 |\n| 证明题 | 9–14 | 6 | 10、10、11、11、11、15 | 68 |\n| 合计 | 1–14 | 14 | — | 100 |\n\n### 填空题\n\n**1.**（4 分）题面一 ______。\n\n**2.**（4 分）题面二 ______。\n\n**3.**（4 分）题面三 ______。\n\n**4.**（4 分）题面四 ______。\n\n**5.**（4 分）题面五 ______。\n\n**6.**（4 分）题面六 ______。\n\n**7.**（4 分）题面七 ______。\n\n**8.**（4 分）题面八 ______。\n\n### 证明题\n\n**9.**（10 分）证明题面一。\n\n**10.**（10 分）证明题面二。\n\n**11.**（11 分）证明题面三。\n\n**12.**（11 分）证明题面四。\n\n**13.**（11 分）证明题面五。\n\n**14.**（15 分）证明题面六。\n\n"
+      }
+     ]
+    }
+   ],
+   "run_budget": {
+    "max_calls": null,
+    "timeout_s": 120
+   },
+   "expectations": {
+    "issues_codes_includes": [
+     "E002"
+    ]
+   }
+  },
+  {
+   "id": "prod-generate-chain-smoke",
+   "kind": "generate",
+   "task_type": "exam",
+   "dimension": "usage",
+   "domain_key": "cs_it",
+   "goal": {
+    "title": "production runner 生成链路冒烟：两份命令行小测",
+    "motivation": "验证真实链路可观测"
+   },
+   "material": {
+    "filename": "smoke-source.md",
+    "text": "# 冒烟材料\n\n## 篇章一\n\n管道把一个命令的输出接到下一个命令的输入。\n\n## 篇章二\n\n重定向把输出写入文件或从文件读入。\n"
+   },
+   "feedback": [
+    {
+     "rating": 1,
+     "comment": "链路冒烟反馈"
+    }
+   ],
+   "run_budget": {
+    "max_calls": null,
+    "timeout_s": 180
+   },
+   "expectations": {
+    "job_status": "done",
+    "postprocess_status": "done",
+    "stage_seen": [
+     "planning",
+     "generating",
+     "reviewing",
+     "persisting",
+     "knowledge_extract"
+    ],
+    "over_budget": false,
+    "feedback_event_count": 1
+   },
+   "paper": [
+    {
+     "title": "占位卷",
+     "blocks": [
+      {
+       "type": "text",
+       "title": "占位卷",
+       "body": "> 该节由真实生成链路重写，用于触发解析/修复/验收链（L0/L1）。"
+      }
+     ]
+    },
+    {
+     "title": "试卷二（固定失效样本）",
+     "blocks": [
+      {
+       "type": "text",
+       "title": "试卷二",
+       "body": "> 本卷满分 100 分，考试时间 120 分钟，共 14 题。\n\n| 题型 | 题号 | 题量 | 每题分值 | 小计 |\n|---|---|---|---|---|\n| 填空题 | 1–8 | 8 | 4 | 32 |\n| 证明题 | 9–14 | 6 | 10、10、11、11、11、15 | 68 |\n| 合计 | 1–14 | 14 | — | 100 |\n\n### 填空题\n\n**1.**（4 分）题面一 ______。\n\n**2.**（4 分）题面二 ______。\n\n**3.**（4 分）题面三 ______。\n\n**4.**（4 分）题面四 ______。\n\n**5.**（4 分）题面五 ______。\n\n**6.**（4 分）题面六 ______。\n\n**7.**（4 分）题面七 ______。\n\n**8.**（4 分）题面八 ______。\n\n### 证明题\n\n**9.**（10 分）证明题面一。\n\n**10.**（10 分）证明题面二。\n\n**11.**（11 分）证明题面三。\n\n**12.**（11 分）证明题面四。\n\n**13.**（11 分）证明题面五。\n\n**14.**（15 分）证明题面六。\n\n### 参考答案\n\n**1.** 甲\n\n**2.** 乙\n\n**3.** 丙\n\n**4.** 丁\n\n**5.** 戊\n\n**6.** 己\n\n**7.** 庚\n\n**8.** 辛\n\n**9.** 证明一。\n\n**10.** 证明二。\n\n**11.** 证明三。\n\n**12.** 证明四。\n\n**13.** 证明五。\n\n**14.** 证明六。\n"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

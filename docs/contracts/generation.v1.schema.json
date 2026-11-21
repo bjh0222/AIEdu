@@ -1,0 +1,1201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AI Edu generation.v1 minimal interoperability contract",
+  "description": "设计契约，仅供执行任务的接口/fixture验收；不是实现，也不是专业能力校准集。",
+  "$defs": {
+    "SourceRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "user_task",
+            "material",
+            "format_spec",
+            "framework",
+            "principle",
+            "evaluation",
+            "feedback",
+            "generated"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "location": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "version",
+        "hash",
+        "location"
+      ],
+      "additionalProperties": false
+    },
+    "Identity": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "goal_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tutorial_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "unit_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "task_id",
+        "goal_id",
+        "tutorial_id",
+        "version",
+        "unit_id"
+      ],
+      "additionalProperties": false
+    },
+    "Constraint": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "strength": {
+          "enum": [
+            "hard",
+            "soft"
+          ]
+        },
+        "origin": {
+          "enum": [
+            "current_user",
+            "active_profile",
+            "task_spec",
+            "default"
+          ]
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "strength",
+        "origin",
+        "source_refs"
+      ],
+      "additionalProperties": false
+    },
+    "Scope": {
+      "type": "object",
+      "properties": {
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "basis": {
+          "enum": [
+            "direct",
+            "inferred",
+            "unknown"
+          ]
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          }
+        }
+      },
+      "required": [
+        "include",
+        "exclude",
+        "basis",
+        "source_refs"
+      ],
+      "additionalProperties": false
+    },
+    "ReferenceForm": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "basis": {
+          "enum": [
+            "direct",
+            "inferred",
+            "unknown"
+          ]
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "count",
+        "basis",
+        "source_refs"
+      ],
+      "additionalProperties": false
+    },
+    "ReferenceProfile": {
+      "type": "object",
+      "properties": {
+        "question_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "question_types": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReferenceForm"
+          }
+        },
+        "knowledge_points": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "style_features": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "anomalies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          }
+        }
+      },
+      "required": [
+        "question_count",
+        "question_types",
+        "knowledge_points",
+        "style_features",
+        "anomalies",
+        "source_refs"
+      ],
+      "additionalProperties": false
+    },
+    "DifficultyTarget": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "enum": [
+            "above_reference",
+            "equal_reference",
+            "below_reference",
+            "explicit",
+            "unspecified"
+          ]
+        },
+        "instruction": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence_basis": {
+          "enum": [
+            "prior",
+            "empirical",
+            "unknown"
+          ]
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          }
+        }
+      },
+      "required": [
+        "mode",
+        "instruction",
+        "evidence_basis",
+        "source_refs"
+      ],
+      "additionalProperties": false
+    },
+    "Deliverable": {
+      "type": "object",
+      "properties": {
+        "unit_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "unit_id",
+        "title"
+      ],
+      "additionalProperties": false
+    },
+    "TaskContext": {
+      "type": "object",
+      "properties": {
+        "task_type": {
+          "enum": [
+            "knowledge_tutorial",
+            "practical_tutorial",
+            "reading_guide",
+            "exercise",
+            "exam"
+          ]
+        },
+        "domain_key": {
+          "type": "string"
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "learner": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "objective": {
+          "type": "string"
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Constraint"
+          }
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "reference_profile": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReferenceProfile"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "difficulty_target": {
+          "$ref": "#/$defs/DifficultyTarget"
+        },
+        "deliverables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Deliverable"
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "task_type",
+        "domain_key",
+        "branch",
+        "learner",
+        "objective",
+        "constraints",
+        "scope",
+        "reference_profile",
+        "difficulty_target",
+        "deliverables",
+        "assumptions",
+        "conflicts"
+      ],
+      "additionalProperties": false
+    },
+    "Mechanism": {
+      "type": "object",
+      "properties": {
+        "mechanism": {
+          "type": "string"
+        },
+        "expected_effect": {
+          "type": "string"
+        },
+        "evidence_basis": {
+          "enum": [
+            "prior",
+            "empirical",
+            "unknown"
+          ]
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          }
+        }
+      },
+      "required": [
+        "mechanism",
+        "expected_effect",
+        "evidence_basis",
+        "source_refs"
+      ],
+      "additionalProperties": false
+    },
+    "UnitStrategy": {
+      "type": "object",
+      "properties": {
+        "unit_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "knowledge_points": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "question_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "boundaries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "difficulty_mechanisms": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Mechanism"
+          }
+        },
+        "knowledge_requests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "check_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "unit_id",
+        "knowledge_points",
+        "question_types",
+        "boundaries",
+        "difficulty_mechanisms",
+        "knowledge_requests",
+        "check_ids"
+      ],
+      "additionalProperties": false
+    },
+    "GenerationStrategy": {
+      "type": "object",
+      "properties": {
+        "units": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/UnitStrategy"
+          }
+        },
+        "shared_constraints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          }
+        }
+      },
+      "required": [
+        "units",
+        "shared_constraints",
+        "source_refs"
+      ],
+      "additionalProperties": false
+    },
+    "EvidenceBlock": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "active",
+            "confirmed",
+            "auto_accepted",
+            "raw"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "mechanism": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "boundaries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "selection_reason": {
+          "type": "string"
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          }
+        },
+        "evidence_method": {
+          "enum": [
+            "deterministic",
+            "model_static",
+            "tool",
+            "human",
+            "empirical"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "state",
+        "text",
+        "mechanism",
+        "conditions",
+        "boundaries",
+        "selection_reason",
+        "source_refs",
+        "evidence_method"
+      ],
+      "additionalProperties": false
+    },
+    "EvidenceBundle": {
+      "type": "object",
+      "properties": {
+        "stage": {
+          "enum": [
+            "planning",
+            "unit"
+          ]
+        },
+        "injection_status": {
+          "enum": [
+            "ok",
+            "disabled",
+            "no_match",
+            "degraded",
+            "insufficient_budget"
+          ]
+        },
+        "standards": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceBlock"
+          }
+        },
+        "principles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceBlock"
+          }
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceBlock"
+          }
+        },
+        "budget_chars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "chars_used": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "trace_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "stage",
+        "injection_status",
+        "standards",
+        "principles",
+        "cases",
+        "budget_chars",
+        "chars_used",
+        "trace_id",
+        "warnings"
+      ],
+      "additionalProperties": false
+    },
+    "Correctness": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "enum": [
+            "supported",
+            "refuted",
+            "undecidable"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "evidence_method": {
+          "enum": [
+            "deterministic",
+            "model_static",
+            "tool",
+            "human",
+            "empirical"
+          ]
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          }
+        }
+      },
+      "required": [
+        "status",
+        "reason",
+        "evidence_method",
+        "source_refs"
+      ],
+      "additionalProperties": false
+    },
+    "DifficultyAssessment": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 5
+        },
+        "learner": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence_basis": {
+          "enum": [
+            "prior",
+            "empirical",
+            "unknown"
+          ]
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          }
+        }
+      },
+      "required": [
+        "level",
+        "learner",
+        "sources",
+        "evidence_basis",
+        "source_refs"
+      ],
+      "additionalProperties": false
+    },
+    "Structure": {
+      "type": "object",
+      "properties": {
+        "mechanism": {
+          "type": "string"
+        },
+        "invariants": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "variable_factors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "boundaries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          }
+        }
+      },
+      "required": [
+        "mechanism",
+        "invariants",
+        "variable_factors",
+        "boundaries",
+        "source_refs"
+      ],
+      "additionalProperties": false
+    },
+    "ItemAssessment": {
+      "type": "object",
+      "properties": {
+        "correctness": {
+          "$ref": "#/$defs/Correctness"
+        },
+        "difficulty": {
+          "$ref": "#/$defs/DifficultyAssessment"
+        },
+        "quality": {
+          "type": "object",
+          "properties": {
+            "strengths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "limitations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "strengths",
+            "limitations"
+          ],
+          "additionalProperties": false
+        },
+        "teaching_value": {
+          "type": "string"
+        },
+        "collection_value": {
+          "type": "string"
+        },
+        "structure": {
+          "$ref": "#/$defs/Structure"
+        },
+        "recommendation": {
+          "enum": [
+            "priority",
+            "consider",
+            "defer",
+            "reject"
+          ]
+        },
+        "uncertainties": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "correctness",
+        "difficulty",
+        "quality",
+        "teaching_value",
+        "collection_value",
+        "structure",
+        "recommendation",
+        "uncertainties"
+      ],
+      "additionalProperties": false
+    },
+    "Check": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "applicable": {
+          "type": "boolean"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "satisfied",
+            "violated",
+            "undecidable",
+            "not_run",
+            "not_applicable",
+            "error"
+          ]
+        },
+        "evidence_method": {
+          "enum": [
+            "deterministic",
+            "model_static",
+            "tool",
+            "human",
+            "empirical",
+            null
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          }
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "applicable",
+        "required",
+        "status",
+        "evidence_method",
+        "evidence_refs",
+        "detail"
+      ],
+      "additionalProperties": false
+    },
+    "AcceptanceReport": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "needs_review",
+            "not_evaluated"
+          ]
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Check"
+          }
+        },
+        "uncertainties": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "feedback_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          }
+        }
+      },
+      "required": [
+        "status",
+        "passed",
+        "checks",
+        "uncertainties",
+        "feedback_refs"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "passed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "passed": {
+                "const": true
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "passed": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "FeedbackEvidence": {
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "type": "string"
+        },
+        "origin": {
+          "enum": [
+            "user",
+            "model_review",
+            "tool",
+            "empirical"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "recorded",
+            "proposed",
+            "review_requested",
+            "retracted"
+          ]
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          }
+        },
+        "target_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          }
+        },
+        "evidence_method": {
+          "enum": [
+            "deterministic",
+            "model_static",
+            "tool",
+            "human",
+            "empirical"
+          ]
+        }
+      },
+      "required": [
+        "event_id",
+        "origin",
+        "text",
+        "outcome",
+        "source_refs",
+        "target_refs",
+        "evidence_method"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "contract_version": {
+          "const": "generation.v1"
+        },
+        "kind": {
+          "const": "TaskContext"
+        },
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "payload": {
+          "$ref": "#/$defs/TaskContext"
+        },
+        "extensions": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "contract_version",
+        "kind",
+        "identity",
+        "payload",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "contract_version": {
+          "const": "generation.v1"
+        },
+        "kind": {
+          "const": "GenerationStrategy"
+        },
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "payload": {
+          "$ref": "#/$defs/GenerationStrategy"
+        },
+        "extensions": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "contract_version",
+        "kind",
+        "identity",
+        "payload",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "contract_version": {
+          "const": "generation.v1"
+        },
+        "kind": {
+          "const": "EvidenceBundle"
+        },
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "payload": {
+          "$ref": "#/$defs/EvidenceBundle"
+        },
+        "extensions": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "contract_version",
+        "kind",
+        "identity",
+        "payload",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "contract_version": {
+          "const": "generation.v1"
+        },
+        "kind": {
+          "const": "ItemAssessment"
+        },
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "payload": {
+          "$ref": "#/$defs/ItemAssessment"
+        },
+        "extensions": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "contract_version",
+        "kind",
+        "identity",
+        "payload",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "contract_version": {
+          "const": "generation.v1"
+        },
+        "kind": {
+          "const": "AcceptanceReport"
+        },
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "payload": {
+          "$ref": "#/$defs/AcceptanceReport"
+        },
+        "extensions": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "contract_version",
+        "kind",
+        "identity",
+        "payload",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "contract_version": {
+          "const": "generation.v1"
+        },
+        "kind": {
+          "const": "FeedbackEvidence"
+        },
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "payload": {
+          "$ref": "#/$defs/FeedbackEvidence"
+        },
+        "extensions": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "contract_version",
+        "kind",
+        "identity",
+        "payload",
+        "extensions"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

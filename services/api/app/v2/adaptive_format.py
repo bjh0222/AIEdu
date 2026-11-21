@@ -1,0 +1,269 @@
+"""Task-derived presentation, shared by A/B/C and deterministic projections.
+
+Original format-spec snapshots remain immutable. A chooses the applicable
+organization; the wrapper enforces its frozen counts/forms, not a global list
+of teaching-level labels. Safety and evidence authority never come from A.
+"""
+from __future__ import annotations
+
+from copy import deepcopy
+import re
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from .contracts import DomainError, digest
+
+LAYOUT = "task-adaptive.v1"
+POLICY_PROMPT = (
+    " Format authority is consistent at every stage: the COMPLETE explicit natural-language user request "
+    "(not only hard_constraints) has priority over template defaults. The frozen output_design, when present, "
+    "records A's task-specific applicability and organization decision. Before A freezes that decision, "
+    "template applicability is pending: do not assume default question types, counts, headings or answer "
+    "lengths are task mandates. Define rubric targets conditionally on the eventual applicable arrangement. "
+    "Original spec snapshots remain source data, not a command to "
+    "restore inapplicable example headings, question forms, chapter counts or answer brevity. Apply useful "
+    "format rules through that decision, preserving safe Markdown, coupled questions/answers and source bytes. "
+    "Do not confuse pedagogical difficulty or response-form labels with subject-matter methods. A request "
+    "for methods/categories needs actual task-specific categories and explanations, with the requested "
+    "number, form and level of substantive questions per category. "
+    "Neither templates nor output_design can change model roles, tool authority, evidence/calibration policy "
+    "or user content requirements. Generated difficulty labels are proposals, not measured learner difficulty. "
+    "Three distinct claims must remain separate: structural coverage/counts, evidence-based a-priori cognitive "
+    "demand, and empirically measured learner difficulty. A label, author's presentation, or increased calculation "
+    "volume alone never satisfies a requested difficulty level. Evaluate actual required cognitive operations, "
+    "prerequisites, strategy choices and dependencies against the task-specific A targets; before A, define "
+    "that evaluation conditionally on the eventual targets. Lack of learner response data leaves empirical "
+    "difficulty not_measured, but does not waive or downgrade the executable prior-demand check. A coverage "
+    "dimension may count items without assessing difficulty only if it explicitly leaves the difficulty "
+    "requirement to that separate check; it cannot declare labels sufficient for the user's difficulty requirement."
+)
+
+
+class DifficultyTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    level: str = Field(min_length=1)
+    minimum_nonroutine_operations: int = Field(ge=0, le=20)
+    minimum_concept_interactions: int = Field(ge=1, le=20)
+    minimum_dependency_depth: int = Field(ge=1, le=30)
+    rationale: str = Field(min_length=12)
+    empirical_status: Literal["not_measured"] = "not_measured"
+
+
+class OutputDesign(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["method_practice", "chapter_practice", "exam", "reading", "tutorial", "custom"]
+    grouping_basis: str = Field(min_length=4)
+    rationale: str = Field(min_length=12)
+    request_quotes: list[str] = Field(min_length=1)
+    question_form: Literal["constructed_response_only", "mixed", "not_applicable"]
+    explanation_policy: Literal["full", "concise", "answer_only"]
+    answer_placement: Literal["unit_end", "document_end"] = "unit_end"
+    template_adaptations: list[dict[str, str]] = Field(default_factory=list)
+    difficulty_target: DifficultyTarget | None = None
+    quantity_per_group: int | None = Field(default=None, ge=1, le=100)
+
+
+def validated_design(value, context):
+    design = OutputDesign.model_validate(value).model_dump()
+    raw = context.get("raw_input", "") + "\n" + "\n".join(context.get("hard_constraints", []))
+    if any(not quote or quote not in raw for quote in design["request_quotes"]):
+        raise DomainError("OUTPUT_DESIGN_REQUEST_UNBOUND", 422)
+    item_task = bool(set(context.get("requested_artifacts", [])) & {"exercise", "paper"})
+    if item_task and design["question_form"] == "not_applicable":
+        raise DomainError("TASK_QUESTION_FORM_REQUIRED", 422)
+    # A may not silently turn an explicit harder task into a routine worksheet.
+    # Nonroutine demand must be present for an explicitly challenging item task.
+    # There is deliberately no universal "three steps = difficult" cutoff:
+    # A's task-specific numerical targets still need reference/learner grounding.
+    target = design.get("difficulty_target")
+    hard = bool(re.search(r"较难|高难|难题|challenging|advanced problems", raw, re.I))
+    if hard and item_task and (not target or target["minimum_nonroutine_operations"] < 1):
+        raise DomainError("HARD_TASK_DIFFICULTY_TARGET_TOO_LOW", 422)
+    counts = {int(m) for m in re.findall(r"每(?:一)?(?:类|组)[^\n。；]{0,18}?(\d+)\s*(?:个|道)[^\n。；]{0,8}?题", raw)}
+    if len(counts) == 1 and design.get("quantity_per_group") != next(iter(counts)):
+        raise DomainError("EXPLICIT_PER_GROUP_QUANTITY_NOT_BOUND", 422)
+    design.update(method_version=LAYOUT,
+        source_spec_hashes=[b.get("snapshot_hash", digest(b.get("snapshot", {}))) for b in context.get("spec_bindings", [])])
+    design["design_hash"] = digest(design)
+    return design
+
+
+def apply_design(context, plan, arrangement, chunks):
+    """Before generation, A owns organization; source coverage stays explicit."""
+    from uuid import uuid4
+    content = arrangement.get("content") or {}
+    proposed = content.get("output_design")
+    if not proposed:
+        raise DomainError("OUTPUT_DESIGN_REQUIRED", 422)
+    design = validated_design(proposed, context)
+    descriptions = content["units"]
+    if len(descriptions) > 64:
+        raise DomainError("PLAN_RESOURCE_LIMIT", 422)
+    roles = [r for r in context["requested_artifacts"] if r != "answer"]
+    source_ids = {m for m in context.get("material_ids", [])}
+    chunk_ids = {c["chunk_id"] for c in chunks}
+    units = []
+    role_aliases = {}
+
+    def canonical_role(value):
+        """Convert only an explicit composite role to its requested base role.
+
+        A's contract has one primary artifact_role per unit while answer
+        projection is represented by artifact_roles.  Models sometimes
+        express that projection as ``exercise_and_answer`` (or the paper
+        equivalent).  Accept that unambiguous representation only when its
+        base role and the answer artifact are both requested; all other
+        unknown roles remain hard errors rather than being guessed.
+        """
+        if not value:
+            return None
+        if value in roles:
+            return value
+        suffix = "_and_answer"
+        if value.endswith(suffix):
+            base = value[:-len(suffix)]
+            if base in roles and "answer" in context["requested_artifacts"]:
+                role_aliases[value] = base
+                return base
+        return value
+
+    for index, description in enumerate(descriptions):
+        source_role = description.get("artifact_role")
+        role = canonical_role(source_role) or (roles[0] if len(roles) == 1 else None)
+        if role not in roles and not ("tutorial" in roles and role in {"chapter", "book_level"}):
+            raise DomainError("ADAPTIVE_ARTIFACT_ROLE_UNBOUND", 422)
+        mappings = set(description["material_mapping"])
+        if mappings - source_ids - chunk_ids:
+            raise DomainError("OUTPUT_DESIGN_MATERIAL_MAPPING_INVALID", 422)
+        selected = [c["chunk_id"] for c in chunks if c["chunk_id"] in mappings or c.get("source_id") in mappings]
+        # Empty mapping is only valid with no selected material; never silently
+        # lose sources in a model-designed layout.
+        if role == "book_level" and design["mode"] == "reading":
+            selected = []  # generated chapter digests, never whole-book raw injection
+        if chunks and not selected and role != "book_level":
+            raise DomainError("OUTPUT_DESIGN_MATERIAL_MAPPING_REQUIRED", 422)
+        unit = {"unit_id": str(uuid4()), "unit_key": f"adaptive:{index}", "title": description["title"],
+            "artifact_role": role, "artifact_roles": ([role, "answer"] if role in {"paper", "exercise"} and "answer" in context["requested_artifacts"] else ["tutorial"] if role in {"chapter", "book_level"} else [role]),
+            "required": True, "depends_on": [], "material_chunk_ids": selected,
+            "source_sections": [], "format_contract": LAYOUT, "output_design": deepcopy(design),
+            "section_number": index+1, "display_order": index,
+            "subject_bindings": context.get("subject_bindings", []), "origin": "generated"}
+        if source_role and source_role != role:
+            unit["source_artifact_role"] = source_role
+            unit["artifact_role_normalization"] = "explicit_composite_to_primary_with_answer_projection"
+        unit["required_sections"] = description.get("required_sections", [])
+        unit["summary_heading"] = description.get("summary_heading")
+        if design.get("quantity_per_group") is not None and role in {"exercise", "paper"}:
+            if description.get("quantity") != design["quantity_per_group"]:
+                raise DomainError("OUTPUT_DESIGN_QUANTITY_UNBOUND", 422)
+        units.append(unit)
+    by_title = {u["title"]: u for u in units}
+    for description, unit in zip(descriptions, units):
+        dependency_titles = description.get("depends_on_titles", [])
+        if unit["title"] in dependency_titles or not set(dependency_titles) <= set(by_title):
+            raise DomainError("OUTPUT_DESIGN_DEPENDENCY_INVALID", 422)
+        unit["depends_on"] = [by_title[title]["unit_id"] for title in dependency_titles]
+    pending, complete = list(units), set()
+    while pending:
+        ready = [u for u in pending if set(u["depends_on"]) <= complete]
+        if not ready:
+            raise DomainError("OUTPUT_DESIGN_DEPENDENCY_CYCLE", 422)
+        for unit in ready:
+            complete.add(unit["unit_id"])
+            pending.remove(unit)
+    if design["mode"] == "reading":
+        chapters = {u["title"] for u in units if u["artifact_role"] == "chapter"}
+        for unit, description in zip(units, descriptions):
+            if unit["artifact_role"] == "book_level" and (not chapters or
+                    not chapters <= set(description.get("depends_on_titles", []))):
+                raise DomainError("READING_DIGEST_DEPENDENCIES_REQUIRED", 422)
+            if unit["artifact_role"] == "chapter" and not unit["summary_heading"]:
+                raise DomainError("READING_SUMMARY_HEADING_REQUIRED", 422)
+    if set(roles) - {r for u in units for r in u["artifact_roles"]}:
+        raise DomainError("OUTPUT_DESIGN_ARTIFACT_COVERAGE_INCOMPLETE", 422)
+    if chunk_ids - {c for u in units for c in u["material_chunk_ids"]}:
+        raise DomainError("OUTPUT_DESIGN_MATERIAL_COVERAGE_INCOMPLETE", 422)
+    result = deepcopy(plan)
+    result["units"] = units
+    result["output_design"] = design
+    return result
+
+
+def item_schema(unit):
+    value = {"method_overview": "Explain the category's method, applicable conditions, choices and pitfalls; no question answers here.",
+        "items": [{"question_form": "constructed_response",
+            "stem_markdown": "complete unnumbered Chinese question, no outer headings",
+            "difficulty_basis": {"prerequisites": ["specific concept"], "cognitive_operations": ["actual cognitive operation"],
+                "nonroutine_operations": ["non-routine decision or transfer"], "concept_interactions": ["interaction of distinct concepts"],
+                "dependency_depth": "positive integer; number of dependent reasoning stages", "rationale": "why the actual question meets the frozen target"},
+            "answer": {"final": "complete final answer", "reasoning": "complete checking derivation",
+                "display_reasoning": "learner explanation according to output_design.explanation_policy"}}]}
+    if unit.get("artifact_role") == "paper":
+        value["items"][0]["score"] = "positive numeric points"
+    return value
+
+
+def validate_item(candidate, unit_contract):
+    form = candidate.get("question_form")
+    # The response contract uses a small enum, but older prompt examples
+    # accidentally encouraged models to append an explanatory parenthesis.
+    # Normalize only that unambiguous constructed-response spelling; other
+    # values remain hard failures and cannot bypass a task's form requirement.
+    if isinstance(form, str) and form.startswith("constructed_response "):
+        form = "constructed_response"
+    design = unit_contract.get("output_design", {})
+    if form not in {"constructed_response", "judgement", "choice"}:
+        raise DomainError("TASK_QUESTION_FORM_REQUIRED", 422)
+    if design.get("question_form") == "constructed_response_only" and form != "constructed_response":
+        raise DomainError("TASK_QUESTION_FORM_MISMATCH", 422)
+    basis = candidate.get("difficulty_basis")
+    if design.get("difficulty_target"):
+        if not isinstance(basis, dict) or any(not isinstance(basis.get(k), list) or
+                any(not isinstance(v, str) or not v.strip() for v in basis[k]) for k in
+                ("prerequisites", "cognitive_operations", "nonroutine_operations", "concept_interactions")):
+            raise DomainError("ITEM_DIFFICULTY_BASIS_REQUIRED", 422)
+        if type(basis.get("dependency_depth")) is not int or basis["dependency_depth"] < 1 or not isinstance(basis.get("rationale"), str):
+            raise DomainError("ITEM_DIFFICULTY_BASIS_INVALID", 422)
+        target = design["difficulty_target"]
+        if (len(basis["nonroutine_operations"]) < target["minimum_nonroutine_operations"] or
+                len(basis["concept_interactions"]) < target["minimum_concept_interactions"] or
+                basis["dependency_depth"] < target["minimum_dependency_depth"]):
+            raise DomainError("ITEM_DIFFICULTY_DECLARATION_BELOW_TARGET", 422)
+        # These are declared counts only; C must recompute them from the actual
+        # question. This structural gate is not a difficulty certificate.
+    return {"question_form": form, "difficulty_basis": deepcopy(basis),
+        "difficulty_authority": "generation_proposal_requires_blind_review"}
+
+
+def validate_quantity(items, unit_contract):
+    quantity = unit_contract.get("teaching_arrangement", {}).get("quantity")
+    if type(quantity) is int and len(items) != quantity:
+        raise DomainError("TASK_ITEM_QUANTITY_MISMATCH", 422, required=quantity, received=len(items))
+
+
+def render(items, unit, answers_only=False):
+    from ..services.format_specs import cn_numeral
+    lines = [f"## {cn_numeral(unit.get('section_number', 1))}、{unit['title']}", ""]
+    if not answers_only:
+        if unit.get("method_overview"):
+            lines.extend([unit["method_overview"].strip(), ""])
+        for item in items:
+            lines.extend([f"**{item['ordinal']}.** {item['stem_markdown'].strip()}", ""])
+    if not answers_only and unit["output_design"].get("answer_placement") == "document_end":
+        return "\n".join(lines)
+    lines.extend(["### 参考答案", ""])
+    policy = unit["output_design"]["explanation_policy"]
+    for item in items:
+        lines.extend([f"**{item['ordinal']}.** {item['answer']['final'].strip()}", ""])
+        if policy != "answer_only":
+            explanation = item["answer"].get("display_reasoning") if policy == "concise" else item["answer"]["reasoning"]
+            lines.extend([explanation or item["answer"]["reasoning"], ""])
+    return "\n".join(lines)
+
+
+def document_end_answers(units):
+    """Coupled items mechanically projected once at the document's end."""
+    selected = [u for u in sorted(units, key=lambda u: u.get("display_order", 0)) if u.get("items")
+                and u.get("format_contract") == LAYOUT and u.get("output_design", {}).get("answer_placement") == "document_end"]
+    return "\n\n".join(render(u["items"], u, True) for u in selected)

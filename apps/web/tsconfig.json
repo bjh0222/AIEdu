@@ -1,0 +1,72 @@
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    "**/*.mts",
+    ".next-integration/types/**/*.ts",
+    ".next-integration/dev/types/**/*.ts",
+    ".next-optimization/types/**/*.ts",
+    ".next-optimization/dev/types/**/*.ts",
+    ".next-opt-agent2/types/**/*.ts",
+    ".next-opt-agent2/dev/types/**/*.ts",
+    ".next-opt-agent1/types/**/*.ts",
+    ".next-opt-agent1/dev/types/**/*.ts",
+    ".next-opt-integrator/types/**/*.ts",
+    ".next-opt-integrator/dev/types/**/*.ts",
+    ".next-opt-linear/types/**/*.ts",
+    ".next-opt-linear/dev/types/**/*.ts",
+    ".next-adaptive-main03/types/**/*.ts",
+    ".next-adaptive-main03/dev/types/**/*.ts",
+    ".next-main48/types/**/*.ts",
+    ".next-main48/dev/types/**/*.ts",
+    ".next-main49/types/**/*.ts",
+    ".next-main49/dev/types/**/*.ts",
+    ".next-main49b/types/**/*.ts",
+    ".next-main49b/dev/types/**/*.ts",
+    ".next-main48-verification/types/**/*.ts",
+    ".next-main48-verification/dev/types/**/*.ts",
+    ".next-main59/types/**/*.ts",
+    ".next-main59/dev/types/**/*.ts",
+    "e2e/results/optD/.next/types/**/*.ts",
+    "e2e/results/optD/.next/dev/types/**/*.ts",
+    ".next-optC/types/**/*.ts",
+    ".next-optC/dev/types/**/*.ts",
+    "e2e/results/optMain/.next/types/**/*.ts",
+    "e2e/results/optMain/.next/dev/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}

@@ -1,0 +1,216 @@
+{
+  "protocol": "aiedu.benchmark.package.v1",
+  "label": "engineering",
+  "calibration": "uncalibrated",
+  "deidentified": true,
+  "notes": "工程 fixture 基准包：覆盖五类任务与固定复杂约束场景（最少表达、硬难度覆盖默认、无题型标题、多来源风格、范围边界、无答案/不同份数、错题、长材料、规范冲突、经验降级）。全部为合成脱敏内容，不是真实私有材料，不作为专业能力校准集；只用于 --task pipeline 的离线工程回归，验收链路必须真能拦住坏成果、放行好成果。",
+  "independent_evaluation": {
+    "version": "independent-review.v0",
+    "status": "not_performed",
+    "samples": 0,
+    "note": "尚无独立人工评分；本包一切结论仅代表工程链路行为，不代表能力提升。"
+  },
+  "retrieval_config": {"embedding_enabled": false, "include_examples": false},
+  "learning_cases": [
+    {"id": "learn-calc-1", "family_id": "learn-family-monotonicity", "stem": "设函数 f(x)=x^3-3x，讨论它的单调区间。",
+     "domain_key": "math_logic", "branch": "calculus", "learner": "大学微积分初学者",
+     "knowledge_points": ["单调性", "导数"], "question_type": "解答题",
+     "raw_answer": "f'(x)=3x^2-3，在 (-1,1) 单调递减，两侧递增。", "raw_explanation": "求导后按符号分区间。"},
+    {"id": "learn-py-1", "family_id": "learn-family-comprehension", "stem": "用列表推导式把 1 到 20 中的平方数收集成列表。",
+     "domain_key": "cs_it", "branch": "python", "learner": "有半年经验的进阶学习者",
+     "knowledge_points": ["列表推导式"], "question_type": "编程题",
+     "raw_answer": "[n*n for n in range(1,21) if (n**0.5).is_integer()]", "raw_explanation": "判断平方数后推导。"}
+  ],
+  "principles": [
+    {"id": "calc-mono-p", "domain_key": "math_logic", "status": "confirmed", "title": "单调性讨论先给定义域",
+     "statement": "讨论单调性时必须先声明函数定义域，再按导数符号分区间；缺定义域的讨论视为不完整。",
+     "mechanism": "定义域是单调性讨论的前提边界；导数符号只在定义域内有意义。",
+     "applicability": "微积分中含导数符号分析的单调性/极值题",
+     "guidance": "先写定义域，再逐区间说明导数符号与单调结论。",
+     "scope": {"knowledge_points": ["单调性", "导数"], "question_types": ["解答题"]},
+     "confidence": 0.9, "evidence_family_count": 2, "approval_source": "human"},
+    {"id": "py-list-p", "domain_key": "cs_it", "status": "confirmed", "title": "列表推导保持单一职责",
+     "statement": "列表推导式应保持过滤与变换的单一职责，复杂判断拆成具名函数或先行变量。",
+     "mechanism": "复合条件塞进单个推导会放大阅读成本并掩盖边界条件。",
+     "applicability": "Python 列表推导式相关的编程题与教程",
+     "guidance": "复杂条件抽成谓词函数，推导体保持一层。",
+     "scope": {"knowledge_points": ["列表推导式"], "question_types": ["编程题"]},
+     "confidence": 0.85, "evidence_family_count": 2, "approval_source": "human"},
+    {"id": "downgrade-p", "domain_key": "math_logic", "status": "confirmed", "title": "零基础学习者需要台阶题",
+     "statement": "面向零基础初学者时，先给可直接模仿的台阶题，再给变式。",
+     "mechanism": "认知负荷对零基础学习者集中在形式本身。",
+     "applicability": "仅当学习者是零基础初学者",
+     "guidance": "先给可模仿示例。",
+     "scope": {"learner": ["零基础初学者"], "knowledge_points": ["导数"]},
+     "confidence": 0.8, "evidence_family_count": 2, "approval_source": "human"}
+  ],
+  "rubric": {
+    "correctness": "supported/refuted/undecidable + 可核查理由",
+    "difficulty": "1-5 与学习者假设；先验机制须与实测区分",
+    "scope_style": "范围/题型/风格与参考画像一致；不逐题仿写",
+    "use_value": "生成结果对目标学习者的实际可用性",
+    "recommendation": "priority/consider/defer/reject"
+  },
+  "tasks": [
+    {
+      "id": "tutorial-minimal-brief",
+      "task_type": "knowledge_tutorial",
+      "dimension": "goal_fit",
+      "domain_key": "math_logic",
+      "branch": "calculus",
+      "learner": "大学微积分初学者",
+      "objective": "讲清楚函数单调性怎么判断。",
+      "fixture": "clean",
+      "expectations": {"acceptance_status": "passed", "scope_basis": "unknown"}
+    },
+    {
+      "id": "tutorial-spec-conflict",
+      "task_type": "knowledge_tutorial",
+      "dimension": "goal_fit",
+      "domain_key": "math_logic",
+      "branch": "calculus",
+      "learner": "大学微积分初学者",
+      "objective": "输出一节单调性讲解教程。",
+      "constraints": [
+        {"id": "c1", "text": "只输出一节讲解", "strength": "hard"},
+        {"id": "c2", "text": "输出至少三节讲解", "strength": "hard"}
+      ],
+      "conflicts": ["c1 与 c2 对讲解节数的要求直接冲突；两个同级约束都可见，不得悄悄忽略任何一方。"],
+      "fixture": "two_sections",
+      "expectations": {"conflict_visible": true, "acceptance_status": "failed"}
+    },
+    {
+      "id": "exam-hard-difficulty-default",
+      "task_type": "exam",
+      "dimension": "difficulty_mechanism",
+      "domain_key": "math_logic",
+      "branch": "calculus",
+      "learner": "大学微积分初学者",
+      "objective": "按参考卷风格出一套导数模拟卷。",
+      "reference_profile": {
+        "question_types": [{"name": "解答题", "count": 2, "basis": "direct"}],
+        "knowledge_points": ["导数", "单调性"],
+        "style_features": ["题干不超过两行", "解答分步编号"]
+      },
+      "fixture": "clean",
+      "expectations": {"difficulty_mode": "above_reference", "guidance_includes": ["calc-mono-p"], "acceptance_status": "passed"}
+    },
+    {
+      "id": "exam-no-type-titles",
+      "task_type": "exam",
+      "dimension": "scope_style",
+      "domain_key": "math_logic",
+      "branch": "calculus",
+      "learner": "大学微积分初学者",
+      "objective": "按参考卷风格出一套导数模拟卷。",
+      "constraints": [{"id": "c1", "text": "卷面内不得出现题型标题（如「选择题」独立标题行）", "strength": "hard"}],
+      "fixture": "type_titles",
+      "expectations": {"check_status": {"constraint-c1": "violated"}, "acceptance_status": "failed"}
+    },
+    {
+      "id": "exam-multi-source-style",
+      "task_type": "exam",
+      "dimension": "scope_style",
+      "domain_key": "math_logic",
+      "branch": "calculus",
+      "learner": "大学微积分初学者",
+      "objective": "综合两份参考卷的分布与风格出一套模拟卷。",
+      "reference_profile": {
+        "question_types": [{"name": "解答题", "count": 2, "basis": "direct"}],
+        "knowledge_points": ["导数"],
+        "style_features": ["来源A：题干不超过两行", "来源B：解答分步编号"]
+      },
+      "fixture": "clean",
+      "expectations": {"style_features_count": 2, "check_status": {"scope_style": "undecidable"}}
+    },
+    {
+      "id": "exam-scope-boundary",
+      "task_type": "exam",
+      "dimension": "scope_style",
+      "domain_key": "math_logic",
+      "branch": "calculus",
+      "learner": "大学微积分初学者",
+      "objective": "出一套导数模拟卷。",
+      "scope": {"include": ["导数", "单调性"], "exclude": ["概率统计"], "basis": "direct"},
+      "constraints": [{"id": "c1", "text": "考查范围仅限导数与单调性，不得出现概率统计内容", "strength": "hard"}],
+      "fixture": "scope_violation",
+      "expectations": {"check_status": {"constraint-c1": "violated"}, "acceptance_status": "failed"}
+    },
+    {
+      "id": "exam-no-answers-two-papers",
+      "task_type": "exam",
+      "dimension": "correctness",
+      "domain_key": "math_logic",
+      "branch": "calculus",
+      "learner": "大学微积分初学者",
+      "objective": "出一套不附答案的导数模拟卷。",
+      "constraints": [
+        {"id": "c1", "text": "只输出一套试卷", "strength": "hard"},
+        {"id": "c2", "text": "试卷不输出答案", "strength": "hard"}
+      ],
+      "fixture": "two_papers_answers",
+      "expectations": {"violated_checks_min": 2, "acceptance_status": "failed"}
+    },
+    {
+      "id": "exercise-wrong-answer",
+      "task_type": "exercise",
+      "dimension": "correctness",
+      "domain_key": "math_logic",
+      "branch": "calculus",
+      "learner": "大学微积分初学者",
+      "objective": "给两道导数练习题并附答案。",
+      "constraints": [{"id": "c1", "text": "每道题给出可核查的正确答案与推导", "strength": "hard"}],
+      "fixture": "wrong_answer",
+      "expectations": {"acceptance_status": "needs_review"}
+    },
+    {
+      "id": "reading-long-material",
+      "task_type": "reading_guide",
+      "dimension": "use_value",
+      "domain_key": "general",
+      "learner": "自学者",
+      "objective": "为一本长书写逐章导读。",
+      "constraints": [{"id": "c1", "text": "摘录必须逐字来自原文并标注出处", "strength": "hard"}],
+      "fixture": "long_material",
+      "fixture_text": "（此处原应为整本长书内容；工程包不复制私人材料，用占位长文本替代。）",
+      "expectations": {"acceptance_status": "needs_review"}
+    },
+    {
+      "id": "practical-verification-steps",
+      "task_type": "practical_tutorial",
+      "dimension": "use_value",
+      "domain_key": "cs_it",
+      "branch": "python",
+      "learner": "有半年经验的进阶学习者",
+      "objective": "写一份环境搭建与脚本运行实操教程。",
+      "constraints": [{"id": "c1", "text": "每个步骤必须包含预期结果与验证方式", "strength": "hard"}],
+      "fixture": "steps_without_expectation",
+      "expectations": {"acceptance_status": "needs_review"}
+    },
+    {
+      "id": "exam-experience-downgrade",
+      "task_type": "exam",
+      "dimension": "failure_degradation",
+      "domain_key": "math_logic",
+      "branch": "calculus",
+      "learner": "有经验的进阶学习者",
+      "objective": "出一套导数模拟卷。",
+      "fixture": "clean",
+      "expectations": {"guidance_excludes": ["downgrade-p"], "acceptance_status": "passed"}
+    },
+    {
+      "id": "exercise-py-comprehension",
+      "task_type": "exercise",
+      "dimension": "use_value",
+      "domain_key": "cs_it",
+      "branch": "python",
+      "learner": "有半年经验的进阶学习者",
+      "objective": "出两道列表推导式练习题。",
+      "knowledge_points": ["列表推导式"],
+      "question_types": ["编程题"],
+      "constraints": [{"id": "c1", "text": "每道题给出可核查的正确答案与推导", "strength": "hard"}],
+      "fixture": "clean",
+      "expectations": {"guidance_includes": ["py-list-p"], "acceptance_status": "needs_review"}
+    }
+  ]
+}

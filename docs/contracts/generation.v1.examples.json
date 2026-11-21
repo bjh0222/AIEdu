@@ -1,0 +1,268 @@
+[
+  {
+    "contract_version": "generation.v1",
+    "kind": "TaskContext",
+    "identity": {
+      "task_id": "fixture-task-001",
+      "goal_id": null,
+      "tutorial_id": null,
+      "version": null,
+      "unit_id": null
+    },
+    "payload": {
+      "task_type": "exam",
+      "domain_key": "math_logic",
+      "branch": "calculus",
+      "learner": "已学导数定义的本科生",
+      "objective": "按参考风格生成模拟卷",
+      "constraints": [
+        {
+          "id": "c1",
+          "text": "只输出一套试卷",
+          "strength": "hard",
+          "origin": "current_user",
+          "source_refs": [
+            {
+              "kind": "user_task",
+              "id": "fixture-request",
+              "version": "1",
+              "hash": null,
+              "location": "request"
+            }
+          ]
+        }
+      ],
+      "scope": {
+        "include": [
+          "极限",
+          "导数"
+        ],
+        "exclude": [],
+        "basis": "direct",
+        "source_refs": [
+          {
+            "kind": "user_task",
+            "id": "fixture-request",
+            "version": "1",
+            "hash": null,
+            "location": "request"
+          }
+        ]
+      },
+      "reference_profile": null,
+      "difficulty_target": {
+        "mode": "above_reference",
+        "instruction": null,
+        "evidence_basis": "prior",
+        "source_refs": []
+      },
+      "deliverables": [
+        {
+          "unit_id": "unit-1",
+          "title": "模拟试卷"
+        }
+      ],
+      "assumptions": [
+        "未提供参考时需明确范围和难度假设；本例仅协议fixture"
+      ],
+      "conflicts": []
+    },
+    "extensions": {
+      "fixture_role": "engineering_protocol"
+    }
+  },
+  {
+    "contract_version": "generation.v1",
+    "kind": "GenerationStrategy",
+    "identity": {
+      "task_id": "fixture-task-001",
+      "goal_id": null,
+      "tutorial_id": null,
+      "version": null,
+      "unit_id": null
+    },
+    "payload": {
+      "units": [
+        {
+          "unit_id": "unit-1",
+          "knowledge_points": [
+            "导数定义"
+          ],
+          "question_types": [
+            "证明题"
+          ],
+          "boundaries": [
+            "不超出指定范围"
+          ],
+          "difficulty_mechanisms": [
+            {
+              "mechanism": "需主动构造差商关系",
+              "expected_effect": "增加策略选择要求",
+              "evidence_basis": "prior",
+              "source_refs": []
+            }
+          ],
+          "knowledge_requests": [
+            "导数定义的迁移机制"
+          ],
+          "check_ids": [
+            "correctness",
+            "constraint-c1"
+          ]
+        }
+      ],
+      "shared_constraints": [
+        "c1"
+      ],
+      "source_refs": [
+        {
+          "kind": "user_task",
+          "id": "fixture-request",
+          "version": "1",
+          "hash": null,
+          "location": "request"
+        }
+      ]
+    },
+    "extensions": {
+      "fixture_role": "engineering_protocol"
+    }
+  },
+  {
+    "contract_version": "generation.v1",
+    "kind": "EvidenceBundle",
+    "identity": {
+      "task_id": "fixture-task-001",
+      "goal_id": null,
+      "tutorial_id": null,
+      "version": null,
+      "unit_id": null
+    },
+    "payload": {
+      "stage": "planning",
+      "injection_status": "no_match",
+      "standards": [],
+      "principles": [],
+      "cases": [],
+      "budget_chars": 3000,
+      "chars_used": 0,
+      "trace_id": null,
+      "warnings": []
+    },
+    "extensions": {
+      "fixture_role": "engineering_protocol"
+    }
+  },
+  {
+    "contract_version": "generation.v1",
+    "kind": "ItemAssessment",
+    "identity": {
+      "task_id": "fixture-task-001",
+      "goal_id": null,
+      "tutorial_id": null,
+      "version": null,
+      "unit_id": "unit-1"
+    },
+    "payload": {
+      "correctness": {
+        "status": "undecidable",
+        "reason": "协议fixture没有待评题面",
+        "evidence_method": "model_static",
+        "source_refs": []
+      },
+      "difficulty": {
+        "level": null,
+        "learner": null,
+        "sources": [],
+        "evidence_basis": "unknown",
+        "source_refs": []
+      },
+      "quality": {
+        "strengths": [],
+        "limitations": [
+          "缺题面"
+        ]
+      },
+      "teaching_value": "未评价",
+      "collection_value": "待评价",
+      "structure": {
+        "mechanism": "未知",
+        "invariants": [],
+        "variable_factors": [],
+        "boundaries": [],
+        "source_refs": []
+      },
+      "recommendation": "defer",
+      "uncertainties": [
+        "不是能力校准样本"
+      ]
+    },
+    "extensions": {
+      "fixture_role": "engineering_protocol"
+    }
+  },
+  {
+    "contract_version": "generation.v1",
+    "kind": "AcceptanceReport",
+    "identity": {
+      "task_id": "fixture-task-001",
+      "goal_id": null,
+      "tutorial_id": null,
+      "version": null,
+      "unit_id": null
+    },
+    "payload": {
+      "status": "needs_review",
+      "passed": false,
+      "checks": [
+        {
+          "id": "correctness",
+          "applicable": true,
+          "required": true,
+          "status": "not_run",
+          "evidence_method": null,
+          "evidence_refs": [],
+          "detail": "必需检查未执行，不能降为optional"
+        }
+      ],
+      "uncertainties": [
+        "协议示例未生成成果"
+      ],
+      "feedback_refs": []
+    },
+    "extensions": {
+      "fixture_role": "engineering_protocol"
+    }
+  },
+  {
+    "contract_version": "generation.v1",
+    "kind": "FeedbackEvidence",
+    "identity": {
+      "task_id": "fixture-task-001",
+      "goal_id": null,
+      "tutorial_id": null,
+      "version": null,
+      "unit_id": null
+    },
+    "payload": {
+      "event_id": "fixture-feedback-001",
+      "origin": "user",
+      "text": "希望复核生成结果",
+      "outcome": "review_requested",
+      "source_refs": [
+        {
+          "kind": "feedback",
+          "id": "fixture-feedback-001",
+          "version": "1",
+          "hash": null,
+          "location": "comment"
+        }
+      ],
+      "target_refs": [],
+      "evidence_method": "human"
+    },
+    "extensions": {
+      "fixture_role": "engineering_protocol"
+    }
+  }
+]

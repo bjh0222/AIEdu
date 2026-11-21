@@ -1,0 +1,50 @@
+{
+  "schema_version": "aiedu.capacity-registry.v1",
+  "models": {
+    "http://47.118.177.109:8080/v1|gpt-6.1-sol-medium": {
+      "model_version": "gpt-6.1-sol-medium (gateway alias; operator-declared upstream gpt-6.1-sol)",
+      "context_tokens": 128000,
+      "max_output_tokens": 32768,
+      "output_limit_parameter": "max_completion_tokens",
+      "source_uri_or_config": "https://developers.openai.com/api/docs/models/gpt-6.1-sol ; operator-declared mapping and local conservative envelope, not a gateway maximum-capacity certification",
+      "checked_at": "2026-11-13",
+      "tokenizer_id": null,
+      "tokenizer_version": null,
+      "estimate_method": "utf8-byte-upper-bound-plus-envelope; alias confirmed by authenticated gateway model list; upstream identity not independently verified",
+      "safety_margin_tokens": 4096
+    },
+    "https://api.deepseek.com/v1|deepseek-v4-pro": {
+      "model_version": "DeepSeek-V4-Pro",
+      "context_tokens": 1000000,
+      "max_output_tokens": 384000,
+      "source_uri_or_config": "https://api.deepseek.com/v1/models (authenticated metadata: context_window=1048576, max_output_tokens=393216, effort=low/high/max)",
+      "checked_at": "2026-11-13",
+      "tokenizer_id": null,
+      "tokenizer_version": null,
+      "estimate_method": "utf8-byte-upper-bound-plus-envelope; conservative capacities below authenticated provider metadata",
+      "safety_margin_tokens": 4096
+    },
+    "http://47.118.177.109:8080/v1|glm-5.3-flash": {
+      "model_version": "glm-5.3-flash",
+      "context_tokens": 1000000,
+      "max_output_tokens": 128000,
+      "source_uri_or_config": "https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash",
+      "checked_at": "2026-11-13",
+      "tokenizer_id": null,
+      "tokenizer_version": null,
+      "estimate_method": "utf8-byte-upper-bound-plus-envelope; gateway model ID confirmed, upstream identity operator-declared",
+      "safety_margin_tokens": 4096
+    },
+    "https://api.deepseek.com/v1|deepseek-flash": {
+      "model_version": "DeepSeek-V4.1-Flash-1017",
+      "context_tokens": 1000000,
+      "max_output_tokens": 384000,
+      "source_uri_or_config": "https://api-docs.deepseek.com/quick_start/pricing",
+      "checked_at": "2026-11-13",
+      "tokenizer_id": null,
+      "tokenizer_version": null,
+      "estimate_method": "utf8-byte-upper-bound-plus-envelope",
+      "safety_margin_tokens": 4096
+    }
+  }
+}

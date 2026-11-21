@@ -1,0 +1,1034 @@
+"""AIService：任务级模型调用（真实模型 / 演示生成器统一入口）。
+
+除生成内容外，本服务还负责两件与「测试版数据」相关的记账工作：
+
+1. token 用量：优先使用提供方返回的 usage；没有 usage 时按字符估算并标记 estimated；
+   每次调用写入 ModelCallLog（含 goal / tutorial / job 关联），供接口累计与展示。
+2. 训练样本：把「输入 prompt + 生成输出 + 元数据」写入 TrainingRecord，供测试版导出
+   后做后续预训练；用户反馈同样写入该表（source_type=feedback）。
+"""
+from __future__ import annotations
+
+import json
+import logging
+import math
+import re
+from datetime import datetime, timezone
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from ..model_settings import runtime_settings
+from ..learning import demo
+from ..learning.teaching_profile import check_rule_compliance, parse_teaching_profile
+from ..models import ModelCallLog, TrainingRecord
+from . import context_layers
+from . import prompts
+from .provider import LLMError, OpenAICompatibleProvider
+from ..services.generation_runtime import BudgetExceeded, RunCancelled, new_call_id
+
+logger = logging.getLogger("aiedu")
+
+
+class AIServiceError(Exception):
+    """生成失败（模型不可用 / 输出不合法），由路由转为 502。"""
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _duration_ms(started_at: str, fallback_latency: int = 0) -> int:
+    """started_at → 现在的真实毫秒数；解析失败回退 provider 报告的 latency。"""
+    if not started_at:
+        return int(fallback_latency or 0)
+    try:
+        start = datetime.fromisoformat(started_at)
+        return max(0, int((datetime.now(timezone.utc) - start).total_seconds() * 1000))
+    except ValueError:
+        return int(fallback_latency or 0)
+
+
+EMPTY_USAGE = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "usage_source": ""}
+
+
+def _require(obj: dict, *keys: str) -> dict:
+    missing = [k for k in keys if k not in obj or obj[k] in (None, "")]
+    if missing:
+        raise AIServiceError(f"模型输出缺少字段：{', '.join(missing)}")
+    return obj
+
+
+def _validate_proposition_json(feature: str, data: dict) -> None:
+    """内容处理前验证命题模型契约；不合格响应只记录失败调用。"""
+    def expect(key, kind):
+        if not isinstance(data.get(key), kind):
+            raise AIServiceError(f"{feature} 输出字段 {key} 类型不正确")
+
+    def confidence():
+        value = data.get("confidence")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1:
+            raise AIServiceError(f"{feature} 未返回有效置信度")
+
+    if feature == "proposition_blind_solve":
+        expect("answer", str)
+        expect("solvable", bool)
+        confidence()
+        if "verification" in data:
+            expect("verification", str)
+        if "limitations" in data and (not isinstance(data["limitations"], list) or not all(isinstance(item, str) for item in data["limitations"])):
+            raise AIServiceError("盲解limitations必须为文本列表")
+    elif feature == "proposition_evaluate":
+        for key in ("correctness", "difficulty", "quality", "structure"):
+            expect(key, dict)
+        confidence()
+        if data["correctness"].get("status") not in {"supported", "refuted", "undecidable"} or data.get("recommendation") not in {"priority", "consider", "defer", "reject"}:
+            raise AIServiceError("命题评价未返回有效状态")
+        for key in ("annotation_comparison", "knowledge_points", "uncertainties"):
+            if key in data:
+                expect(key, list)
+        level = data["difficulty"].get("level")
+        if level is not None and (type(level) is not int or not 1 <= level <= 5):
+            raise AIServiceError("命题评价的先验难度等级必须为1到5整数或null")
+        for container, key in (("correctness", "reason"), ("structure", "mechanism")):
+            if key in data[container] and not isinstance(data[container][key], str):
+                raise AIServiceError(f"命题评价的{container}.{key}必须为文本")
+        if "learner" in data["difficulty"] and not isinstance(data["difficulty"]["learner"], (str, type(None))):
+            raise AIServiceError("命题评价的difficulty.learner必须为文本或null")
+        for key in ("teaching_value", "collection_value"):
+            if key in data:
+                expect(key, str)
+        for container, keys in (("quality", ("strengths", "limitations")),
+                                ("difficulty", ("sources",)),
+                                ("structure", ("invariants", "variable_factors", "boundaries", "core_relations", "knowledge_links", "strategy_requirements", "cognitive_obstacles", "counterexamples", "generation_operations"))):
+            for key in keys:
+                if key in data[container] and (not isinstance(data[container][key], list) or
+                                              not all(isinstance(item, str) for item in data[container][key])):
+                    raise AIServiceError(f"命题评价的{container}.{key}必须为文本列表")
+        for key in ("controlled_variations", "cross_item_comparisons"):
+            if key in data:
+                expect(key, list)
+                if not all(isinstance(item, dict) for item in data[key]):
+                    raise AIServiceError(f"命题评价的{key}必须为结构化列表")
+    elif feature in {"proposition_framework", "proposition_experience", "proposition_generated_review", "proposition_generated_recheck"}:
+        key = {"proposition_framework": "standards", "proposition_experience": "principles", "proposition_generated_review": "defects", "proposition_generated_recheck": "defects"}[feature]
+        expect(key, list)
+        if not all(isinstance(row, dict) for row in data[key]):
+            raise AIServiceError(f"{feature} 未返回结构化列表")
+        if feature in {"proposition_generated_review", "proposition_generated_recheck"}:
+            for defect in data["defects"]:
+                if defect.get("severity") not in {"blocking", "advisory"} or not isinstance(defect.get("reason"), str) or not isinstance(defect.get("evidence"), str):
+                    raise AIServiceError(f"{feature} 缺陷须包含severity/reason/evidence")
+                if defect["severity"] == "blocking" and not defect["evidence"].strip():
+                    raise AIServiceError(f"{feature} 实质缺陷缺少可定位证据")
+            if "uncertainties" in data and (not isinstance(data["uncertainties"], list) or
+                                           not all(isinstance(item, str) for item in data["uncertainties"])):
+                raise AIServiceError(f"{feature} uncertainties必须为文本列表")
+        if feature == "proposition_framework":
+            for key in ("conflicts", "relations"):
+                if key in data:
+                    expect(key, list)
+
+
+def estimate_tokens(text: str) -> int:
+    """粗估 token 数：CJK 约 1 字 1 token，其余字符约 4 字符 1 token。"""
+    if not text:
+        return 0
+    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    other = len(text) - cjk
+    return max(1, cjk + (other + 3) // 4)
+
+
+def estimate_usage(prompt_text: str, output_text: str) -> dict[str, Any]:
+    prompt = estimate_tokens(prompt_text)
+    completion = estimate_tokens(output_text)
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+        "usage_source": "estimated",
+    }
+
+
+def _section_check_text(data: dict) -> str:
+    """抽取章节输出里可核验的正文文本（不含 sources 的 url/note）。"""
+    parts: list[str] = []
+    for block in data.get("content") or []:
+        if isinstance(block, dict):
+            parts.append(str(block.get("title", "")))
+            parts.append(str(block.get("body", "")))
+    return "\n".join(parts)
+
+
+def _sections_check_text(data: dict) -> str:
+    """抽取「小节列表」型输出（知识速查）的可核验文本。"""
+    parts: list[str] = []
+    for item in data.get("sections") or []:
+        if isinstance(item, dict):
+            parts.append(str(item.get("heading", "")))
+            parts.append(str(item.get("body", "")))
+    return "\n".join(parts)
+
+
+def _exercises_check_text(data: dict) -> str:
+    """抽取「练习列表」型输出（额外练习）的可核验文本。"""
+    parts: list[str] = [str(data.get("intro", "")), str(data.get("answers_note", ""))]
+    for item in data.get("exercises") or []:
+        if isinstance(item, dict):
+            parts.extend(
+                str(item.get(field, ""))
+                for field in ("task", "requirements", "hint", "solution")
+            )
+    return "\n".join(parts)
+
+
+def _rule_checked(produce, text_of) -> dict:
+    """生成 → 核验硬性禁止类约束 → 命中则定向重写一次 → 如实标注。
+
+    `produce(violations)` 用给定违规清单重新生成（violations 为 None 表示首稿），
+    `text_of(data)` 从输出里抽出可核验文本。所有注入画像的阶段都走同一条流水线，
+    避免「某些阶段的硬约束只停留在提示词里、没人核验」。
+    """
+    rules = parse_teaching_profile()["rules"]
+    data = produce(None)
+    violations = check_rule_compliance(text_of(data), rules)
+    if not violations:
+        return data
+    retry = produce([violation["rule"] for violation in violations])
+    if not check_rule_compliance(text_of(retry), rules):
+        # 定向重写后通过：交付重写稿，并记录「修过」
+        retry["rule_check"] = {
+            "repaired": True,
+            "violations": [violation["reason"] for violation in violations],
+        }
+        return retry
+    # 仍未通过：保留原稿（不交付可能更差的稿），如实标注违规
+    data["rule_check"] = {
+        "repaired": False,
+        "violations": [f"{v['rule']}（{v['reason']}）" for v in violations],
+    }
+    return data
+
+
+def _add_usage(total: dict[str, Any], usage: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(total)
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        merged[key] = int(merged.get(key) or 0) + int(usage.get(key) or 0)
+    if usage.get("usage_source"):
+        merged["usage_source"] = usage["usage_source"]
+    return merged
+
+
+def goal_context_text(goal) -> str:
+    """把目标转成一段稳定文本，作为演示模式下的「输入」与训练样本上下文。"""
+    if goal is None:
+        return ""
+    fields = [
+        ("目标", getattr(goal, "title", "")),
+        ("学科", getattr(goal, "domain_key", "")),
+        ("动机", getattr(goal, "motivation", "")),
+        ("应用场景", getattr(goal, "application_context", "")),
+        ("当前基础", getattr(goal, "current_level", "")),
+        ("可投入总时间", getattr(goal, "time_budget", "")),
+        ("硬性约束", str(getattr(goal, "hard_constraints", "") or "").replace("\n", "；")),
+    ]
+    return "\n".join(f"{name}：{value}" for name, value in fields if value)
+
+
+# EXPLAIN 的体积上限：注入块清单是诊断信息，不该让 training_records 无节制膨胀。
+# 单块只记 layer/title/chars/position 四个字段，正常一次调用识别到 8~12 块。
+_EXPLAIN_MAX_BLOCKS = 40
+
+
+def _explain_prompt(user: str, *, stage: str = "", manifest: dict[str, Any] | None = None) -> dict[str, Any]:
+    """对一次模型调用的 user prompt 做 EXPLAIN，返回可落库的紧凑 dict。
+
+    P2（b-task-prompt-manifest §5）：prompts.* 传入 PromptBuild 时优先直读装配清单
+    （正向清单：块顺序=拼接顺序，hash 可核对）；无 manifest 的旧路径回退
+    analyze_prompt（反向解析保留，全文审计不删）。
+    任何异常都吞掉并返回最小结构：EXPLAIN 是**观测**功能，绝不能因为诊断代码出错
+    而让生成调用失败（这是质量增强环节的通用约定，与 exam_verify / proposition 回流一致）。
+    """
+    if isinstance(manifest, dict) and manifest.get("blocks"):
+        try:
+            data = dict(manifest)
+            data["explain_source"] = "manifest"
+            return data
+        except Exception as exc:  # noqa: BLE001  观测失败不得影响主流程
+            logger.warning("prompt EXPLAIN（manifest）失败（stage=%s）：%s", stage, exc)
+    try:
+        explanation = context_layers.analyze_prompt(user, stage=stage)
+    except Exception as exc:  # noqa: BLE001  观测失败不得影响主流程
+        logger.warning("prompt EXPLAIN 失败（stage=%s）：%s", stage, exc)
+        return {"stage": stage, "error": str(exc)[:120]}
+    data = explanation.to_dict()
+    data["explain_source"] = "analyze"
+    if len(data.get("blocks") or []) > _EXPLAIN_MAX_BLOCKS:
+        data["blocks"] = data["blocks"][:_EXPLAIN_MAX_BLOCKS]
+        data["blocks_truncated"] = True
+    # 顺序违例是**真 bug 信号**（注入块的优先级与它出现的位置不一致，模型可能静默
+    # 裁决错方向）。这里主动打警告，不等用户去翻 quality_report 才发现。
+    if data.get("order_violations"):
+        logger.warning(
+            "prompt 注入顺序违例（stage=%s）：%s", stage, "; ".join(data["order_violations"][:3])
+        )
+    return data
+
+
+class AIService:
+    def __init__(
+        self,
+        db: Session | None = None,
+        *,
+        goal_id: str | None = None,
+        tutorial_id: str | None = None,
+        section_id: str | None = None,
+        job_id: str | None = None,
+        run_id: str | None = None,
+        budget: Any | None = None,
+    ):
+        self.db = db
+        snapshot = runtime_settings()
+        self.provider = OpenAICompatibleProvider(snapshot) if snapshot.llm_configured else None
+        self.goal_id = goal_id
+        self.tutorial_id = tutorial_id
+        self.section_id = section_id
+        self.job_id = job_id
+        # 任务书 04 / ADR-027：run 归属与共享预算（BudgetController，可为 None）
+        self.run_id = run_id
+        self.budget = budget
+        self.usage_last: dict[str, Any] = dict(EMPTY_USAGE)
+        self.usage_total: dict[str, Any] = dict(EMPTY_USAGE)
+        self.proposition_guidance_last: dict[str, Any] = {}
+        self._proposition_guidance_cache: dict[str, dict] = {}
+
+    @property
+    def is_demo(self) -> bool:
+        return self.provider is None
+
+    # ------------------------------------------------------------ accounting
+    def _record(
+        self,
+        feature: str,
+        *,
+        system: str,
+        user: str,
+        output: Any,
+        usage: dict[str, Any],
+        goal=None,
+        latency_ms: int = 0,
+        status: str = "ok",
+        error_category: str = "",
+        call_id: str | None = None,
+        started_at: str | None = None,
+        attempt: int = 1,
+        unit_id: str | None = None,
+        prompt_manifest: dict[str, Any] | None = None,
+    ) -> None:
+        self.usage_last = usage
+        self.usage_total = _add_usage(self.usage_total, usage)
+        if self.db is None:
+            return
+        self._record_proposition_result(feature, status)
+        goal_id = getattr(goal, "id", None) or self.goal_id
+        provider = "demo" if self.is_demo else "openai-compatible"
+        model_name = self.provider.model if self.provider else "demo"
+        finished_at = _now_iso()
+        # 任务书 04：真实调用起止与耗时；created_at 保留历史语义（记录时间）。
+        duration = _duration_ms(started_at or "", latency_ms)
+        outcome = "ok" if status == "ok" else ("cancelled" if status == "cancelled" else "error")
+        try:
+            # 记账用独立短事务（任务书 04：网络调用期间不得持 SQLite 写事务，
+            # 也不为日志任意提交上层业务事务——这里的 commit 只落本函数写入的行）。
+            # 会话绑定调用方的同一 bind（同库）：生产为全局引擎；测试里的私有
+            # in-memory 引擎也落到同一数据库（配合 StaticPool 共享连接）。
+            from sqlalchemy.orm import Session as _ShortSession
+
+            log_db = _ShortSession(bind=self.db.get_bind(), expire_on_commit=False)
+            try:
+                log_db.add(
+                    ModelCallLog(
+                        feature=feature,
+                        provider=provider,
+                        model=model_name,
+                        goal_id=goal_id,
+                        tutorial_id=self.tutorial_id,
+                        job_id=self.job_id,
+                        call_id=call_id,
+                        run_id=self.run_id,
+                        unit_id=unit_id if unit_id is not None else self.section_id,
+                        attempt=int(attempt or 1),
+                        started_at=started_at or "",
+                        finished_at=finished_at,
+                        duration_ms=duration,
+                        outcome=outcome,
+                        latency_ms=latency_ms,
+                        status=status,
+                        error_category=error_category,
+                        prompt_tokens=usage.get("prompt_tokens", 0),
+                        completion_tokens=usage.get("completion_tokens", 0),
+                        total_tokens=usage.get("total_tokens", 0),
+                        usage_source=usage.get("usage_source", ""),
+                    )
+                )
+                if status == "ok":
+                    context = {
+                        "goal_id": goal_id,
+                        "goal_title": getattr(goal, "title", ""),
+                        "domain_key": getattr(goal, "domain_key", ""),
+                        "tutorial_id": self.tutorial_id,
+                        "section_id": self.section_id,
+                        "demo": self.is_demo,
+                        # EXPLAIN：这次调用**实际注入了什么**。此前只有 token 数（ModelCallLog），
+                        # 知道花了多少钱却不知道注入了哪些块、各占多少、优先级顺序对不对——
+                        # ADR-018 那类故障（条件从句被丢进 forbidden 分支、约束静默失效）
+                        # 只能事后复盘。有了它，注入构成随每次调用落库、可查询。
+                        "prompt_explain": _explain_prompt(user, stage=feature, manifest=prompt_manifest),
+                        "proposition_guidance": self.proposition_guidance_last if feature in ("section", "extra_exercises", "synthesis", "teaching_blueprint") else {},
+                        # 任务书 04 / 05：call_id 与 run 让日志↔训练样本↔trace 可互查
+                        "call_id": call_id,
+                        "run_id": self.run_id,
+                        # P2（b-task-prompt-manifest §5）：装配清单随调用落库（可选）
+                        **({"prompt_manifest": prompt_manifest} if prompt_manifest else {}),
+                    }
+                    log_db.add(
+                        TrainingRecord(
+                            source_type="material",
+                            feature=feature,
+                            goal_id=goal_id,
+                            tutorial_id=self.tutorial_id,
+                            section_id=self.section_id,
+                            system_prompt=system or "",
+                            user_prompt=user or "",
+                            output_text=output if isinstance(output, str) else json.dumps(output, ensure_ascii=False),
+                            model_provider=provider,
+                            model_name=model_name,
+                            prompt_tokens=usage.get("prompt_tokens", 0),
+                            completion_tokens=usage.get("completion_tokens", 0),
+                            total_tokens=usage.get("total_tokens", 0),
+                            usage_source=usage.get("usage_source", ""),
+                            context_json=json.dumps(context, ensure_ascii=False),
+                        )
+                    )
+                log_db.commit()
+            finally:
+                log_db.close()
+        except Exception:  # noqa: BLE001  记账失败不影响主流程
+            pass
+
+    def _log_error(
+        self, feature: str, exc: LLMError, *, call_id: str | None = None,
+        started_at: str | None = None, attempt: int = 1,
+    ) -> None:
+        """错误调用只记调用日志，不产生训练样本。"""
+        self._record(
+            feature,
+            system="",
+            user="",
+            output="",
+            usage=dict(EMPTY_USAGE),
+            status="error",
+            error_category=exc.__class__.__name__,
+            call_id=call_id,
+            started_at=started_at,
+            attempt=attempt,
+        )
+
+    # ------------------------------------------------------------ internal
+    def _reserve_budget(self, feature: str, system: str, user: str):
+        """请求前原子预留；取消/预算耗尽转为 AIServiceError（调用方按失败处理）。"""
+        if self.budget is None:
+            return None
+        try:
+            est_input = int(estimate_usage(f"{system}\n{user}", "").get("prompt_tokens", 0))
+            # provider 不支持每次输出上限 → 软预算（构造侧标 soft，快照可见）
+            return self.budget.reserve(calls=1, est_input_tokens=est_input,
+                                       max_output_tokens=0, purpose=feature)
+        except RunCancelled as exc:
+            raise AIServiceError(f"运行已取消，不再派发模型调用：{exc}") from exc
+        except BudgetExceeded as exc:
+            raise AIServiceError(f"共享预算耗尽，拒绝新调用：{exc}") from exc
+
+    def _settle_budget(self, reservation, usage: dict[str, Any] | None, outcome: str) -> None:
+        if reservation is None or self.budget is None:
+            return
+        try:
+            self.budget.settle(reservation, usage=usage, outcome=outcome)
+        except Exception:  # noqa: BLE001  对账失败不影响主流程
+            logger.warning("预算对账失败（outcome=%s）", outcome)
+
+    def _real_json(self, feature: str, system: str, user: str, required: tuple[str, ...], goal=None,
+                   *, attempt: int = 1, unit_id: str | None = None,
+                   prompt_manifest: dict[str, Any] | None = None) -> dict:
+        reservation = self._reserve_budget(feature, system, user)
+        call_id = new_call_id()
+        started_at = _now_iso()
+        self._record_proposition_prompt(feature, system, user, call_id=call_id)
+        try:
+            data, latency, usage = self.provider.complete_json(system, user)  # type: ignore[union-attr]
+        except LLMError as exc:
+            self._settle_budget(reservation, None, "error")
+            self._log_error(feature, exc, call_id=call_id, started_at=started_at, attempt=attempt)
+            raise AIServiceError(str(exc)) from exc
+        if not isinstance(data, dict):
+            self._settle_budget(reservation, None, "error")
+            self._log_error(feature, LLMError("模型输出不是 JSON 对象"),
+                            call_id=call_id, started_at=started_at, attempt=attempt)
+            raise AIServiceError(f"模型输出不是 JSON 对象（实际为 {type(data).__name__}）")
+        # 契约失败也是失败调用，不能先产生一条成功训练样本再抛错。
+        try:
+            _require(data, *required)
+            _validate_proposition_json(feature, data)
+        except AIServiceError as exc:
+            self._settle_budget(reservation, None, "error")
+            self._log_error(feature, LLMError(str(exc)),
+                            call_id=call_id, started_at=started_at, attempt=attempt)
+            raise
+        if usage is None:
+            usage = estimate_usage(f"{system}\n{user}", json.dumps(data, ensure_ascii=False))
+        self._record(
+            feature,
+            system=system,
+            user=user,
+            output=data,
+            usage=usage,
+            goal=goal,
+            latency_ms=latency,
+            call_id=call_id,
+            started_at=started_at,
+            attempt=attempt,
+            unit_id=unit_id,
+            prompt_manifest=prompt_manifest,
+        )
+        self._settle_budget(reservation, usage, "ok")
+        return _require(data, *required)
+
+    def _real_text(self, feature: str, system: str, user: str, goal=None,
+                   *, attempt: int = 1, unit_id: str | None = None,
+                   prompt_manifest: dict[str, Any] | None = None) -> str:
+        """纯 Markdown 输出的调用：记录日志与训练样本，返回去首尾空白的文本。"""
+        reservation = self._reserve_budget(feature, system, user)
+        call_id = new_call_id()
+        started_at = _now_iso()
+        self._record_proposition_prompt(feature, system, user, call_id=call_id)
+        try:
+            text, latency, usage = self.provider.complete_text(system, user)  # type: ignore[union-attr]
+        except LLMError as exc:
+            self._settle_budget(reservation, None, "error")
+            self._log_error(feature, exc, call_id=call_id, started_at=started_at, attempt=attempt)
+            raise AIServiceError(str(exc)) from exc
+        text = str(text or "").strip()
+        if not text:
+            self._settle_budget(reservation, None, "error")
+            self._log_error(feature, LLMError("模型输出为空"),
+                            call_id=call_id, started_at=started_at, attempt=attempt)
+            raise AIServiceError(f"{feature} 模型输出为空")
+        if usage is None:
+            usage = estimate_usage(f"{system}\n{user}", text)
+        self._record(
+            feature, system=system, user=user, output=text,
+            usage=usage, goal=goal, latency_ms=latency,
+            call_id=call_id, started_at=started_at, attempt=attempt, unit_id=unit_id,
+            prompt_manifest=prompt_manifest,
+        )
+        self._settle_budget(reservation, usage, "ok")
+        return text
+
+    def _demo(self, feature: str, output: Any, goal=None, extra_user: str = "") -> Any:
+        """演示模式：记录估算 token 与「合成输入」，训练样本标记 demo=true。"""
+        system = f"（演示生成器：{feature}，未配置真实模型）"
+        user = goal_context_text(goal)
+        if (extra_user or "").strip():
+            user = f"{user}\n{extra_user.strip()}"
+        usage = estimate_usage(f"{system}\n{user}", json.dumps(output, ensure_ascii=False))
+        self._record(feature, system=system, user=user, output=output, usage=usage, goal=goal)
+        return output
+
+    # ------------------------------------------------------------ features
+    def diagnose(self, goal, discipline, materials_text: str = "") -> dict:
+        if self.is_demo:
+            return self._demo("diagnose", demo.diagnose(goal, discipline), goal, materials_text)
+        system, user = prompts.diagnose(goal, discipline, materials_text)
+        return self._real_json(
+            "diagnose", system, user,
+            ("benefits", "prerequisites", "alternatives", "assumptions", "uncertainties", "recommendation"),
+            goal,
+        )
+
+    def plan(self, goal, discipline, materials_text: str = "") -> dict:
+        if self.is_demo:
+            return self._demo("plan", demo.plan(goal, discipline), goal, materials_text)
+        system, user = prompts.plan(goal, discipline, materials_text)
+        data = self._real_json("plan", system, user, ("steps",), goal)
+        if not isinstance(data.get("steps"), list) or not data["steps"]:
+            raise AIServiceError("模型输出缺少有效步骤列表")
+        return data
+
+    def criteria(self, goal, discipline) -> dict:
+        if self.is_demo:
+            return self._demo("criteria", {"criteria": demo.criteria(goal, discipline)}, goal)
+        system, user = prompts.criteria(goal, discipline)
+        data = self._real_json("criteria", system, user, ("criteria",), goal)
+        if not isinstance(data.get("criteria"), list) or not data["criteria"]:
+            raise AIServiceError("模型输出缺少有效验收标准列表")
+        return data
+
+    def outline(self, goal, discipline, criteria_list, materials_text: str = "") -> dict:
+        if self.is_demo:
+            ids = [c["id"] for c in criteria_list]
+            return self._demo(
+                "outline", {"sections": demo.outline(goal, discipline, ids)}, goal, materials_text
+            )
+        build = context_layers.PromptBuild(stage="outline", call_site="prompts.outline")
+        system, user = prompts.outline(goal, discipline, criteria_list, materials_text, build=build)
+        # 大纲是整条管线的咽喉：一次偶发截断 / 限流 / 解析失败就会让「一键生成」
+        # 在前四步全部成功后整体报废。与章节生成同款策略：失败自动重试，
+        # 且截断型失败重试时显式要求压缩篇幅（原样重发几乎必然再截断）。
+        last_exc: AIServiceError | None = None
+        for attempt in (1, 2, 3):
+            prompt_user = user
+            if attempt > 1 and last_exc is not None and "截断" in str(last_exc):
+                # P2：重试后缀注册为清单块，manifest 与实际发出的 user 逐字一致
+                prompt_user = build.add(
+                    "retry-truncation-note", "system", "截断重试压缩要求",
+                    "\n上一稿因超出单次输出长度上限被截断，JSON 不完整、无法解析。"
+                    "本次必须压缩篇幅：teaching_plan 各列表合计不超过 8 条、每条不超过 60 字；"
+                    "sections 的 purpose / summary 各不超过 40 字；宁可少写也要保证 JSON 完整闭合。",
+                    authority="derived",
+                    inclusion_reason="上一稿截断，重试时追加压缩要求",
+                )
+            try:
+                data = self._real_json("outline", system, prompt_user, ("sections",), goal,
+                                       attempt=attempt, prompt_manifest=build.finish().to_dict())
+            except AIServiceError as exc:
+                last_exc = exc
+                if attempt >= 3:
+                    raise
+                continue
+            if not isinstance(data.get("sections"), list) or not data["sections"]:
+                last_exc = AIServiceError("模型输出缺少有效大纲")
+                if attempt >= 3:
+                    raise last_exc
+                continue
+            return data
+        raise last_exc if last_exc else AIServiceError("模型输出缺少有效大纲")
+
+    def _proposition_hints(self, goal, item=None, criteria_list=None, *, task_kind="section", outline_items=None,
+                           task_context=None, strategy=None, stage=None) -> str:
+        """按实际任务检索标准、已采纳经验与案例，缓存并保留指导追踪。
+
+        无经验时仍可使用生效量规；预算为零关闭注入。降级可观测，不阻断生成。
+        未绑定会话或演示模式不进行检索。
+        """
+        if self.db is None or self.is_demo:
+            self.proposition_guidance_last = {"text": "", "injection_status": "disabled", "warnings": [],
+                                              "reason": "demo" if self.is_demo else "no_session"}
+            return ""
+        try:
+            from ..services.proposition_knowledge import get_config
+            from ..services.proposition_evidence import (
+                adapt_legacy_task_context, evidence_source_fingerprint,
+                retrieval_context, retrieve_evidence_guidance,
+            )
+            item = item if isinstance(item, dict) else {}
+            if task_context is None:
+                task_context = item.get("_task_context")
+            if task_context is None:
+                task_context = adapt_legacy_task_context(goal, item, criteria_list, outline_items=outline_items,
+                    task_kind=task_kind, tutorial_id=self.tutorial_id, section_id=self.section_id)
+            if strategy is None:
+                strategy = item.get("_generation_strategy")
+            stage = stage or ("planning" if task_kind in {"planning", "synthesis", "blueprint"} else "unit")
+            unit_id = (self.section_id or item.get("unit_id") or item.get("id") or
+                       task_context.get("extensions", {}).get("unit_id")) if stage == "unit" else None
+            context = retrieval_context(task_context, strategy, stage=stage, unit_id=unit_id)
+            config = get_config(self.db)
+            # Finish any caller-owned short writes before optional embedding work.
+            self.db.commit()
+            fingerprint = evidence_source_fingerprint(self.db, context, config)
+            cache_key = json.dumps([context, task_context, strategy, fingerprint], ensure_ascii=False, sort_keys=True)
+            if cache_key not in self._proposition_guidance_cache:
+                self._proposition_guidance_cache[cache_key] = retrieve_evidence_guidance(
+                    self.db, task_context, strategy, stage=stage, unit_id=unit_id, config=config, record=True)
+                self.db.commit()
+                # Per-AIService memory is bounded, including parallel unit contexts.
+                while len(self._proposition_guidance_cache) > 32:
+                    self._proposition_guidance_cache.pop(next(iter(self._proposition_guidance_cache)))
+            self.proposition_guidance_last = self._proposition_guidance_cache[cache_key]
+            return self.proposition_guidance_last.get("text", "")
+        except Exception as exc:  # 可观测降级，检索失败不能伪装为正常未命中。
+            self.proposition_guidance_last = {"text": "", "injection_status": "degraded",
+                "warnings": ["命题经验检索失败，生成按原任务继续。"], "error_type": type(exc).__name__}
+            import logging
+            logging.getLogger("aiedu").warning("命题经验检索失败: %s", type(exc).__name__)
+            return ""
+
+    def _record_proposition_prompt(self, feature: str, system: str, user: str,
+                                   *, call_id: str | None = None) -> None:
+        """Capture complete-block consumption at the real provider boundary."""
+        if self.db is None or feature not in {"section", "extra_exercises", "synthesis", "teaching_blueprint"}:
+            return
+        result = self.proposition_guidance_last
+        if not result or not result.get("trace_id"):
+            return
+        try:
+            import hashlib
+            from ..models import PropositionGuidanceTrace
+            block = prompts._proposition_block(result.get("text", ""))
+            locations = [{"prompt": name, "start": text.find(block), "chars": len(block)}
+                         for name, text in (("system", system), ("user", user)) if block and block in text]
+            present = bool(locations)
+            if block and not present:
+                result["injection_status"] = "degraded"
+                if result.get("evidence_bundle"):
+                    result["evidence_bundle"]["payload"]["injection_status"] = "degraded"
+                result["warnings"].append("prompt_block_missing: 所选证据未完整进入调用")
+            call_entry = {"feature": feature, "status": "pending", "block_present": present,
+                "guidance_block": block, "locations": locations,
+                "system_hash": hashlib.sha256(system.encode()).hexdigest(),
+                "user_hash": hashlib.sha256(user.encode()).hexdigest()}
+            if call_id:
+                # 任务书 04/05（契约 §6）：trace ↔ call 精确绑定，反馈证据据此可反查
+                call_entry["call_id"] = call_id
+                call_entry["started_at"] = _now_iso()
+            # P3-a（b-task-prompt-manifest §10）：call_id ↔ 知识请求 ↔ 证据块绑定成链
+            call_entry["layer_hash"] = result.get("layer_hash")
+            call_entry["knowledge_request_refs"] = result.get("knowledge_request_refs", [])
+            call_entry["knowledge_gaps"] = result.get("knowledge_gaps", [])
+            result.setdefault("calls", []).append(call_entry)
+            result["calls"] = result["calls"][-8:]
+            trace = self.db.get(PropositionGuidanceTrace, result["trace_id"])
+            if trace:
+                trace.result = json.dumps(result, ensure_ascii=False)
+                self.db.commit()
+        except Exception as exc:
+            logger.warning("命题注入边界记录失败: %s", type(exc).__name__)
+
+    def _record_proposition_result(self, feature: str, status: str,
+                                   *, evidence_use: list | None = None) -> None:
+        if self.db is None or feature not in {"section", "extra_exercises", "synthesis", "teaching_blueprint"}:
+            return
+        result = self.proposition_guidance_last
+        if not result.get("calls") or not result.get("trace_id"):
+            return
+        try:
+            from ..models import PropositionGuidanceTrace
+            result["calls"][-1]["status"] = status
+            # R2-2：模型自述消费进 trace/审计，不渲染进试卷；每条绑定 call_id。
+            if evidence_use is not None:
+                reports = result.get("evidence_use_reports")
+                if not isinstance(reports, list):
+                    reports = []
+                bound_call_id = None
+                if result.get("calls"):
+                    bound_call_id = (result["calls"][-1] or {}).get("call_id")
+                enriched: list[dict] = []
+                for entry in evidence_use or []:
+                    if isinstance(entry, dict):
+                        item = dict(entry)
+                        if not item.get("call_id") and bound_call_id:
+                            item["call_id"] = bound_call_id
+                        enriched.append(item)
+                reports.append({"feature": feature, "status": status,
+                                "call_id": bound_call_id, "evidence_use": enriched})
+                result["evidence_use_reports"] = reports[-8:]
+            trace = self.db.get(PropositionGuidanceTrace, result["trace_id"])
+            if trace:
+                trace.result = json.dumps(result, ensure_ascii=False)
+        except Exception as exc:
+            logger.warning("命题注入结果记录失败: %s", type(exc).__name__)
+
+    def _section_payload(
+        self, goal, discipline, item, criteria_list, prior_titles, materials_text: str,
+        companion_names: list[str] | None, retry_violations: list[str] | None = None,
+        truncated: bool = False,
+    ) -> dict:
+        # P2（b-task-prompt-manifest §5）：装配清单与调用同源——块顺序=拼接顺序，
+        # manifest 随调用落 TrainingRecord.context_json["prompt_manifest"]。
+        build = context_layers.PromptBuild(stage="section", call_site="prompts.section")
+        system, user = prompts.section(
+            goal, discipline, item, criteria_list, prior_titles, materials_text, companion_names,
+            retry_violations, truncated=truncated, proposition_hints=self._proposition_hints(goal, item, criteria_list),
+            build=build,
+        )
+        data = self._real_json(
+            "section", system, user,
+            # mapping_criteria 不作必填：章节里这一项落库时一律由大纲已声明的 criteria_ids
+            # 覆盖（见 tutorials.py 的章节写入处），而章节提示词本身并不要求模型输出它。
+            # 若把它列为必填，模型严格按提示词输出时必然「缺字段」→ 整章重试 → 白烧 N 次
+            # 完整模型往返（每次上万 token），却仍然失败。
+            ("title", "content"),
+            goal,
+            prompt_manifest=build.finish().to_dict(),
+        )
+        # 可选内容块允许缺失/非法：归一化，不因没有例题或易错点而判定生成失败
+        for key in ("content", "sources", "mapping_criteria"):
+            if not isinstance(data.get(key), list):
+                data[key] = []
+        # 模型没给映射就退回大纲里已经声明好的验收标准 id，语义等价且不丢覆盖关系
+        if not data["mapping_criteria"] and isinstance(item, dict):
+            data["mapping_criteria"] = [str(cid) for cid in (item.get("criteria_ids") or [])]
+        return data
+
+    def section(
+        self, goal, discipline, item, criteria_list, prior_titles, materials_text: str = "",
+        companion_names: list[str] | None = None,
+    ) -> dict:
+        if self.is_demo:
+            by_id = {c["id"]: c for c in criteria_list}
+            return self._demo(
+                "section", demo.section(goal, discipline, item, by_id), goal, materials_text
+            )
+        # 硬性禁止类约束做一次确定性核验：命中即定向重写一次，避免规则只停留在提示词里。
+        def produce(violations, truncated: bool = False):
+            return self._section_payload(
+                goal, discipline, item, criteria_list, prior_titles, materials_text,
+                companion_names, violations, truncated,
+            )
+
+        try:
+            data = _rule_checked(lambda violations: produce(violations), _section_check_text)
+        except AIServiceError as exc:
+            if "截断" not in str(exc):
+                raise
+            # 输出超长被截断（finish_reason=length）：JSON 不完整、原样重发几乎必然再截断，
+            # 所以要带「压缩篇幅、保证字段完整」的要求重试一次，而不是白烧一次完整往返。
+            data = _rule_checked(
+                lambda violations: produce(violations, truncated=True), _section_check_text
+            )
+        # P3-c：模型自述消费随 trace 落库（不渲染进试卷）
+        self._record_proposition_result("section", "ok",
+                                        evidence_use=data.get("evidence_use") or [])
+        return data
+
+    def cheatsheet(self, goal, discipline, outline_items, materials_text: str = "") -> dict:
+        """知识速查文件（教程配套，总是生成）。失败抛 AIServiceError，由调用方兜底。"""
+        if self.is_demo:
+            return self._demo("cheatsheet", demo.cheatsheet(goal, discipline, outline_items), goal)
+
+        def produce(violations):
+            system, user = prompts.cheatsheet(
+                goal, discipline, outline_items, materials_text, violations
+            )
+            data = self._real_json("cheatsheet", system, user, ("sections",), goal)
+            data["sections"] = [
+                {"heading": str(s.get("heading", "") or ""), "body": str(s.get("body", "") or "")}
+                for s in data.get("sections", []) or []
+                if isinstance(s, dict) and str(s.get("body", "")).strip()
+            ]
+            return data
+
+        return _rule_checked(produce, _sections_check_text)
+
+    def extra_exercises(
+        self, goal, discipline, outline_items, materials_text: str = "",
+        exercise_spec: dict | None = None,
+    ) -> dict:
+        """独立额外练习文件：Markdown 成品，排版与结构由练习生成规范决定。
+
+        返回 {"title": str, "markdown": str, "exercises": [{"number": int}]}；
+        exercises 由 markdown 解析题号得到，供前端计数与插件存在性判断。
+        硬约束（画像）核验与定向重写沿用 _rule_checked，文本版。
+        """
+        if self.is_demo:
+            return self._demo("extra_exercises", demo.extra_exercises(goal, discipline, outline_items), goal)
+
+        def produce(violations):
+            system, user = prompts.extra_exercises(
+                goal, discipline, outline_items, materials_text, violations, exercise_spec,
+                proposition_hints=self._proposition_hints(goal, task_kind="extra_exercises", outline_items=outline_items),
+            )
+            markdown = self._real_text("extra_exercises", system, user, goal)
+            from ..services.utils import parse_exercise_numbers
+
+            title = next(
+                (re.sub(r"^#\s*", "", ln).strip() for ln in markdown.splitlines() if ln.startswith("# ")),
+                "",
+            )
+            return {
+                "title": title or f"{getattr(goal, 'title', '')} · 额外练习",
+                "markdown": markdown,
+                "exercises": parse_exercise_numbers(markdown),
+            }
+
+        return _rule_checked(produce, lambda data: str(data.get("markdown", "")))
+
+    # ------------------------------------------------------------ 试卷盲解核验
+
+    def verify_questions(self, goal, discipline, paper_title: str, questions: list[dict]) -> list[dict]:
+        """盲解核验：**不给模型看参考答案**，让它独立解题。
+
+        questions 由 exam_check.build_verification_payload 构造（已剔除答案区）。
+        返回 results 列表；模型漏题不报错，缺失的题由调用方当作「未核验」处理——
+        核验是质量增强环节，不该因为它不完整而让整份卷子生成失败。
+        """
+        if self.is_demo:
+            return []
+        if not questions:
+            return []
+        system, user = prompts.verify_paper_questions(goal, discipline, paper_title, questions)
+        data = self._real_json("exam_verify", system, user, ("results",), goal)
+        results = data.get("results")
+        return results if isinstance(results, list) else []
+
+    def distill_proposition_principles(self, system: str, user: str) -> list[dict]:
+        """AI 提炼命题规律：人工批注（或无批注时的题干样本）→ 候选规律列表。
+
+        prompt 由 services/proposition.py 组装（本方法只负责调模型与契约校验），
+        与 verify_questions 同一分工。产出一律按 proposed 处理，确认权在人。
+        """
+        if self.is_demo:
+            return []
+        data = self._real_json("proposition_distill", system, user, ("principles",))
+        items = data.get("principles")
+        return items if isinstance(items, list) else []
+
+    def transcribe_for_tools(self, goal, discipline, paper_title: str, items: list[dict]) -> dict[int, str]:
+        """把「题目 + 卷面答案」转写成 sympy 断言代码，供 tool_verify 执行判定。
+
+        **为什么转写要把答案给模型看**（与盲解刻意相反）：盲解阶段不给答案是为了防确认
+        偏误；转写阶段的任务不是「判断答案对不对」，而是「把题面与答案翻译成 sympy
+        表达式」——翻译任务给不给答案都不产生偏误，反而必须给（断言式要把答案写进断言）。
+        真正的防偏误发生在下一步：判定由 sympy 执行，模型没有裁量权。
+
+        返回 {题号: sympy_code}；模型漏掉的题不在字典里，调用方按 undecidable 处理。
+        """
+        if self.is_demo or not items:
+            return {}
+        from ..services import tool_verify
+
+        system = tool_verify.SYMPY_ASSERTION_CONTRACT
+        user = tool_verify.build_transcription_request(items)
+        data = self._real_json("tool_transcribe", system, user, ("items",), goal)
+        out: dict[int, str] = {}
+        requested = {int(it["number"]): it for it in items}
+        remaining = dict(requested)
+        for attempt in range(2):
+            malformed = {}
+            for entry in data.get("items") or []:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    num = int(entry.get("number"))
+                except (TypeError, ValueError):
+                    continue
+                if num not in remaining:
+                    continue
+                code_text = str(entry.get("sympy_code") or "").strip()
+                if entry.get("unformalizable") or any(m in code_text for m in tool_verify.UNFORMALIZABLE_MARKERS):
+                    remaining.pop(num, None)
+                    continue
+                code_text = re.sub(r"^```(?:python)?\s*\n|\n```\s*$", "", code_text).strip()
+                if tool_verify._detect_assertion_mode(code_text)[0] != "none":
+                    out[num] = code_text
+                    remaining.pop(num, None)
+                else:
+                    malformed[num] = code_text
+            if not remaining or attempt:
+                break
+            user = tool_verify.build_transcription_request(list(remaining.values()))
+            user += "\n上一轮遗漏或未输出可判定代码。必须写 RESULT = 实际计算表达式或 assert 验证表达式；不要把给定答案直接赋给 RESULT。\n"
+            user += json.dumps({"invalid_transcriptions": malformed}, ensure_ascii=False)
+            data = self._real_json("tool_transcribe", system, user, ("items",), goal)
+        return out
+
+    def arbitrate_answers(self, goal, discipline, paper_title: str, conflicts: list[dict]) -> list[dict]:
+        """答案冲突仲裁：盲解与卷面不一致时，重新独立求解并判定谁对。
+
+        必须有这一步，不能直接采信盲解：盲解模型自己也会算错。直接按盲解改答案，
+        等于用一次未经验证的计算覆盖另一次未经验证的计算。
+        """
+        if self.is_demo or not conflicts:
+            return []
+        system, user = prompts.verify_answer_conflict(goal, discipline, paper_title, conflicts)
+        data = self._real_json("exam_arbitrate", system, user, ("verdicts",), goal)
+        verdicts = data.get("verdicts")
+        return verdicts if isinstance(verdicts, list) else []
+
+    def format_spec_match(self, requirement: str, candidates: list[dict]) -> dict:
+        """少量候选规范的语义匹配；失败由 format_specs 服务回退默认规范。"""
+        if self.is_demo:
+            return {"format_spec_id": "", "confidence": 0, "reason": "演示模式不提供语义识别"}
+        system, user = prompts.format_spec_match(requirement, candidates)
+        return self._real_json("format_spec_match", system, user, (), None)
+
+    def feedback(self, goal, criteria_list, task, attempt) -> dict:
+        if self.is_demo:
+            return self._demo("feedback", demo.feedback(goal, None, task, attempt, criteria_list), goal)
+        system, user = prompts.feedback(goal, criteria_list, task, attempt)
+        data = self._real_json("feedback", system, user, ("items", "summary"), goal)
+        if not isinstance(data.get("items"), list):
+            raise AIServiceError("模型输出缺少反馈条目")
+        return data
+
+    def assessment(self, goal, discipline) -> dict:
+        if self.is_demo:
+            return self._demo("assessment", demo.assessment(goal, discipline), goal)
+        system, user = prompts.assessment(goal, discipline)
+        data = self._real_json("assessment", system, user, ("rubric", "independent_task", "variant_task"), goal)
+        return data
+
+    def reflection(self, goal, context) -> dict:
+        if self.is_demo:
+            return self._demo("reflection", demo.reflection(goal, context), goal)
+        system, user = prompts.reflection(goal, context)
+        return self._real_json(
+            "reflection", system, user,
+            ("summary", "learned_capabilities", "unresolved_gaps", "next_actions"),
+            goal,
+        )
+
+    def suggest_proposals(self, goal, concepts, relations_hint) -> dict:
+        if self.is_demo:
+            return self._demo("proposals", {"proposals": demo.propose(goal, concepts, relations_hint)}, goal)
+        system, user = prompts.suggest_proposals(goal, concepts, relations_hint)
+        return self._real_json("proposals", system, user, ("proposals",), goal)
+
+    def knowledge_extract(self, goal, tutorial, context: dict, existing: list) -> dict:
+        """教程生成后的结构化知识提取（概念 + 关系）。失败抛 AIServiceError，由调用方兜底。"""
+        if self.is_demo:
+            data = demo.knowledge_extract(goal, tutorial, context, existing)
+            return self._demo("knowledge_extract", data, goal)
+        system, user = prompts.knowledge_extract(goal, tutorial, context, existing)
+        data = self._real_json("knowledge_extract", system, user, ("concepts", "relations"), goal)
+        if not isinstance(data.get("concepts"), list):
+            raise AIServiceError("模型输出缺少概念列表")
+        if not isinstance(data.get("relations"), list):
+            data["relations"] = []
+        return data
+
+    def chat(self, goal, question: str, context: dict) -> dict:
+        if self.is_demo:
+            return self._demo("chat", {"answer": demo.chat(goal, question, context)}, goal)
+        system, user = prompts.chat(goal, question, context)
+        return self._real_json("chat", system, user, ("answer",), goal)
+
+    def user_profile_suggestion(self, context: dict) -> dict:
+        """每 N 次完整学习后的候选画像；必须由用户确认后才可保存。"""
+        if self.is_demo:
+            goals = context.get("completed_goals", [])
+            feedback = context.get("recent_feedback", [])
+            notes = [str(item.get("comment", "")).strip() for item in feedback if str(item.get("comment", "")).strip()]
+            text = "\n".join(
+                [
+                    "重视从真实任务出发组织教程。",
+                    "练习和结果检查要围绕已完成目标中的关键操作。",
+                    *(f"反馈中反复关注：{note}" for note in notes[:3]),
+                ]
+            ) or "现有证据不足，暂不提出画像修改建议。"
+            output = {
+                "summary": "根据最近完整学习记录整理的候选教学画像。",
+                "profile_text": text,
+                "evidence": "；".join(str(item.get("title", "")) for item in goals[:5]),
+                "notes": "演示建议，仅用于测试流程，不自动保存。",
+            }
+            return self._demo("user_profile_suggestion", output, None)
+        system, user = prompts.user_profile_suggestion(context)
+        data = self._real_json(
+            "user_profile_suggestion", system, user,
+            ("summary", "profile_text", "evidence", "notes"),
+            None,
+        )
+        if not isinstance(data.get("profile_text"), str) or not data["profile_text"].strip():
+            raise AIServiceError("画像建议缺少候选画像文本")
+        return data

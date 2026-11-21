@@ -1,0 +1,637 @@
+"""Single task application service: receipts, immutable contexts and read snapshots."""
+from __future__ import annotations
+
+import base64
+import os
+import json
+import time
+import threading
+from copy import deepcopy
+from uuid import uuid4
+
+from ..config import settings
+from ..db import SessionLocal
+from ..models import GenerationJob, GoalMaterial, LearningGoal, Tutorial, TutorialVersion
+from .contracts import DomainError, digest, sha
+from .quality import compile_plan, reduce_quality
+from .runtime import cas, dump, job, load, materialize, write
+from .storage import CallDispatch, ExportSet
+from .resolver import bind_specs, build_units, resolve_task
+
+_start_lock = threading.RLock()
+
+
+def goal(db, task_id):
+    obj = db.get(LearningGoal, task_id)
+    if obj is None or not load(obj.task_state_json).get("schema_version"):
+        raise DomainError("TASK_NOT_FOUND", 404)
+    return obj
+
+
+def receipt(state, key, body_hash):
+    old = state.get("receipts", {}).get(key)
+    if old is not None and old["request_hash"] != body_hash:
+        raise DomainError("IDEMPOTENCY_CONFLICT")
+    return old["response"] if old else None
+
+
+def remember(state, key, body_hash, response, kind):
+    state.setdefault("receipts", {})[key] = {"request_hash": body_hash, "response": response, "action_kind": kind}
+
+
+def context_of(payload, revision):
+    value = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+    value.update(schema_version="aiedu.task-run.v2", input_revision=revision, raw_input_hash=sha(value["raw_input"]))
+    value["context_hash"] = digest(value)
+    return value
+
+
+def live_context(db, context):
+    """New bindings exclude trash; old frozen contexts remain unchanged."""
+    from .management_lifecycle import overlay_ids
+    hidden = {kind: set(db.scalars(overlay_ids(kind))) for kind in ("materials", "principles", "questions")}
+    if hidden["materials"].intersection(context.get("material_ids", [])) or hidden["questions"].intersection(context.get("knowledge", {}).get("question_ids", [])):
+        raise DomainError("RESOURCE_TRASHED", 409)
+    return {**context, "knowledge_sources": [s for s in context.get("knowledge_sources", []) if s.get("id") not in hidden["principles"]]}
+
+
+def require_live_task(db, task_id):
+    from .insights import record
+    if record(db, "managed:tasks:"+task_id, {}).get("trashed"):
+        raise DomainError("RESOURCE_TRASHED", 409)
+
+
+def create_task(payload, key, explicit_fields=None):
+    body = digest(payload.model_dump())
+    with write() as db:
+        existing = db.query(LearningGoal).filter_by(creation_key=key).first()
+        if existing:
+            if existing.request_hash != body:
+                raise DomainError("IDEMPOTENCY_CONFLICT")
+            return load(existing.task_state_json)["creation_receipt"]
+        resolved = resolve_task(payload.model_dump(), explicit_fields if explicit_fields is not None else payload.model_fields_set)
+        from .knowledge import freeze_guidance
+        from .insights import freeze_profile
+        from .import_profiles import freeze_import_profiles
+        context = context_of(live_context(db, freeze_import_profiles(db, freeze_profile(db, freeze_guidance(db,bind_specs(db, resolved))))), 1)
+        plan = compile_plan(context)
+        task_id = str(uuid4())
+        response = {"task_id": task_id, "input_revision": 1, "context_hash": context["context_hash"],
+                    "task_state": "awaiting_input" if plan["conflicts"] else "draft", "conflicts": plan["conflicts"]}
+        state = {"schema_version": "aiedu.task-run.v2", "context": context, "history": [],
+                 "task_state": response["task_state"], "creation_receipt": response, "receipts": {}}
+        remember(state, key, body, response, "create")
+        db.add(LearningGoal(id=task_id, title=context["title"], domain_key=context["domain_key"], branch=context["branch"],
+                           hard_constraints="\n".join(payload.hard_constraints), input_revision=1,
+                           difficulty_mode=payload.difficulty_mode, difficulty_note=payload.difficulty_note,
+                           task_state_json=dump(state), creation_key=key, request_hash=body))
+        return response
+
+
+def mutate_input(task_id, payload, key, confirmation=False):
+    body = digest(payload.model_dump())
+    with write() as db:
+        obj = goal(db, task_id)
+        state = load(obj.task_state_json)
+        prior = receipt(state, key, body)
+        if prior:
+            return prior
+        require_live_task(db, task_id)
+        if obj.input_revision != payload.expected_revision:
+            raise DomainError("CONTEXT_STALE", current_revision=obj.input_revision)
+        if db.query(GenerationJob).filter(GenerationJob.goal_id == task_id, GenerationJob.job_type == "task_v2",
+                GenerationJob.status.in_(["running", "queued"])).first():
+            raise DomainError("ACTIVE_RUN")
+        if confirmation:
+            if payload.context_hash != state["context"]["context_hash"]:
+                raise DomainError("CONTEXT_STALE")
+            plan = compile_plan(state["context"])
+            if plan["conflicts"]:
+                raise DomainError("UNRESOLVED_CONFLICT", conflicts=plan["conflicts"])
+            missing = []
+            for mid in state["context"]["material_ids"]:
+                material = db.get(GoalMaterial, mid)
+                from .insights import record
+                if material is None or material.goal_id != task_id or material.extract_status != "ok" or record(db, "managed:materials:"+mid, {}).get("trashed"):
+                    missing.append(mid)
+            if missing:
+                raise DomainError("MATERIAL_PREFLIGHT_FAILED", missing_source_ids=missing)
+            state["task_state"] = "confirmed"
+            state["confirmed_context_hash"] = payload.context_hash
+        else:
+            state["history"].append(state["context"])
+            obj.input_revision += 1
+            from .knowledge import freeze_guidance
+            from .insights import freeze_profile
+            from .import_profiles import freeze_import_profiles
+            state["context"] = context_of(live_context(db, freeze_import_profiles(db, freeze_profile(db, freeze_guidance(db,bind_specs(db, resolve_task(payload.input.model_dump(), payload.input.model_fields_set)))))), obj.input_revision)
+            obj.title = payload.input.title
+            state["task_state"] = "draft"
+        response = {"task_id": task_id, "input_revision": obj.input_revision, "task_state": state["task_state"],
+                    "context_hash": state["context"]["context_hash"]}
+        remember(state, key, body, response, "confirm" if confirmation else "input")
+        obj.task_state_json = dump(state)
+        return response
+
+
+def start_run(task_id, payload, key, automatic=False, envelope=None):
+    body = digest(payload.model_dump() if envelope is None else {"payload":payload.model_dump(),"envelope":envelope})
+    with write() as db:
+        obj = goal(db, task_id)
+        state = load(obj.task_state_json)
+        prior = receipt(state, key, body)
+        if prior:
+            return prior
+        require_live_task(db, task_id)
+        live_context(db, state["context"])
+        if obj.input_revision != payload.expected_revision or payload.confirmed_context_hash != state.get("confirmed_context_hash") or state["task_state"] != "confirmed":
+            raise DomainError("CONTEXT_STALE")
+        if payload.mode == "configured" and not settings.v2_allow_paid:
+            raise DomainError("PAID_RUN_NOT_AUTHORIZED", 403)
+        if db.query(GenerationJob).filter(GenerationJob.goal_id == task_id, GenerationJob.job_type == "task_v2",
+                GenerationJob.status.in_(["running", "queued"])).first():
+            raise DomainError("ACTIVE_RUN")
+        run_id, root_id, artifact_id = str(uuid4()), str(uuid4()), str(uuid4())
+        context = state["context"]
+        chunks = []
+        if context["material_ids"]:
+            # Partition every required source chunk, preserving full coverage across calls.
+            for source_id in context["material_ids"]:
+                material = db.get(GoalMaterial, source_id)
+                if material is None or material.goal_id != task_id or not material.manifest_json:
+                    raise DomainError("MATERIAL_INCOMPLETE")
+                chunks.extend(load(material.manifest_json).get("chunks", []))
+            if not chunks:
+                raise DomainError("MATERIAL_INCOMPLETE")
+        requested_policy = context.get("execution_policy", {})
+        planning_sources = requested_policy.get("planning_source_tools", True)
+        if type(planning_sources) is not bool:
+            raise DomainError("PLANNING_SOURCE_POLICY_INVALID", 422)
+        adaptive = payload.mode == "configured" and bool(requested_policy.get("task_adaptive_format", True))
+        # Do not first bind a new task to a legacy layout and only later ask A
+        # to design it. Existing runs already contain their immutable plans.
+        units = [] if adaptive else build_units(context, chunks, demo=payload.mode == "demo")
+        plan = {"schema_version": "aiedu.plan.v1", "units": units}
+        plan["plan_hash"] = digest(plan)
+        frozen = {"context": context, "plan": plan, "check_plan": compile_plan(context), "mode": payload.mode,
+                  "artifact_id": artifact_id, "version_id": None, "stages": {}, "stop_reason": None,
+                  "intent_pending": (adaptive or automatic or requested_policy.get("structured_arrangement", False)) and payload.mode == "configured", "automatic": automatic,
+                  "budget": {"calls": None, "tokens": None, "amount": None, "seconds": None}}
+        concurrency = max(1, min(4, int(os.getenv("AIEDU_V2_CONCURRENCY", "2"))))
+        # Defaults belong to new configured runs, not to historical frozen runs.
+        # Explicit opt-out/demo retain their contracts. A new root is unlimited;
+        # resuming an old root still requires its explicit budget amendment.
+        if requested_policy.get("quality_loop", True) and payload.mode == "configured":
+            from .optimization import validate_policy
+            from .quality import POLICY
+            policy = validate_policy(requested_policy.get("optimization_policy") or
+                {**POLICY, "policy_version": "aiedu.repair.v2", "root_call_budget": None})
+            frozen["optimization_policy"] = policy
+            frozen["budget"]["calls"] = policy["root_call_budget"]
+            frozen["intent_pending"] = True
+        frozen["execution_policy"] = {"version": "bounded-unit-pipeline.v1", "provider_concurrency": concurrency,
+                                      "check_concurrency": concurrency, "unit_pipeline": concurrency > 1,
+                                      "semantic_batch": True,
+                                      "generation_concurrency": min(concurrency, max(1, int(context.get("execution_policy", {}).get("generation_concurrency", concurrency if automatic else 1)))),
+                                      "network_tool_rounds": context.get("execution_policy", {}).get("network_tool_rounds", 3),
+                                      "network_requests_per_round": context.get("execution_policy", {}).get("network_requests_per_round", 4),
+                                      "network_stop_policy": "stop_after_budget_or_no_new_cached_evidence",
+                                      "planning_source_tools": payload.mode == "configured" and planning_sources,
+                                      "criterion_assessment": payload.mode == "configured" and bool(requested_policy.get("criterion_assessment", True)),
+                                      "task_adaptive_format": adaptive}
+        frozen["execution_policy"]["quality_loop"] = bool(frozen.get("optimization_policy"))
+        if envelope is not None:
+            frozen["benchmark_request"] = envelope
+        db.add(Tutorial(id=artifact_id, goal_id=task_id, title=obj.title))
+        db.add(GenerationJob(id=root_id, root_job_id=root_id, run_id=run_id, goal_id=task_id, job_type="task_v2",
+                            status="queued", state_json=dump(frozen), action_key=key, request_hash=body,
+                            state_revision=0, cancel_epoch=0))
+        response = {"run_id": run_id, "root_job_id": root_id, "snapshot_url": f"/api/v2/tasks/{task_id}/snapshot?run_id={run_id}", "state_revision": 0}
+        remember(state, key, body, response, "start")
+        obj.task_state_json = dump(state)
+        return response
+
+
+def task_start(payload, key):
+    with _start_lock:
+        return _task_start(payload, key)
+
+
+def _task_start(payload, key):
+    """One public action, same durable run for understanding/planning and all follow-ups."""
+    from .contracts import Confirmation, StartRun, TaskInput
+    from ..model_settings import runtime_settings
+    if payload.mode == "configured":
+        if not settings.v2_allow_paid:
+            raise DomainError("PAID_RUN_NOT_AUTHORIZED", 403)
+        from .model_roles import for_role,role_config
+        configured = for_role("generation") if role_config()[1].get("generation") else runtime_settings()
+        if not configured.llm_configured:
+            raise DomainError("MODEL_NOT_CONFIGURED", 422)
+    value = payload.model_dump(exclude={"mode"})
+    created = create_task(TaskInput.model_validate(value), key, payload.model_fields_set - {"mode"})
+    with SessionLocal() as db:
+        saved = load(goal(db, created["task_id"]).task_state_json)
+        prior = saved.get("receipts", {}).get("start:"+digest(key))
+        if prior:
+            return prior["response"] | {"task_id": created["task_id"]}
+    if created["conflicts"]:
+        return created | {"run_id": None, "snapshot_url": f"/api/v2/tasks/{created['task_id']}/snapshot"}
+    confirmed = mutate_input(created["task_id"], Confirmation(expected_revision=created["input_revision"],
+                              context_hash=created["context_hash"]), "confirm:"+digest(key), confirmation=True)
+    result = start_run(created["task_id"], StartRun(expected_revision=confirmed["input_revision"],
+        confirmed_context_hash=confirmed["context_hash"], mode=payload.mode), "start:"+digest(key), automatic=True)
+    return result | {"task_id": created["task_id"]}
+
+
+def pause(run_id, payload, key):
+    body = digest(payload.model_dump())
+    with write() as db:
+        obj = job(db, run_id)
+        state = load(obj.state_json)
+        prior = receipt(state, key, body)
+        if prior:
+            return prior
+        cas(obj, payload.expected_revision)
+        if obj.status not in {"queued", "running", "interrupted", "awaiting_input"}:
+            raise DomainError("RUN_NOT_PAUSABLE")
+        obj.status, obj.cancel_epoch = "paused", obj.cancel_epoch + 1
+        obj.state_revision += 1
+        state["stop_reason"] = "user_pause"
+        for call in db.query(CallDispatch).filter_by(root_job_id=obj.id, status="authorized"):
+            call.status = "not_sent"
+        response = {"run_id": run_id, "state": "paused", "state_revision": obj.state_revision,
+                    "version_id": state.get("version_id"), "checkpoint_hash": digest(state["plan"]),
+                    "inflight_count": db.query(CallDispatch).filter_by(root_job_id=obj.id, status="sent").count(),
+                    "bundle_status": "not_started", "available_draft": bool(state.get("version_id"))}
+        remember(state, key, body, response, "pause")
+        obj.state_json = dump(state)
+        return response
+
+
+def quarantine_unknown(run_id, payload, key):
+    """Isolate exact unknown attempts without queuing work or settling a bill.
+
+    This transaction is also safe to call from an explicit-path maintenance
+    process before the serving worker can be reloaded. Resumption is a separate
+    user action; neither an execution permit nor a provider receipt is invented.
+    """
+    body = digest(payload.model_dump(mode="json"))
+    with write() as db:
+        obj = job(db, run_id)
+        state = load(obj.state_json)
+        prior = receipt(state, key, body)
+        if prior:
+            return prior
+        cas(obj, payload.expected_revision)
+        if not payload.acknowledge_possible_duplicate_cost:
+            raise DomainError("UNKNOWN_QUARANTINE_REQUIRES_RISK_ACK", 422)
+        if obj.status not in {"paused", "interrupted", "failed"}:
+            raise DomainError("UNKNOWN_QUARANTINE_REQUIRES_STOPPED_RUN")
+        if digest(state["plan"]) != payload.checkpoint_hash:
+            raise DomainError("CHECKPOINT_STALE")
+        require_live_task(db, obj.goal_id)
+        if db.query(GenerationJob).filter(GenerationJob.goal_id == obj.goal_id,
+                GenerationJob.status.in_(["queued", "running"])).first():
+            raise DomainError("ACTIVE_RUN")
+        ids = [str(entry.call_id) for entry in payload.calls]
+        if len(ids) != len(set(ids)):
+            raise DomainError("DUPLICATE_CALL_ID", 422)
+        selected = []
+        for entry in payload.calls:
+            call = db.get(CallDispatch, str(entry.call_id))
+            if call is None or call.root_job_id != obj.id or call.run_id != run_id:
+                raise DomainError("CALL_NOT_FOUND", 404)
+            if call.request_hash != entry.request_hash:
+                raise DomainError("CALL_REQUEST_MISMATCH")
+            # A worker can terminate after marking a provider request sent but
+            # before it can persist the provider receipt.  A failed run is a
+            # stopped execution boundary, so the explicit user-authorized
+            # quarantine may convert that exact receipt-less sent attempt to
+            # unknown.  Paused/active runs remain strict: they must first
+            # receive a provider receipt or be stopped by the worker lease
+            # reaper.  This does not infer failure, usage, price, or provider
+            # settlement.
+            if call.status == "sent" and obj.status == "failed":
+                if call.outcome or call.receipt_json not in ("", "{}", None) or call.usage_json is not None:
+                    raise DomainError("CALL_SENT_RECEIPT_PRESENT")
+                call.outcome = "unknown"
+                call.receipt_json = dump({
+                    "outcome": "unknown", "usage": None,
+                    "provider_request_id": None, "result_hash": None,
+                    "failure_code": "PROVIDER_TRANSPORT_UNKNOWN",
+                    "failure_diagnostics": {"validation_reason": "WORKER_TERMINATED_WITHOUT_RECEIPT"},
+                })
+                call.finished_at = time.time()
+                call.usage_json = None
+            elif call.status == "sent":
+                raise DomainError("CALL_NOT_UNKNOWN")
+            if call.status not in {"unknown", "sent"}:
+                raise DomainError("CALL_NOT_UNKNOWN")
+            selected.append(call)
+        from ..models import ModelCallLog
+        recorded_at = time.time()
+        for call in selected:
+            # For an already-unknown call only execution status changes.  A
+            # failed-run receipt-less sent call was normalized above to an
+            # explicit unknown receipt; quarantine itself never settles it.
+            call.status = "quarantined"
+            log = db.query(ModelCallLog).filter_by(call_id=call.call_id).first()
+            if log:
+                log.status = "quarantined"
+            state.setdefault("unknown_quarantines", {})[call.call_id] = {
+                "method_version": "explicit-unknown-isolation.v1",
+                "call_id": call.call_id, "request_hash": call.request_hash,
+                "request_action_hash": body, "recorded_at": recorded_at,
+                "acknowledge_possible_duplicate_cost": True,
+                "provider_settlement": "unresolved", "scheduled": False,
+            }
+        obj.cancel_epoch += 1  # A delayed worker cannot publish into this run.
+        obj.state_revision += 1
+        response = {"run_id": run_id, "state": obj.status,
+            "state_revision": obj.state_revision, "checkpoint_hash": digest(state["plan"]),
+            "call_ids": ids, "scheduled": False, "provider_settlement": "unresolved"}
+        remember(state, key, body, response, "quarantine_unknown")
+        obj.state_json = dump(state)
+        return response
+
+
+def resume(run_id, payload, key):
+    body = digest(payload.model_dump(mode="json"))
+    with write() as db:
+        old = job(db, run_id)
+        state = load(old.state_json)
+        prior = receipt(state, key, body)
+        if prior:
+            return prior
+        cas(old, payload.expected_revision)
+        if state.get("synthesis_source") and (payload.recheck_completed or payload.replan or payload.refresh_check_plan):
+            raise DomainError("SYNTHESIS_REQUIRES_SOURCE_BOUND_OPERATION", 422)
+        if payload.enable_research and not payload.replan:
+            raise DomainError("RESEARCH_ENABLE_REQUIRES_EXPLICIT_REPLAN", 422)
+        allowed = old.status in {"paused", "interrupted", "failed"} or (old.status == "completed" and (payload.recheck_completed or payload.replan))
+        if not allowed or digest(state["plan"]) != payload.checkpoint_hash:
+            raise DomainError("CHECKPOINT_STALE")
+        if payload.recheck_completed and state.get("card_source"):
+            raise DomainError("RECHECK_REQUIRES_GENERATION_RUN", 422)
+        if payload.recheck_completed and old.status != "completed":
+            raise DomainError("RECHECK_REQUIRES_COMPLETED_RUN", 422)
+        if payload.refresh_check_plan and not payload.recheck_completed:
+            raise DomainError("CHECK_PLAN_REFRESH_REQUIRES_FIXED_RECHECK", 422)
+        if payload.replan and (not payload.acknowledge_new_generation or payload.recheck_completed or state.get("card_source")):
+            raise DomainError("REPLAN_REQUIRES_EXPLICIT_GENERATION_ACK", 422)
+        if db.query(GenerationJob).filter(GenerationJob.goal_id == old.goal_id, GenerationJob.job_type == "task_v2",
+                GenerationJob.status.in_(["queued", "running"])).first():
+            raise DomainError("ACTIVE_RUN")
+        owner = goal(db, old.goal_id)
+        require_live_task(db, old.goal_id)
+        if load(owner.task_state_json)["context"]["context_hash"] != state["context"]["context_hash"]:
+            raise DomainError("INPUT_CHANGED")
+        decisions = {str(r.call_id): r for r in payload.unknown_resolutions}
+        for call in db.query(CallDispatch).filter_by(root_job_id=old.id).filter(CallDispatch.status.in_(["unknown", "sent"])):
+            decision = decisions.get(call.call_id)
+            if decision is None:
+                raise DomainError("UNKNOWN_CALL")
+            if decision.action == "verify_provider_status":
+                raise DomainError("PROVIDER_STATUS_UNSUPPORTED", 422)
+            if decision.action == "retry_as_new_attempt" and decision.acknowledge_possible_duplicate_cost:
+                call.status = "quarantined"
+                state.setdefault("retry_links", {})[call.unit_id] = call.call_id
+            else:
+                raise DomainError("UNKNOWN_DEPENDENCY_BLOCKED")
+        previous_version = db.get(TutorialVersion, state.get("version_id")) if state.get("version_id") else None
+        current_artifact = db.get(Tutorial, state.get("artifact_id")) if state.get("artifact_id") else None
+        if ((payload.recheck_completed or (payload.replan and state.get("version_id"))) and
+                (not previous_version or not current_artifact or
+                 current_artifact.current_version_id != previous_version.id)):
+            raise DomainError("VERSION_MISMATCH")
+        completed = {u["unit_id"] for u in materialize(previous_version).get("units", [])} if previous_version else set()
+        if payload.recheck_completed and not {u["unit_id"] for u in state["plan"]["units"]} <= completed:
+            raise DomainError("RECHECK_REQUIRES_COMPLETE_VERSION", 422)
+        recovered = {} if payload.replan else deepcopy(state.get("recovered_candidates", {}))
+        recovery_calls = [] if payload.replan else db.query(CallDispatch).filter_by(root_job_id=old.id, status="settled", outcome="success").order_by(CallDispatch.finished_at)
+        for call in recovery_calls:
+            manifest = load(call.manifest_json)
+            if call.unit_id in completed or manifest.get("stage") not in {"generating", "generating_source_continuation"}:
+                continue
+            if call.input_hash != state["context"]["context_hash"] or manifest.get("plan_hash") != state["plan"]["plan_hash"]:
+                raise DomainError("RECOVERY_CONTEXT_MISMATCH")
+            if not call.result_blob_hash:
+                raise DomainError("SETTLED_RESULT_REQUIRES_RECOVERY")
+            from .storage import BlobStore
+            candidate = load(BlobStore().get(call.result_blob_hash).decode())
+            if candidate.get("tool_requests"):
+                continue  # a paid tool decision is reusable, never a finished chapter.
+            if not candidate.get("body") and not candidate.get("items"):
+                continue
+            recovered[call.unit_id] = {"call_id": call.call_id, "result_blob_hash": call.result_blob_hash,
+                "injected_chunk_ids": [entry["chunk_id"] for entry in manifest.get("entries", []) if entry.get("status") == "injected"]}
+        new_id, root_id = str(uuid4()), str(uuid4())
+        new_state = deepcopy({k: v for k, v in state.items() if k != "receipts"})
+        if payload.transport_retries:
+            from .transport_retry import authorize
+            grants = authorize(db, old, state, payload.transport_retries, body)
+            new_state.setdefault("transport_retry_permissions", {}).update(grants)
+        new_state["recovered_candidates"] = recovered
+        new_state["stop_reason"] = None
+        if payload.replan:
+            if payload.enable_research:
+                # Explicit policy amendment on the same task ancestry. Never
+                # alter the parent's frozen context or replay its research.
+                context = deepcopy(state["context"])
+                context.pop("context_hash", None)
+                context["research_request"] = {**context.get("research_request", {}), "enabled": True}
+                new_state["context"] = context_of(context, owner.input_revision)
+                owner_state = load(owner.task_state_json)
+                owner_state.update(context=new_state["context"],
+                    confirmed_context_hash=new_state["context"]["context_hash"])
+                owner.task_state_json = dump(owner_state)
+                for field in ("research_binding_frozen", "research_result", "research_artifacts"):
+                    new_state.pop(field, None)
+            # Preserve the parent run, all receipts and the current artifact/version
+            # as the publish CAS base. New layout IDs never reuse old learner text.
+            new_state["plan"] = {"schema_version": "aiedu.plan.v1", "units": []}
+            new_state["plan"]["plan_hash"] = digest(new_state["plan"])
+            new_state["check_plan"] = compile_plan(new_state["context"])
+            new_state.update(intent_pending=True, stages={}, replan_from_version_id=state.get("version_id"))
+            for field in ("intent_call", "review_only_source_version", "optimization_request", "best_so_far_version",
+                          "optimization_rounds", "optimization_stop_reason", "repair_rounds", "repair_stop_reason",
+                          "optimization_attempts", "optimization_attempts_by_finding", "last_rejected_candidate_hash", "rejected_candidate_hashes"):
+                new_state.pop(field, None)
+            for field in list(new_state):
+                if field.startswith("optimization_") and field.endswith("_artifacts"):
+                    new_state.pop(field)
+            new_state.setdefault("execution_policy", {}).update(task_adaptive_format=True, criterion_assessment=True)
+            if not new_state.get("optimization_policy"):
+                from .optimization import validate_policy
+                from .quality import POLICY
+                new_state["optimization_policy"] = validate_policy({**POLICY, "policy_version": "aiedu.repair.v2", "root_call_budget": None})
+            new_state["execution_policy"]["quality_loop"] = True
+            new_state["replan_amendment"] = {"method_version": "explicit-task-replan.v1", "parent_run_id": run_id,
+                "parent_plan_hash": state["plan"]["plan_hash"], "parent_version_id": state.get("version_id"),
+                "parent_context_hash": state["context"]["context_hash"],
+                "context_hash": new_state["context"]["context_hash"],
+                "enable_research": payload.enable_research,
+                "request_hash": body, "content_reuse": "none_across_new_layout", "accounting_ancestry_preserved": True}
+        if payload.recheck_completed:
+            new_state["review_only_source_version"] = previous_version.id
+        if payload.refresh_check_plan:
+            new_state["check_plan"] = compile_plan(new_state["context"])
+            new_state["check_plan_amendment"] = {
+                "method_version": "explicit-fixed-recheck.v1",
+                "parent_run_id": run_id, "source_version_id": previous_version.id,
+                "previous_check_plan_hash": state["check_plan"]["check_plan_hash"],
+                "check_plan_hash": new_state["check_plan"]["check_plan_hash"],
+                "request_hash": body,
+            }
+            new_state.setdefault("execution_policy", {})["criterion_assessment"] = True
+        db.add(GenerationJob(id=root_id, run_id=new_id, root_job_id=root_id, parent_job_id=old.id,
+                goal_id=old.goal_id, job_type="task_v2", status="queued", state_json=dump(new_state),
+                action_key=key, request_hash=body, state_revision=0, cancel_epoch=0))
+        response = {"run_id": new_id, "parent_run_id": run_id, "state_revision": 0}
+        remember(state, key, body, response, "resume")
+        old.state_json = dump(state)
+        old.state_revision += 1
+        return response
+
+
+def snapshot(task_id, run_id=None):
+    from sqlalchemy import func
+    with SessionLocal() as db:
+        owner = goal(db, task_id)
+        query = db.query(GenerationJob).filter_by(goal_id=task_id, job_type="task_v2")
+        # Supplemental analysis has its own run status. It must not replace
+        # a failed/completed generation's status on the task or reader page.
+        obj = (query.filter_by(run_id=run_id).first() if run_id else
+            query.filter(func.json_extract(GenerationJob.state_json, "$.card_source").is_(None),
+                         func.json_extract(GenerationJob.state_json, "$.synthesis_source").is_(None))
+                .order_by(GenerationJob.created_at.desc(), GenerationJob.id.desc()).first())
+        if run_id and not obj:
+            raise DomainError("RUN_NOT_FOUND", 404)
+        if not obj:
+            return {"task_id": task_id, "input_revision": owner.input_revision, "task": load(owner.task_state_json)["context"], "run": None}
+        state = load(obj.state_json)
+        # Retry/resume creates a new root but must not erase the original bill or
+        # hide a late receipt on an ancestor. Recursive SQL keeps the read bounded
+        # to this run's ancestry, not unrelated runs for the same task.
+        from sqlalchemy import select
+        chain = select(GenerationJob.id, GenerationJob.parent_job_id).where(GenerationJob.id == obj.id).cte("run_chain", recursive=True)
+        chain = chain.union_all(select(GenerationJob.id, GenerationJob.parent_job_id).join(chain, GenerationJob.id == chain.c.parent_job_id))
+        calls = db.query(CallDispatch).filter(CallDispatch.root_job_id.in_(select(chain.c.id)))\
+                  .order_by(CallDispatch.started_at, CallDispatch.call_id).all()
+        version = db.get(TutorialVersion, state["version_id"]) if state.get("version_id") else None
+        quality = load(version.quality_report) if version else reduce_quality(state["check_plan"], [], [])
+        from .import_profiles import binding_status
+        import_status = binding_status(db, state["context"])
+        if import_status["status"] == "stale":
+            quality = {**quality, "tqi_verdict": "blocked", "quality_status": "needs_review",
+                "blocking_reasons": [*quality.get("blocking_reasons", []), {"code": "IMPORT_ASSET_STALE"}]}
+        visible_stages = dict(state["stages"])
+        for stage in {load(c.manifest_json).get("stage") for c in calls}:
+            related = [c for c in calls if load(c.manifest_json).get("stage") == stage]
+            if stage and visible_stages.get(stage) == "running" and related and not any(
+                    c.status in {"authorized", "sent", "unknown"} for c in related):
+                latest = max(related, key=lambda c: c.finished_at or c.started_at or 0)
+                visible_stages[stage] = "done" if latest.outcome == "success" else "failed"
+        return {"schema_version": "aiedu.task-run.v2", "task_id": task_id, "input_revision": owner.input_revision,
+                "run_id": obj.run_id, "root_job_id": obj.id, "state_revision": obj.state_revision,
+                "state": obj.status, "cancel_epoch": obj.cancel_epoch, "demo": state["mode"] == "demo",
+                "artifact_id": state["artifact_id"], "version_id": version.id if version else None,
+                "content_hash": version.content_hash if version else None, "context_hash": state["context"]["context_hash"],
+                "resolved_task":state["context"],
+                "plan_hash": state["plan"]["plan_hash"], "checkpoint_hash": digest(state["plan"]),
+                  "units": materialize(version).get("units", []) if version else [], "stages": visible_stages,
+                "quality": quality, "budget": state["budget"], "stop_reason": state.get("stop_reason"),
+                "knowledge_results":state.get("knowledge_results",[]),"embedding_status":state.get("embedding_status","disabled"),
+                "benchmark_result":state.get("benchmark_result"),
+                "import_profile_status": import_status,
+                "calls": [{"call_id": c.call_id, "unit_id": c.unit_id, "status": c.status, "outcome": c.outcome,
+                           "attempt": c.attempt, "usage": load(c.usage_json) if c.usage_json else None,
+                           "price": load(c.price_json) if c.price_json else None, "model_family": c.model_family,
+                           "model":c.model,"stage":load(c.manifest_json).get("stage"),"provider_request_id":c.provider_request_id,
+                           "failure_code":load(c.receipt_json).get("failure_code"),
+                             "failure_diagnostics":load(c.receipt_json).get("failure_diagnostics"),
+                           "elapsed_seconds":c.finished_at-c.started_at if c.finished_at and c.started_at else None,
+                           "request_hash": c.request_hash} for c in calls],
+                "accounting_revision": digest([(c.call_id, c.status, c.usage_json) for c in calls]),
+                "cost_final": bool(calls) and all(c.status == "not_sent" or
+                    (c.status in {"settled", "late"} and c.usage_json is not None and
+                     (c.model_family == "demo" or c.price_json is not None)) for c in calls),
+                "next_actions": ["pause"] if obj.status in {"running", "queued"} else (["resume"] if obj.status in {"paused", "interrupted", "failed"} else [])}
+
+
+def list_versions(task_id, artifact_id, before_version=None, limit=100):
+    if not 1 <= limit <= 200 or (before_version is not None and before_version < 1):
+        raise DomainError("INVALID_PAGINATION", 422)
+    with SessionLocal() as db:
+        goal(db, task_id)
+        artifact = db.get(Tutorial, artifact_id)
+        if artifact is None or artifact.goal_id != task_id:
+            raise DomainError("ARTIFACT_NOT_FOUND", 404)
+        rows = db.query(TutorialVersion.id, TutorialVersion.version,
+                        TutorialVersion.content_hash, TutorialVersion.quality_hash)\
+                 .filter(TutorialVersion.tutorial_id == artifact_id)
+        if before_version is not None:
+            rows = rows.filter(TutorialVersion.version < before_version)
+        page = rows.order_by(TutorialVersion.version.desc()).limit(limit + 1).all()
+        return {"items": [{"version_id": v.id, "artifact_id": artifact_id, "version": v.version,
+                           "content_hash": v.content_hash, "quality_hash": v.quality_hash} for v in page[:limit]],
+                "next_before_version": page[limit - 1].version if len(page) > limit else None}
+
+
+def list_tasks(cursor=None, limit=50, search=""):
+    if not 1 <= limit <= 200 or len(search) > 200:
+        raise DomainError("INVALID_PAGINATION", 422)
+    query_hash = digest({"search": search, "sort": "needs_action,updated_at,task_id"})
+    from sqlalchemy import and_, case, func, or_
+    with SessionLocal() as db:
+        ranked = db.query(GenerationJob.id.label("id"), GenerationJob.goal_id.label("goal_id"),
+                          func.row_number().over(partition_by=GenerationJob.goal_id,
+                          order_by=(GenerationJob.created_at.desc(), GenerationJob.id.desc())).label("rn"))\
+                   .filter(GenerationJob.job_type == "task_v2",
+                           func.json_extract(GenerationJob.state_json, "$.card_source").is_(None),
+                           func.json_extract(GenerationJob.state_json, "$.synthesis_source").is_(None)).subquery()
+        needs = case((GenerationJob.id.is_not(None), case((GenerationJob.status.in_(
+            ["awaiting_input", "failed", "interrupted", "paused"]), 1), else_=0)),
+            else_=case((func.json_extract(LearningGoal.task_state_json, "$.task_state") != "confirmed", 1), else_=0))
+        updated = case((LearningGoal.updated_at > func.coalesce(GenerationJob.updated_at, ""), LearningGoal.updated_at),
+                       else_=GenerationJob.updated_at)
+        raw = func.json_extract(LearningGoal.task_state_json, "$.context.raw_input")
+        rows = db.query(LearningGoal, GenerationJob, needs.label("needs"), updated.label("updated"), raw.label("raw"))\
+                 .outerjoin(ranked, and_(ranked.c.goal_id == LearningGoal.id, ranked.c.rn == 1))\
+                 .outerjoin(GenerationJob, GenerationJob.id == ranked.c.id)\
+                 .filter(LearningGoal.input_revision > 0)
+        if search:
+            rows = rows.filter(LearningGoal.title.contains(search, autoescape=True))
+        from .management_lifecycle import overlay_ids
+        rows = rows.filter(LearningGoal.id.notin_(overlay_ids("tasks")))
+        if cursor:
+            try:
+                decoded = json.loads(base64.urlsafe_b64decode(cursor).decode())
+                if decoded["query_hash"] != query_hash:
+                    raise ValueError()
+                last = decoded["last"]
+                if (not isinstance(last, list) or len(last) != 3 or type(last[0]) is not bool
+                        or not all(isinstance(v, str) for v in last[1:])):
+                    raise ValueError()
+                rows = rows.filter(or_(needs < int(last[0]), and_(needs == int(last[0]), updated < last[1]),
+                    and_(needs == int(last[0]), updated == last[1], LearningGoal.id < last[2])))
+            except (ValueError, KeyError, TypeError, UnicodeError):
+                raise DomainError("INVALID_CURSOR", 422) from None
+        bounded = rows.order_by(needs.desc(), updated.desc(), LearningGoal.id.desc()).limit(limit+1).all()
+        page = []
+        for owner, obj, needs_action, updated_at, raw_input_text in bounded[:limit]:
+            st = load(obj.state_json) if obj else {}
+            compact = " ".join(raw_input_text.split()) if isinstance(raw_input_text, str) else ""
+            summary = (compact[:160] + ("…" if len(compact) > 160 else "")) if compact else None
+            page.append({"task_id": owner.id, "title": owner.title, "summary": summary, "run_id": obj.run_id if obj else None,
+                         "demo": st.get("mode") == "demo" if obj else None,
+                         "state": obj.status if obj else load(owner.task_state_json)["task_state"],
+                         "needs_action": bool(needs_action), "state_revision": obj.state_revision if obj else owner.input_revision,
+                         "version_id": st.get("version_id"), "updated_at": updated_at,
+                         "quality": {k: st.get("quality", {}).get(k) for k in ("tqi_verdict", "calibration_status", "quality_status")}})
+        next_cursor = None
+        if len(bounded) > limit:
+            last = page[-1]
+            next_cursor = base64.urlsafe_b64encode(dump({"query_hash": query_hash, "last": [last["needs_action"], last["updated_at"], last["task_id"]]}).encode()).decode()
+        return {"items": page, "next_cursor": next_cursor, "read_at": time.time()}

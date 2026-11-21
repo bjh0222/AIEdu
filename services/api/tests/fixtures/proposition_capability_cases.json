@@ -1,0 +1,17 @@
+{
+  "description": "工程 smoke 样本，不是用户认可的难度/质量校准集。使用真实外评案例替换后再验收能力。",
+  "cases": [
+    {"id":"calc-basic","family_id":"derivative-basic","domain_key":"math_logic","branch":"calculus","learner":"大学微积分初学者","knowledge_points":["导数"],"stem":"求函数 f(x)=x^2 在 x=3 处的导数。","gold":{"answer":"6"},"gold_origin":"authored_engineering_fixture"},
+    {"id":"calc-error","family_id":"continuity-converse","domain_key":"math_logic","branch":"calculus","learner":"大学微积分初学者","stem":"证明每个连续函数都可导。","gold":{"correctness":"refuted"},"gold_origin":"authored_engineering_fixture"},
+    {"id":"calc-boundary","family_id":"absolute-zero","domain_key":"math_logic","branch":"calculus","learner":"大学微积分初学者","stem":"判断 f(x)=|x| 在 x=0 处是否可导，并说明理由。","gold":{"answer":"不可导"},"gold_origin":"authored_engineering_fixture"},
+    {"id":"calc-series","family_id":"series-comparison","domain_key":"math_logic","branch":"calculus","learner":"大学微积分学习者","stem":"判断级数 sum(n=1..infinity) 1/(n(n+1)) 是否收敛，并求和。","gold":{"answer":"1"},"gold_origin":"authored_engineering_fixture"},
+    {"id":"calc-composite","family_id":"parameter-integral","domain_key":"math_logic","branch":"calculus","learner":"大学微积分学习者","stem":"设 F(t)=积分[0,1] x^t dx，t>-1。求 F'(t)，并说明交换微分与积分需要的条件。","gold_origin":"authored_engineering_fixture"},
+    {"id":"python-basic","family_id":"list-tuple","domain_key":"computer_cli","branch":"python","learner":"Python 初学者","stem":"说明 Python 列表与元组的主要区别，并举出各自适用情形。","gold_origin":"authored_engineering_fixture"},
+    {"id":"python-alias","family_id":"shared-nested-list","domain_key":"computer_cli","branch":"python","learner":"Python 初学者","stem":"执行 a=[[0]]*3; a[0].append(1) 后，a 的值是什么？解释原因。","gold":{"answer":"[[0, 1], [0, 1], [0, 1]]"},"gold_origin":"authored_engineering_fixture"},
+    {"id":"python-spec","family_id":"underspecified-sort","domain_key":"computer_cli","branch":"python","learner":"Python 学习者","stem":"编写函数 sort_items(items) 返回正确排序结果。未指定元素类型、排序键、稳定性和是否允许修改输入。","gold":{"correctness":"undecidable"},"gold_origin":"authored_engineering_fixture"},
+    {"id":"python-complexity","family_id":"first-repeated","domain_key":"computer_cli","branch":"python","learner":"Python 学习者","stem":"给定长度 n 的整数列表，返回按扫描顺序第一个重复出现的元素，若无重复返回 None。设计预期 O(n) 时间算法，说明空间复杂度与返回规则。","gold_origin":"authored_engineering_fixture"},
+    {"id":"python-value","family_id":"minimal-loop","domain_key":"computer_cli","branch":"python","learner":"Python 初学者","stem":"用 for 循环计算 1 到 10 的整数和，再用另一种方式核对结果。分析该题对初学者的教学价值。","gold":{"answer":"55"},"gold_origin":"authored_engineering_fixture"}
+  ],
+  "learning_cases": [],
+  "principles": []
+}
