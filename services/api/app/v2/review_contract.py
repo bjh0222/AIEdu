@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 from ..learning.disciplines import canonical_domain_key
 from .contracts import DomainError, digest, sha
+from .quality_policy import context_domains, unit_domains
 
 EVIDENCE_VERSION = "server-evidence-catalog.v1"
 NORMALIZER_VERSION = "provider-contract-normalizer.v1"
@@ -314,13 +315,8 @@ def applicability_decision(item: dict, unit: dict, context: dict) -> dict[str, A
     scoped_forms = {re.sub(r"[\s_-]+", "_", str(value).strip().casefold())
                     for value in (scope.get("question_types") or scope.get("question_forms") or [])
                     if isinstance(value, str) and value.strip()}
-    unit_domains = {canonical_domain_key(str(binding.get("domain_key"))) for binding in unit.get("subject_bindings", [])
-                    if isinstance(binding, dict) and binding.get("domain_key")}
-    unit_domains |= {canonical_domain_key(str(binding.get("domain_key"))) for binding in context.get("subject_bindings", [])
-                     if isinstance(binding, dict) and binding.get("domain_key")}
-    if context.get("domain_key"):
-        unit_domains.add(canonical_domain_key(str(context["domain_key"])))
-    matched_domains = sorted(domains & unit_domains)
+    effective_domains = unit_domains(context, unit)
+    matched_domains = sorted(domains & effective_domains)
     requires_items = bool(scope.get("requires_items") or re.match(
         r"^(?:Q[1-9][0-9]*\.|M\.items\.|I\.)", dimension))
 
@@ -330,7 +326,7 @@ def applicability_decision(item: dict, unit: dict, context: dict) -> dict[str, A
         execute, reason = False, "role_not_in_scope"
     elif scope.get("scenes") and not scenes.intersection(set(scope["scenes"])):
         execute, reason = False, "scene_not_in_scope"
-    elif domains and not unit_domains.intersection(domains):
+    elif domains and not effective_domains.intersection(domains):
         execute, reason = False, "domain_not_in_scope"
     elif requires_items and not unit.get("items"):
         execute, reason = False, "item_content_not_present"
@@ -352,7 +348,8 @@ def applicability_decision(item: dict, unit: dict, context: dict) -> dict[str, A
             **deepcopy(scope),
             **({"domains": sorted(domains)} if "domains" in scope else {}),
         },
-        "canonical_domain_keys": sorted(unit_domains),
+        "canonical_domain_keys": sorted(effective_domains),
+        "context_domain_keys": sorted(context_domains(context)),
         "matched_domains": matched_domains,
     }
 

@@ -178,22 +178,30 @@ def compile_plan(task: dict, network_policy: dict | None = None) -> dict:
             "scope": research_scope,
             "legacy_scope_derived": legacy_scope_derived,
         }
-        gaps = rubric.get("scope_gaps", []) if isinstance(rubric, dict) else []
-        if gaps:
-            gap_id = "R.scope_completion." + str(rubric.get("rubric_id") or "research")
-            add(gap_id, "research", "research_scope_completion.v1",
-                "all research-derived scope dimensions applicable before learner-content checks",
-                kind="deterministic", scope=research_scope)
-            items[-1]["scope_gaps"] = deepcopy(gaps)
-            items[-1]["research_rubric_ref"] = deepcopy(rubric_ref)
-            items[-1]["applicability_reason"] = "research_rubric_task_scope"
+        gaps = rubric.get("scope_gaps", [])
+        gaps = gaps if isinstance(gaps, list) else []
+        gap_id = "R.scope_completion." + str(rubric.get("rubric_id") or "research")
+        add(gap_id, "research", "research_scope_completion.v1",
+            "all research-derived scope dimensions applicable before learner-content checks",
+            kind="deterministic", scope=research_scope)
+        items[-1]["scope_gaps"] = deepcopy(gaps)
+        items[-1]["scope_completion_status"] = rubric.get("scope_completion_status")
+        items[-1]["research_rubric_ref"] = deepcopy(rubric_ref)
+        items[-1]["applicability_reason"] = "research_rubric_task_scope"
+        dimension_scopes = rubric.get("dimension_scopes", {})
+        dimension_scopes = dimension_scopes if isinstance(dimension_scopes, dict) else {}
         for dimension in rubric.get("dimensions", []):
             dimension_id = dimension.get("dimension_id") or dimension.get("id")
             if not dimension_id:
                 continue
+            dimension_scope = dimension_scopes.get(dimension_id)
+            dimension_scope = canonical_scope({
+                **research_scope,
+                **(dimension_scope if isinstance(dimension_scope, dict) else {}),
+            })
             add(f"R.{dimension_id}", "research", "research_rubric.v1",
                 "the research-derived dimension is executed with evidence and no unknown result",
-                kind="semantic_rubric", scope=research_scope)
+                kind="semantic_rubric", scope=dimension_scope)
             items[-1]["research_dimension_id"] = dimension_id
             items[-1]["research_rubric_ref"] = deepcopy(rubric_ref)
             items[-1]["applicability_reason"] = (
@@ -312,13 +320,20 @@ def deterministic_checks(plan: dict, units: list[dict], version_id: str, materia
             if not isinstance(gaps, list):
                 result, reason = "violated", "RESEARCH_SCOPE_COMPLETION_CONTRACT_INVALID"
                 gaps = []
-            elif gaps:
+            elif item.get("scope_completion_status") == "complete" and not gaps:
+                result, reason = "satisfied", "RESEARCH_RUBRIC_SCOPE_COMPLETE"
+            elif gaps and all(
+                    (gap.get("decision") or {}).get("result") == "not_applicable"
+                    for gap in gaps if isinstance(gap, dict)):
+                result, reason = "not_applicable", "RESEARCH_RUBRIC_SCOPE_EXCLUDED"
+            elif item.get("scope_completion_status") == "partial_unresolved" and gaps:
                 result, reason = "violated", "RESEARCH_RUBRIC_SCOPE_PARTIAL"
             else:
-                result, reason = "satisfied", "RESEARCH_RUBRIC_SCOPE_COMPLETE"
+                result, reason = "violated", "RESEARCH_SCOPE_COMPLETION_CONTRACT_INVALID"
             checks.append({"item_id": item["item_id"], "result": result, "reason": reason,
                            "method_version": method,
                            "scope_gaps": deepcopy(gaps),
+                           "scope_completion_status": item.get("scope_completion_status"),
                            "research_rubric_ref": deepcopy(item.get("research_rubric_ref", {}))})
             continue
         elif method == "criterion_review.v1":

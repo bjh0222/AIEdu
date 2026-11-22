@@ -378,8 +378,19 @@ def evaluate_batch(run_id, worker, epoch, state, units, version_id, provider_fac
     for item in items:
         entries = results.get(item["item_id"], [])
         value = "violated" if any(e["result"] == "violated" for e in entries) else "not_run" if entries and all(e["result"] == "not_run" for e in entries) else "undecidable" if entries else "not_applicable"
+        decision = next((
+            row for row in baseline.get("quality_preflight", {}).get("rows", [])
+            if row.get("check_id") == item["item_id"] and row.get("decision") == "skip"
+        ), {}) if value == "not_applicable" else {}
         checks[item["item_id"]] = {"item_id": item["item_id"], "result": value, "unit_results": entries,
-            "method_version": "tqi-e.unit-checklist-batch.v1"}
+            "method_version": "tqi-e.unit-checklist-batch.v1",
+            **({
+                "reason": decision.get("reason"),
+                "applicability_reason": decision.get("reason"),
+                "canonical_scope": decision.get("scope", item.get("scope", {})),
+                "matched_domains": decision.get("matched_domains", []),
+                "quality_matrix_hash": baseline.get("quality_preflight", {}).get("matrix_hash"),
+            } if value == "not_applicable" else {})}
     unique = {f["normalized_claim_hash"]: f for f in findings}
     result = reduce_quality(state["check_plan"], list(checks.values()), list(unique.values()))
     result.update(material_coverage=baseline.get("material_coverage"), item_quality=baseline.get("item_quality"),

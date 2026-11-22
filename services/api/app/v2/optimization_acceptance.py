@@ -245,6 +245,8 @@ def verify(run_id, worker, epoch, state, package, units, provider_factory=None, 
                 "method": "wrapper-assessment-consumption.v2", "evidence": [{"report_hash": digest(report),
                     "method_version": report.get("method_version"), "status": report.get("status"),
                     "version_id": report.get("version_id"), "input_binding": report.get("input_binding"),
+                    "reason": report.get("reason"), "applicability": report.get("applicability"),
+                    "scope": (report.get("applicability") or {}).get("scope"),
                     "coverage": report.get("coverage")}],
                 "limitations": ["engineering_observation_not_professional_certification", *binding_errors], "audit": {}})
     return {"criteria": rows, "audit": audits[-1], "audits": audits, "candidate_hash": digest(units),

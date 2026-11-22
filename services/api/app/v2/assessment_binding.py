@@ -79,6 +79,8 @@ def criterion_check_results(report, state, units, version_id):
             "reason": "no_units_in_declared_domain_scene_role_or_question_form_scope",
             "method_version": "assessment-input-binding.v1",
             "matched_unit_ids": [],
+            "quality_matrix_hash": (report.get("quality_preflight") or {}).get("matrix_hash")
+            if isinstance(report, dict) else None,
         }
         for item_id, matched in applicable.items() if not matched
     }
@@ -119,8 +121,9 @@ def criterion_check_results(report, state, units, version_id):
 def _difficulty(report, state, units):
     from .difficulty_review import bind_item
     from .quality_policy import difficulty_applicability
+    binding_units = list(units)
+    expected_applicability = difficulty_applicability(state.get("context", {}), binding_units)
     if report.get("result") == "not_applicable":
-        expected_applicability = difficulty_applicability(state.get("context", {}), units)
         if (expected_applicability["decision"] != "skip"
                 or report.get("applicability") != expected_applicability
                 or report.get("reason") != expected_applicability["reason"]
@@ -128,6 +131,8 @@ def _difficulty(report, state, units):
                 or report.get("processing_status") != "complete"):
             raise ValueError("not_applicable_lacks_recomputed_scope")
         return "not_applicable", 0, [], 0
+    applicable_ids = set(expected_applicability["applicable_unit_ids"])
+    units = [unit for unit in binding_units if unit.get("unit_id") in applicable_ids]
     rows = report["items"]
     if not isinstance(rows, list):
         raise ValueError("rows required")

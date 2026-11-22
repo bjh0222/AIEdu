@@ -289,13 +289,27 @@ def _apply_research_review(result, state, units, version_id):
                   if i.get("verifier_binding") == "research_rubric.v1"}
     for dimension_id, item in dimensions.items():
         rubric_ref = item.get("research_rubric_ref", {})
+        applicable_units = [unit for unit in units
+                            if applies(item, unit, state.get("context", {}))]
+        if not applicable_units:
+            checks[item["item_id"]] = {
+                "item_id": item["item_id"],
+                "result": "not_applicable",
+                "reason": "no_units_in_declared_research_scope",
+                "canonical_scope": item.get("scope", {}),
+                "matched_domains": [],
+                "method_version": "research-rubric.v1",
+                "processing_status": "complete",
+            }
+            continue
         identity = {key: rubric_ref.get(key) for key in ("id", "version", "hash")}
         observed = [r for r in rows if r.get("dimension_id") == dimension_id
                     and all(
                         (r.get("rubric_ref") or {}).get(key) == value
                         for key, value in identity.items()
                     )]
-        expected_units = [u["unit_id"] for u in units]
+        expected_units = [u["unit_id"] for u in applicable_units]
+        observed = [row for row in observed if row.get("unit_id") in expected_units]
         missing_units = [identity for identity in expected_units
             if len([r for r in observed if r.get("unit_id") == identity
                     and r.get("processing_status") == "complete"]) != 1]
@@ -366,8 +380,20 @@ def _evaluate_core(run_id, worker, epoch, state, units, version_id, provider_fac
             continue
         matching = [u for u in units if applies(item, u, state["context"])]
         if not matching:
-            checks[item["item_id"]] = {"item_id": item["item_id"], "result": "not_applicable",
-                                       "reason": "no units in declared discipline/role scope"}
+            decision = next((
+                row for row in preflight.get("rows", [])
+                if row.get("check_id") == item["item_id"] and row.get("decision") == "skip"
+            ), {})
+            checks[item["item_id"]] = {
+                "item_id": item["item_id"],
+                "result": "not_applicable",
+                "reason": decision.get("reason", "no_units_in_declared_scope"),
+                "applicability_reason": decision.get("reason"),
+                "canonical_scope": decision.get("scope", item.get("scope", {})),
+                "matched_domains": decision.get("matched_domains", []),
+                "quality_matrix_hash": preflight.get("matrix_hash"),
+                "method_version": "zero-model-applicability.v1",
+            }
             continue
         if item["verifier_binding"] in {"ps51_sandbox.v1", "target_runtime.v1"}:
             checks[item["item_id"]] = {"item_id": item["item_id"], "result": "not_run",

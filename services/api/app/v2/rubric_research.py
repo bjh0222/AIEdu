@@ -942,6 +942,7 @@ def execute_research(run_id, worker, epoch, state, provider_factory=None):
     if not claims:
         raise DomainError("RESEARCH_CLAIMS_WITHOUT_LITERAL_EVIDENCE", 422)
     dimensions, rubric_audits, scope_reviews = [], [], []
+    dimension_scope_types = {}
     for scope, coverage in (("knowledge", "factual consistency, attributable support, concept coverage, prerequisite/structural coherence, explanation and representations, practice/retrieval alignment, boundary/uncertainty"),
         ("proposition", "content correctness, target/cognitive alignment, solvability/sufficient premises, answer-stem consistency, wording clarity, construct-irrelevant load, observable difficulty components")):
         generated, audit = _call(run_id, worker, epoch, state, "research_rubric_"+scope,
@@ -965,6 +966,8 @@ def execute_research(run_id, worker, epoch, state, provider_factory=None):
         scoped, reviews, review_audits = review_rubric_scope(run_id, worker, epoch, state, scope,
             validated, claims, provider_factory)
         dimensions.extend(scoped)
+        for dimension in scoped:
+            dimension_scope_types[dimension["dimension_id"]] = scope
         scope_reviews.extend(reviews)
         rubric_audits.append(audit)
         rubric_audits.extend(contract_audits)
@@ -982,9 +985,24 @@ def execute_research(run_id, worker, epoch, state, provider_factory=None):
         for gap in review.get("unresolved_dimensions", [])
         if isinstance(gap, dict)
     ]
-    rubric = {"rubric_id": "research-rubric-"+digest(claims)[:24], "version": 1, "dimensions": dimensions,
+    rubric_id = "research-rubric-" + digest({
+        "claims": claims,
+        "domains": scope_domains,
+        "scenes": scope_scenes,
+        "dimension_scope_types": dimension_scope_types,
+    })[:24]
+    dimension_scopes = {
+        dimension["dimension_id"]: {
+            "domains": scope_domains,
+            "scenes": scope_scenes,
+            "requires_items": dimension_scope_types.get(dimension["dimension_id"]) == "proposition",
+        }
+        for dimension in dimensions
+    }
+    rubric = {"rubric_id": rubric_id, "version": 1, "dimensions": dimensions,
         "domain_key": scope_domains[0] if len(scope_domains) == 1 else None,
         "applicability_scope": {"domains": scope_domains, "scenes": scope_scenes},
+        "dimension_scopes": dimension_scopes,
         "scope_completion_status": "partial_unresolved" if scope_gaps else "complete",
         "scope_gaps": scope_gaps,
         "source_claims": claims, "research_method_version": "ai-screened-diagnostic.v1", "calibration_status": "not_calibrated",

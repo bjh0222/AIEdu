@@ -391,6 +391,7 @@ def review_research_rubrics(run_id, worker, epoch, state, units, version_id, pro
     if not bindings:
         return None
     rows, audits, batches = [], [], []
+    from .review_contract import applicability_decision
     for binding in bindings:
         rubric = binding.get("content", binding)
         _validate_research_rubric_contract(rubric)
@@ -400,10 +401,30 @@ def review_research_rubrics(run_id, worker, epoch, state, units, version_id, pro
         profile_ref = binding.get("profile_ref") or {"status": "not_bound", "reason": "NO_IMPORTED_MATERIAL"}
         rubric_ref = {k: binding[k] for k in ("id", "version", "hash") if k in binding}
         binding_hash = binding.get("binding_hash") or digest({"rubric": rubric_ref, "profile": profile_ref})
+        rubric_scope = binding.get("scope") or rubric.get("applicability_scope") or {}
+        dimension_scopes = rubric.get("dimension_scopes", {})
+        dimension_scopes = dimension_scopes if isinstance(dimension_scopes, dict) else {}
         for unit in units:
+            applicable_dimensions = []
+            for dimension in dimensions:
+                dimension_id = dimension.get("dimension_id") or dimension.get("id")
+                scope = {
+                    **(rubric_scope if isinstance(rubric_scope, dict) else {}),
+                    **(dimension_scopes.get(dimension_id) or {}),
+                }
+                decision = applicability_decision(
+                    {"item_id": "R." + str(dimension_id), "scope": scope,
+                     "verifier_binding": "research_rubric.v1"},
+                    unit, state.get("context", {}),
+                )
+                if decision["decision"] == "execute":
+                    applicable_dimensions.append(dimension)
+            if not applicable_dimensions:
+                continue
             observations, dimension_audits = {}, {}
             review_inputs = []
-            for scoped_rubric, source_claims in _research_review_batches(rubric):
+            unit_rubric = {**rubric, "dimensions": applicable_dimensions}
+            for scoped_rubric, source_claims in _research_review_batches(unit_rubric):
                 batch = scoped_rubric["dimensions"]
                 targets = [d.get("dimension_id") or d.get("id") for d in batch]
                 data = {
@@ -445,7 +466,7 @@ def review_research_rubrics(run_id, worker, epoch, state, units, version_id, pro
                     "coverage": bound["coverage"], "corrections": bound["corrections"],
                     "batch_contract_errors": bound["batch_contract_errors"],
                     **({"partition_recovery": data["partition_recovery"]} if "partition_recovery" in data else {})})
-            for dimension in dimensions:
+            for dimension in applicable_dimensions:
                 dim_id = dimension.get("dimension_id") or dimension.get("id")
                 audit = dimension_audits.get(dim_id, {"call_id": None, "model_family": "unknown"})
                 observation = observations[dim_id]

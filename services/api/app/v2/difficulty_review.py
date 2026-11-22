@@ -118,7 +118,8 @@ def evaluate_difficulty(run_id, worker, epoch, state, units, version_id, provide
     from .quality_policy import difficulty_applicability
     from .inference import invoke
     from .difficulty_batches import resume_batches, METHOD as BATCH_METHOD
-    applicability = difficulty_applicability(state.get("context", {}), units)
+    binding_units = list(units)
+    applicability = difficulty_applicability(state.get("context", {}), binding_units)
     if applicability["decision"] == "skip":
         return {
             "method_version": VERSION,
@@ -135,7 +136,7 @@ def evaluate_difficulty(run_id, worker, epoch, state, units, version_id, provide
                 "invalid_response_entries": 0,
             },
             "protocol_errors": [],
-            "input_binding": input_binding(state, units, version_id),
+            "input_binding": input_binding(state, binding_units, version_id),
             "audits": [],
             "calibration_status": "not_calibrated",
             "empirical_status": "not_measured",
@@ -143,6 +144,8 @@ def evaluate_difficulty(run_id, worker, epoch, state, units, version_id, provide
             "version_id": version_id,
             "applicability": applicability,
         }
+    applicable_unit_ids = set(applicability["applicable_unit_ids"])
+    units = [unit for unit in binding_units if unit.get("unit_id") in applicable_unit_ids]
     requests = [(unit, unit["items"][i:i+3]) for unit in units if unit.get("items") for i in range(0, len(unit["items"]), 3)]
     stopped, stop_lock, first_failure = Event(), Lock(), []
 
@@ -251,7 +254,7 @@ def evaluate_difficulty(run_id, worker, epoch, state, units, version_id, provide
             "processing_status": "complete" if complete else "invalid_or_missing_observation",
             "coverage": {"expected": expected, "recorded": len(rows), "complete_observations": processed,
                 "decided": sum(r["result"] != "undecidable" for r in rows), "invalid_response_entries": len(errors)},
-            "protocol_errors": errors, "input_binding": input_binding(state, units, version_id),
+            "protocol_errors": errors, "input_binding": input_binding(state, binding_units, version_id),
             "audits": [a for _, audits, _ in results for a in audits], "calibration_status": "not_calibrated", "empirical_status": "not_measured",
             "target_authority": "A_frozen_engineering_task_requirement_not_empirical_cutoff",
             "professional_certification": False, "version_id": version_id}

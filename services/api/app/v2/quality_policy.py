@@ -36,6 +36,19 @@ def context_domains(context: Mapping | None) -> set[str]:
     return domains or {"general"}
 
 
+def unit_domains(context: Mapping | None, unit: Mapping | None) -> set[str]:
+    """Return a unit's effective domains, falling back to task context only if absent."""
+    row = unit if isinstance(unit, Mapping) else {}
+    domains = canonical_domains([row.get("domain_key")])
+    bindings = row.get("subject_bindings")
+    if isinstance(bindings, list):
+        domains.update(canonical_domains(
+            binding.get("domain_key") for binding in bindings
+            if isinstance(binding, Mapping)
+        ))
+    return domains or context_domains(context)
+
+
 def task_domains(context: Mapping | None, units: Iterable[Mapping] = ()) -> set[str]:
     """Collect task and unit declarations without changing their stored identity."""
     domains = context_domains(context)
@@ -54,20 +67,31 @@ def task_domains(context: Mapping | None, units: Iterable[Mapping] = ()) -> set[
 def difficulty_applicability(context: Mapping | None, units: Iterable[Mapping]) -> dict:
     """Return the frozen task-level difficulty-axis applicability decision."""
     unit_rows = [unit for unit in units if isinstance(unit, Mapping)]
-    domains = sorted(task_domains(context, unit_rows))
+    domains = set()
+    matched = set()
+    applicable_unit_ids = []
     requires_items = any(bool(unit.get("items")) for unit in unit_rows)
-    matched = sorted(set(domains) & set(DIFFICULTY_AXIS_DOMAINS))
-    applicable = bool(matched and requires_items)
+    for unit in unit_rows:
+        current = unit_domains(context, unit)
+        domains.update(current)
+        overlap = current & DIFFICULTY_AXIS_DOMAINS
+        matched.update(overlap)
+        if overlap and unit.get("items"):
+            applicable_unit_ids.append(unit.get("unit_id"))
+    matched = sorted(matched)
+    applicable = bool(applicable_unit_ids)
     reason = "applicable" if applicable else (
-        "item_content_not_present" if matched and not requires_items else "domain_not_in_scope"
+        "item_content_not_present" if matched and not requires_items
+        else "domain_not_in_scope"
     )
     return {
         "method_version": "difficulty-axis-applicability.v1",
         "decision": "execute" if applicable else "skip",
         "reason": reason,
-        "canonical_domains": domains,
+        "canonical_domains": sorted(domains),
         "matched_domains": matched,
         "requires_items": requires_items,
+        "applicable_unit_ids": applicable_unit_ids,
         "scope": {
             "domains": sorted(DIFFICULTY_AXIS_DOMAINS),
             "requires_items": True,

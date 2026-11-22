@@ -98,7 +98,8 @@ def summarize(rows, expected, audits):
     score = median(measured) if measured and len(measured) == len(q4) else None
     q4_result = ("not_applicable" if not q4 else "undecidable" if score is None else
                  "satisfied" if min(measured) >= 1 and score >= 2 else "violated")
-    result = ("violated" if any(r["result"] == "violated" for r in rows) or q4_result == "violated" else
+    result = ("not_applicable" if expected == 0 and not rows else
+              "violated" if any(r["result"] == "violated" for r in rows) or q4_result == "violated" else
               "undecidable" if len(rows) != expected or any(r["result"] == "undecidable" for r in rows) else "satisfied")
     processed = sum(r.get("processing_status") == "complete" for r in rows)
     return {"method_version": VERSION, "status": "completed" if len(rows) == expected and processed == expected else "incomplete",
