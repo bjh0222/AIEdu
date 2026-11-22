@@ -131,6 +131,10 @@ def test_failed_run_can_explicitly_isolate_receiptless_sent_attempt(client):
         job(db, run_id).status = "failed"
         call = db.get(CallDispatch, call_id)
         call.status, call.outcome, call.receipt_json, call.usage_json = "sent", "", "{}", None
+        call.price_json = None
+        call.provider_request_id = None
+        call.result_blob_hash = None
+        call.finished_at = 0
 
     result = quarantine_unknown(run_id, QuarantineUnknown(**payload), "failed-sent-isolate")
     assert result["scheduled"] is False and result["provider_settlement"] == "unresolved"
@@ -141,6 +145,9 @@ def test_failed_run_can_explicitly_isolate_receiptless_sent_attempt(client):
         assert receipt["failure_code"] == "PROVIDER_TRANSPORT_UNKNOWN"
         assert receipt["failure_diagnostics"]["validation_reason"] == "WORKER_TERMINATED_WITHOUT_RECEIPT"
         assert call.usage_json is None and call.price_json is None
+        assert call.finished_at == 0
+        from app.models import ModelCallLog
+        assert db.query(ModelCallLog).filter_by(call_id=call_id).one().status == "quarantined"
 
 
 def test_failed_run_sent_attempt_with_receipt_is_not_rewritten(client):
@@ -160,6 +167,33 @@ def test_failed_run_sent_attempt_with_receipt_is_not_rewritten(client):
     with write() as db:
         call = db.get(CallDispatch, call_id)
         assert call.status == "sent" and call.receipt_json == '{"provider_request_id":"late"}'
+
+
+@pytest.mark.parametrize("field,value", [
+    ("price_json", "{}"),
+    ("provider_request_id", "provider-ack"),
+    ("result_blob_hash", "a" * 64),
+    ("finished_at", 1.0),
+])
+def test_failed_run_sent_with_partial_receipt_facts_is_not_rewritten(client, field, value):
+    from app.v2.contracts import DomainError, QuarantineUnknown
+    from app.v2.runtime import job, write
+    from app.v2.storage import CallDispatch
+    from app.v2.tasks import quarantine_unknown
+
+    _, run_id, payload = unknown_run(client)
+    call_id = payload["calls"][0]["call_id"]
+    with write() as db:
+        job(db, run_id).status = "failed"
+        call = db.get(CallDispatch, call_id)
+        call.status, call.outcome, call.receipt_json, call.usage_json = "sent", "", "{}", None
+        call.price_json = None
+        call.provider_request_id = None
+        call.result_blob_hash = None
+        call.finished_at = 0
+        setattr(call, field, value)
+    with pytest.raises(DomainError, match="CALL_SENT_RECEIPT_PRESENT"):
+        quarantine_unknown(run_id, QuarantineUnknown(**payload), f"partial-{field}")
 
 
 def test_active_run_and_active_sibling_rejected(client):
@@ -190,10 +224,23 @@ def test_separate_resume_and_late_provider_receipt_remain_honest(client):
         checkpoint_hash=isolated["checkpoint_hash"]), "explicit-resume")
     assert resumed["parent_run_id"] == run_id and resumed["run_id"] != run_id
     call_id = payload["calls"][0]["call_id"]
-    assert settle(call_id, "success", {"total_tokens": 3}, "late-provider-id")["status"] == "late"
+    assert settle(call_id, "success", {"total_tokens": 3}, "late-provider-id") == {
+        "status": "quarantined", "late_receipt": "recorded"
+    }
     snap = snapshot(created["task_id"], resumed["run_id"])
     assert snap["cost_final"] is False  # provider usage arrived, but no price.
-    assert snap["calls"][0]["provider_request_id"] == "late-provider-id"
+    call = snap["calls"][0]
+    assert call["provider_request_id"] is None
+    assert call["status"] == "quarantined" and call["outcome"] == "unknown"
+    assert call["late_receipt"]["late_outcome"] == "success"
+    assert call["late_receipt"]["late_usage"] == {"total_tokens": 3}
+    assert call["late_receipt"]["provider_request_id"] == "late-provider-id"
+    assert settle(call_id, "success", {"total_tokens": 3}, "late-provider-id") == {
+        "status": "quarantined", "late_receipt": "already_recorded"
+    }
+    from app.v2.contracts import DomainError
+    with pytest.raises(DomainError, match="SETTLEMENT_CONFLICT"):
+        settle(call_id, "failed", {"total_tokens": 4}, "different-provider-id")
 
 
 def test_quarantine_api_requires_owner_and_csrf(client):

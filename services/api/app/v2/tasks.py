@@ -14,7 +14,7 @@ from ..db import SessionLocal
 from ..models import GenerationJob, GoalMaterial, LearningGoal, Tutorial, TutorialVersion
 from .contracts import DomainError, digest, sha
 from .quality import compile_plan, reduce_quality
-from .runtime import cas, dump, job, load, materialize, write
+from .runtime import cas, dump, job, load, materialize, normalize_stopped_run_calls, write
 from .storage import CallDispatch, ExportSet
 from .resolver import bind_specs, build_units, resolve_task
 
@@ -299,8 +299,7 @@ def pause(run_id, payload, key):
         obj.status, obj.cancel_epoch = "paused", obj.cancel_epoch + 1
         obj.state_revision += 1
         state["stop_reason"] = "user_pause"
-        for call in db.query(CallDispatch).filter_by(root_job_id=obj.id, status="authorized"):
-            call.status = "not_sent"
+        normalize_stopped_run_calls(db, obj)
         response = {"run_id": run_id, "state": "paused", "state_revision": obj.state_revision,
                     "version_id": state.get("version_id"), "checkpoint_hash": digest(state["plan"]),
                     "inflight_count": db.query(CallDispatch).filter_by(root_job_id=obj.id, status="sent").count(),
@@ -338,6 +337,18 @@ def quarantine_unknown(run_id, payload, key):
         ids = [str(entry.call_id) for entry in payload.calls]
         if len(ids) != len(set(ids)):
             raise DomainError("DUPLICATE_CALL_ID", 422)
+
+        def receiptless_sent(call):
+            try:
+                receipt = load(call.receipt_json)
+            except (TypeError, ValueError):
+                return False
+            return (not call.outcome and receipt == {}
+                    and call.usage_json is None and call.price_json is None
+                    and call.provider_request_id is None
+                    and call.result_blob_hash is None
+                    and not call.finished_at)
+
         selected = []
         for entry in payload.calls:
             call = db.get(CallDispatch, str(entry.call_id))
@@ -354,7 +365,7 @@ def quarantine_unknown(run_id, payload, key):
             # reaper.  This does not infer failure, usage, price, or provider
             # settlement.
             if call.status == "sent" and obj.status == "failed":
-                if call.outcome or call.receipt_json not in ("", "{}", None) or call.usage_json is not None:
+                if not receiptless_sent(call):
                     raise DomainError("CALL_SENT_RECEIPT_PRESENT")
                 call.outcome = "unknown"
                 call.receipt_json = dump({
@@ -363,7 +374,6 @@ def quarantine_unknown(run_id, payload, key):
                     "failure_code": "PROVIDER_TRANSPORT_UNKNOWN",
                     "failure_diagnostics": {"validation_reason": "WORKER_TERMINATED_WITHOUT_RECEIPT"},
                 })
-                call.finished_at = time.time()
                 call.usage_json = None
             elif call.status == "sent":
                 raise DomainError("CALL_NOT_UNKNOWN")
@@ -378,8 +388,30 @@ def quarantine_unknown(run_id, payload, key):
             # explicit unknown receipt; quarantine itself never settles it.
             call.status = "quarantined"
             log = db.query(ModelCallLog).filter_by(call_id=call.call_id).first()
-            if log:
-                log.status = "quarantined"
+            if log is None:
+                log = ModelCallLog(
+                    call_id=call.call_id,
+                    run_id=call.run_id,
+                    unit_id=call.unit_id,
+                    goal_id=obj.goal_id,
+                    job_id=obj.id,
+                    attempt=call.attempt,
+                    feature="task_v2",
+                    model=call.model,
+                    provider=call.provider,
+                    outcome="unknown",
+                    status="quarantined",
+                    usage_source="unknown",
+                )
+                db.add(log)
+            usage = load(call.usage_json) if call.usage_json else {}
+            for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                value = usage.get(field)
+                if type(value) is int and value >= 0:
+                    setattr(log, field, value)
+            log.outcome = call.outcome or "unknown"
+            log.status = "quarantined"
+            log.usage_source = "provider" if call.usage_json else "unknown"
             state.setdefault("unknown_quarantines", {})[call.call_id] = {
                 "method_version": "explicit-unknown-isolation.v1",
                 "call_id": call.call_id, "request_hash": call.request_hash,
@@ -428,18 +460,23 @@ def resume(run_id, payload, key):
         require_live_task(db, old.goal_id)
         if load(owner.task_state_json)["context"]["context_hash"] != state["context"]["context_hash"]:
             raise DomainError("INPUT_CHANGED")
+        if db.query(CallDispatch).filter_by(root_job_id=old.id).filter(
+                CallDispatch.status.in_(["unknown", "sent"])).first():
+            raise DomainError("UNKNOWN_QUARANTINE_REQUIRED")
         decisions = {str(r.call_id): r for r in payload.unknown_resolutions}
-        for call in db.query(CallDispatch).filter_by(root_job_id=old.id).filter(CallDispatch.status.in_(["unknown", "sent"])):
-            decision = decisions.get(call.call_id)
-            if decision is None:
-                raise DomainError("UNKNOWN_CALL")
+        if len(decisions) != len(payload.unknown_resolutions):
+            raise DomainError("DUPLICATE_CALL_ID", 422)
+        for call_id, decision in decisions.items():
+            call = db.get(CallDispatch, call_id)
+            if (call is None or call.root_job_id != old.id
+                    or call.status != "quarantined"):
+                raise DomainError("CALL_NOT_QUARANTINED", 422)
             if decision.action == "verify_provider_status":
                 raise DomainError("PROVIDER_STATUS_UNSUPPORTED", 422)
-            if decision.action == "retry_as_new_attempt" and decision.acknowledge_possible_duplicate_cost:
-                call.status = "quarantined"
+            if decision.action == "retry_as_new_attempt":
+                if not decision.acknowledge_possible_duplicate_cost:
+                    raise DomainError("RETRY_REQUIRES_DUPLICATE_COST_ACK", 422)
                 state.setdefault("retry_links", {})[call.unit_id] = call.call_id
-            else:
-                raise DomainError("UNKNOWN_DEPENDENCY_BLOCKED")
         previous_version = db.get(TutorialVersion, state.get("version_id")) if state.get("version_id") else None
         current_artifact = db.get(Tutorial, state.get("artifact_id")) if state.get("artifact_id") else None
         if ((payload.recheck_completed or (payload.replan and state.get("version_id"))) and
@@ -576,6 +613,12 @@ def snapshot(task_id, run_id=None):
         from sqlalchemy import select
         chain = select(GenerationJob.id, GenerationJob.parent_job_id).where(GenerationJob.id == obj.id).cte("run_chain", recursive=True)
         chain = chain.union_all(select(GenerationJob.id, GenerationJob.parent_job_id).join(chain, GenerationJob.id == chain.c.parent_job_id))
+        chain_ids = list(db.scalars(select(chain.c.id)))
+        late_receipts = {}
+        for ancestor_id in chain_ids:
+            ancestor = db.get(GenerationJob, ancestor_id)
+            if ancestor is not None:
+                late_receipts.update(load(ancestor.state_json).get("late_receipts", {}))
         calls = db.query(CallDispatch).filter(CallDispatch.root_job_id.in_(select(chain.c.id)))\
                   .order_by(CallDispatch.started_at, CallDispatch.call_id).all()
         version = db.get(TutorialVersion, state["version_id"]) if state.get("version_id") else None
@@ -598,6 +641,7 @@ def snapshot(task_id, run_id=None):
                          if profile.get("planning_guidance")]
         from .review_contract import delivery_outcome, summarize_calls
         call_rows = []
+        observed_at = time.time()
         for call in calls:
             manifest = load(call.manifest_json)
             current_run = call.root_job_id == obj.id
@@ -605,6 +649,10 @@ def snapshot(task_id, run_id=None):
                             "ancestor_resume" if not current_run else
                             "stage_reattempt" if call.attempt > 1 else "initial")
             receipt = load(call.receipt_json)
+            late = late_receipts.get(call.call_id)
+            unresolved = ((call.status in {"unknown", "sent"} or call.outcome == "unknown")
+                          and call.status != "quarantined" and bool(call.started_at))
+            unknown_age = observed_at - call.started_at if unresolved else None
             call_rows.append({
                 "call_id": call.call_id, "unit_id": call.unit_id, "status": call.status,
                 "outcome": call.outcome, "attempt": call.attempt,
@@ -619,6 +667,16 @@ def snapshot(task_id, run_id=None):
                 "supersedes_call_id": call.supersedes_call_id,
                 "current_run": current_run, "retry_source": retry_source,
                 "request_hash": call.request_hash,
+                "started_at": call.started_at or None,
+                "finished_at": call.finished_at or None,
+                "unknown_age_seconds": unknown_age,
+                "unknown_age_warning": unknown_age is not None and unknown_age >= 6 * 3600,
+                "late_receipt": {
+                    key: late.get(key) for key in (
+                        "late_outcome", "receipt_hash", "late_result_blob_hash",
+                        "late_usage", "usage_source", "provider_request_id", "received_at",
+                    )
+                } if isinstance(late, dict) else None,
             })
         delivery = delivery_outcome(
             status=obj.status, stages=visible_stages, quality=quality,
@@ -637,7 +695,11 @@ def snapshot(task_id, run_id=None):
                 "benchmark_result":state.get("benchmark_result"),
                 "import_profile_status": import_status,
                 "calls": call_rows,
-                "accounting_revision": digest([(c.call_id, c.status, c.usage_json) for c in calls]),
+                "accounting_revision": digest([
+                    (c.call_id, c.status, c.usage_json,
+                     (late_receipts.get(c.call_id) or {}).get("receipt_hash"))
+                    for c in calls
+                ]),
                 "delivery_state": delivery["state"],
                 "delivery_detail": delivery["detail"],
                 "run_metrics": summarize_calls(call_rows),

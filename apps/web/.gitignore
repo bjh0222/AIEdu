@@ -45,6 +45,6 @@ yarn-error.log*
 next-env.d.ts
 
 # Playwright 产物（截图/trace/结果 JSON 由证据文档登记，不入库）
-/test-results/
+/test-results*/
 /e2e/results/
-/playwright-report/
+/playwright-report*/

@@ -211,6 +211,73 @@ test.describe("工作台 AT-11", () => {
     await expect(page.getByRole("link", { name: "阅读草稿" })).toBeVisible();
     await expect(page.getByRole("button", { name: "下载" })).toBeVisible();
   });
+
+  test("unknown：先真实隔离，再单独续跑；超过6小时只告警不自动处理", async ({ page }) => {
+    const callId = "99999999-9999-4999-8999-999999999999";
+    const requestHash = "f".repeat(64);
+    let quarantined = false;
+    const quarantineBodies: Record<string, unknown>[] = [];
+    let resumePosts = 0;
+    await mockBackend(page, {
+      snapshot: () => runSnapshot({
+        state: "paused",
+        state_revision: quarantined ? 4 : 3,
+        version_id: IDS.v2,
+        next_actions: ["resume"],
+        stop_reason: "user_pause",
+        demo: false,
+        cost_final: false,
+        calls: [{
+          call_id: callId,
+          unit_id: IDS.unit,
+          status: quarantined ? "quarantined" : "unknown",
+          outcome: "unknown",
+          attempt: 1,
+          usage: null,
+          price: null,
+          model_family: "x",
+          request_hash: requestHash,
+          started_at: Date.now() / 1000 - 7 * 3600,
+          unknown_age_warning: true,
+        }],
+      }),
+      onWrite: async (route, p) => {
+        if (p.endsWith("/unknown-quarantines")) {
+          quarantineBodies.push(route.request().postDataJSON() as Record<string, unknown>);
+          quarantined = true;
+          await route.fulfill({ json: {
+            run_id: IDS.run,
+            state: "paused",
+            state_revision: 4,
+            checkpoint_hash: "d".repeat(64),
+            call_ids: [callId],
+            scheduled: false,
+            provider_settlement: "unresolved",
+          } });
+          return true;
+        }
+        if (p.endsWith("/resume")) {
+          resumePosts++;
+          await route.fulfill({ json: { run_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", parent_run_id: IDS.run } });
+          return true;
+        }
+        return false;
+      },
+    });
+    await page.goto(`/tasks/${IDS.task}`);
+    await expect(page.getByRole("heading", { name: "有 1 个调用结果不明" })).toBeVisible();
+    await expect(page.getByText("结果不明已超过 6 小时", { exact: false })).toBeVisible();
+    await expect(page.getByRole("button", { name: "向供应商核实" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "保留，不重做" })).toBeDisabled();
+    await page.getByLabel("我了解结果不明的调用可能已经产生费用；“重做”可能再次计费").check();
+    await page.getByRole("button", { name: "保留，不重做" }).click();
+    await expect.poll(() => quarantineBodies.length).toBe(1);
+    expect(quarantineBodies[0]["calls"]).toEqual([{ call_id: callId, request_hash: requestHash }]);
+    expect(resumePosts).toBe(0);
+    await expect(page.getByRole("heading", { name: /调用结果不明/ })).toHaveCount(0);
+    await page.getByRole("button", { name: "继续生成" }).click();
+    await expect.poll(() => resumePosts).toBe(1);
+  });
 });
 
 

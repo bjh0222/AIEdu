@@ -59,22 +59,37 @@ def test_global_one_active_root(client):
         claim_root(two["run_id"], "two")
 
 
-def test_unknown_resume_requires_explicit_risk_and_new_call(client):
-    from app.v2.contracts import DomainError, Pause, Resume
+def test_unknown_resume_requires_separate_quarantine_then_new_call(client):
+    from app.v2.contracts import DomainError, Pause, QuarantineUnknown, Resume
+    from app.v2.contracts import sha
     from app.v2.runtime import authorize_call, claim_root, mark_sent, settle
-    from app.v2.tasks import pause, resume, snapshot
+    from app.v2.tasks import pause, quarantine_unknown, resume, snapshot
     created, run = queued(client)
     lease = claim_root(run["run_id"], "worker")
-    call = authorize_call(run["run_id"], "unit", "h", "i", lease["epoch"], "worker", "c")
+    request_hash = sha("unknown-request")
+    call = authorize_call(run["run_id"], "unit", request_hash, "i", lease["epoch"], "worker", "c")
     mark_sent(call, "worker", lease["epoch"])
     settle(call, "unknown")
     snap = snapshot(created["task_id"])
     paused = pause(run["run_id"], Pause(expected_revision=snap["state_revision"]), "pause")
     dto = Resume(expected_revision=paused["state_revision"], checkpoint_hash=paused["checkpoint_hash"])
-    with pytest.raises(DomainError, match="UNKNOWN_CALL"):
+    with pytest.raises(DomainError, match="UNKNOWN_QUARANTINE_REQUIRED"):
         resume(run["run_id"], dto, "resume-no-risk")
-    dto.unknown_resolutions = []
-    data = dto.model_dump() | {"unknown_resolutions": [{"call_id": call, "action": "retry_as_new_attempt", "acknowledge_possible_duplicate_cost": True}]}
+    isolated = quarantine_unknown(run["run_id"], QuarantineUnknown(
+        expected_revision=paused["state_revision"],
+        checkpoint_hash=paused["checkpoint_hash"],
+        calls=[{"call_id": call, "request_hash": request_hash}],
+        acknowledge_possible_duplicate_cost=True,
+    ), "isolate")
+    data = {
+        "expected_revision": isolated["state_revision"],
+        "checkpoint_hash": isolated["checkpoint_hash"],
+        "unknown_resolutions": [{
+            "call_id": call,
+            "action": "retry_as_new_attempt",
+            "acknowledge_possible_duplicate_cost": True,
+        }],
+    }
     result = resume(run["run_id"], Resume(**data), "resume-risk")
     assert result["run_id"] != run["run_id"]
 

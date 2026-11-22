@@ -15,8 +15,9 @@ from ..model_settings import runtime_settings
 from ..models import GoalMaterial, TutorialVersion
 from .contracts import DomainError, digest, request_hash, sha
 from .quality import check_snapshot
-from .runtime import (authorize_call, claim_root, dump, fence, job, load, mark_sent, materialize, publish,
-                      reconcile_stale_jobs, renew, settle, write)
+from .runtime import (active_provider_work, authorize_call, claim_root, dump, fence, job, load, mark_sent,
+                      materialize, normalize_stopped_run_calls, publish, reconcile_stale_jobs, renew, settle,
+                      write)
 from .storage import BlobStore
 from .synthesis_requests import RUNTIME_VERSION as SYNTHESIS_RUNTIME_VERSION
 
@@ -42,21 +43,32 @@ def safe_worker_diagnostics(exc):
 def dispatcher(stop):
     """Persistent queue recovery; never resumes interrupted or possibly-paid calls."""
     from ..models import GenerationJob
-    from .storage import CallDispatch
     while not stop.wait(0.5):
         try:
-            with write() as db:
-                reconcile_stale_jobs(db)
-            with SessionLocal() as db:
-                occupied = db.query(GenerationJob).filter_by(job_type="task_v2", status="running").count()
-                occupied += db.query(CallDispatch).filter(CallDispatch.status.in_(["sent", "authorized", "unknown"])).count()
-                pending = db.query(GenerationJob).filter_by(job_type="task_v2", status="queued").order_by(GenerationJob.created_at, GenerationJob.id).first() if not occupied else None
-                next_run = pending.run_id if pending else None
-            if next_run:
-                execute_run(next_run)
+            dispatch_once()
         except Exception:
             # Transient SQLite contention does not drop the queue or invent success.
             continue
+
+
+def dispatch_once():
+    """Run one queue check using the shared active-provider-work predicate."""
+    from ..models import GenerationJob
+    with write() as db:
+        reconcile_stale_jobs(db)
+    with SessionLocal() as db:
+        if db.query(GenerationJob).filter_by(
+                job_type="task_v2", status="running").count():
+            return None
+        if active_provider_work(db):
+            return None
+        pending = db.query(GenerationJob).filter_by(
+            job_type="task_v2", status="queued"
+        ).order_by(GenerationJob.created_at, GenerationJob.id).first()
+        next_run = pending.run_id if pending else None
+    if next_run:
+        execute_run(next_run)
+    return next_run
 
 
 def _heartbeat(run_id, worker, epoch, stop):
@@ -302,7 +314,12 @@ def execute_run(run_id: str, provider_factory=None):
             obj = job(db, run_id)
             if obj.cancel_epoch == epoch and obj.status == "running":
                 latest = load(obj.state_json)
+                normalized = normalize_stopped_run_calls(db, obj)
                 latest["stop_reason"] = exc.code
+                latest["stop_call_normalization"] = {
+                    "method_version": "stopped-run-authorized-release.v1",
+                    "calls": normalized,
+                }
                 obj.status, obj.error_code, obj.state_json = "interrupted" if exc.code == "UNKNOWN_CALL" else "failed", exc.code, dump(latest)
                 obj.state_revision += 1
     except Exception as exc:
@@ -311,8 +328,13 @@ def execute_run(run_id: str, provider_factory=None):
             obj = job(db, run_id)
             if obj.cancel_epoch == epoch and obj.status == "running":
                 latest = load(obj.state_json)
+                normalized = normalize_stopped_run_calls(db, obj)
                 latest["stop_reason"] = "WORKER_ERROR"
                 latest["worker_error_diagnostics"] = safe_worker_diagnostics(exc)
+                latest["stop_call_normalization"] = {
+                    "method_version": "stopped-run-authorized-release.v1",
+                    "calls": normalized,
+                }
                 obj.status, obj.error_code, obj.state_json = "failed", "WORKER_ERROR", dump(latest)
                 obj.state_revision += 1
     finally:

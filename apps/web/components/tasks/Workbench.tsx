@@ -14,6 +14,7 @@ import KnowledgeMap from "./KnowledgeMap";
 import RunEvidence from "./RunEvidence";
 
 type PauseUi = "idle" | "requesting" | "unconfirmed";
+type UnknownCall = CallSnapshot & { started_at?: number | null; unknown_age_warning?: boolean };
 const ROLE: Record<string, string> = { tutorial: "教程", exercise: "练习", answer: "参考答案", paper: "试卷", cheatsheet: "速查", chapter: "章节", book_level: "全书层" };
 
 export default function Workbench({ taskId }: { taskId: string }) {
@@ -25,9 +26,11 @@ export default function Workbench({ taskId }: { taskId: string }) {
   const [actionError, setActionError] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
   const [resumeBusy, setResumeBusy] = useState(false);
-  const [resolutions, setResolutions] = useState<Record<string, "retry_as_new_attempt" | "keep_quarantined" | "verify_provider_status">>({});
+  const [quarantineBusy, setQuarantineBusy] = useState("");
+  const [quarantineKey, setQuarantineKey] = useState<string | null>(null);
+  const [pendingRetryCalls, setPendingRetryCalls] = useState<{ call_id: string; request_hash: string }[]>([]);
   const [ack, setAck] = useState(false);
-  const [unknownCalls, setUnknownCalls] = useState<string[] | null>(null);
+  const [unknownCalls, setUnknownCalls] = useState<UnknownCall[] | null>(null);
 
   useEffect(() => {
     // Restore browser-only session state after hydration; cancel on task change.
@@ -43,6 +46,8 @@ export default function Workbench({ taskId }: { taskId: string }) {
   }, [taskId]);
 
   const run = snapshot && isRun(snapshot) ? snapshot : null;
+  const detectedUnknownCalls = (run?.calls.filter((call) => call.status === "unknown" || call.status === "sent") ?? []) as UnknownCall[];
+  const visibleUnknownCalls = unknownCalls ?? detectedUnknownCalls;
   const task = snapshot ? (snapshot as { task?: { title?: string; raw_input?: string } }).task ?? run?.resolved_task as { title?: string; raw_input?: string } | undefined : undefined;
   const title = (run?.resolved_task as { title?: string } | undefined)?.title ?? task?.title ?? "任务";
 
@@ -96,24 +101,83 @@ export default function Workbench({ taskId }: { taskId: string }) {
     }
   }
 
-  async function resume(withResolutions = false) {
+  async function resume() {
     if (!run) return;
     setResumeBusy(true);
     setActionError("");
     try {
-      const unknown_resolutions = withResolutions
-        ? Object.entries(resolutions).map(([call_id, action]) => ({ call_id, action, acknowledge_possible_duplicate_cost: action === "retry_as_new_attempt" && ack }))
-        : [];
+      const unknown_resolutions = pendingRetryCalls.map((call) => ({
+        ...call,
+        action: "retry_as_new_attempt" as const,
+        acknowledge_possible_duplicate_cost: true,
+      }));
       const r = await api.resume(taskId, run.run_id, { expected_revision: run.state_revision, checkpoint_hash: run.checkpoint_hash, unknown_resolutions }, newKey());
       toast("已创建续跑");
       setUnknownCalls(null);
+      setPendingRetryCalls([]);
       followRun(r.run_id); // 旧 run 保持 paused；轮询切到新 run
     } catch (e) {
-      if (e instanceof ApiError && e.code === "UNKNOWN_CALL") {
-        setUnknownCalls(run.calls.filter((c) => c.status === "unknown" || c.status === "sent").map((c) => c.call_id));
+      if (e instanceof ApiError && (e.code === "UNKNOWN_CALL" || e.code === "UNKNOWN_QUARANTINE_REQUIRED")) {
+        setUnknownCalls(run.calls.filter((c) => c.status === "unknown" || c.status === "sent") as UnknownCall[]);
       } else setActionError(explain(e));
     } finally {
       setResumeBusy(false);
+    }
+  }
+
+  async function quarantine(call: UnknownCall, retry: boolean) {
+    if (!run || !ack) return;
+    setQuarantineBusy(call.call_id);
+    setActionError("");
+    const key = newKey();
+    setQuarantineKey(key);
+    try {
+      await api.quarantineUnknown(taskId, run.run_id, {
+        expected_revision: run.state_revision,
+        checkpoint_hash: run.checkpoint_hash,
+        calls: [{ call_id: call.call_id, request_hash: call.request_hash }],
+        acknowledge_possible_duplicate_cost: true,
+      }, key);
+      if (retry) {
+        setPendingRetryCalls((current) => current.some((item) => item.call_id === call.call_id)
+          ? current
+          : [...current, { call_id: call.call_id, request_hash: call.request_hash }]);
+      }
+      setUnknownCalls((current) => (current ?? detectedUnknownCalls).filter((item) => item.call_id !== call.call_id));
+      setAck(false);
+      setQuarantineKey(null);
+      toast(retry ? "调用已隔离；继续生成时会作为新尝试" : "调用已隔离，未自动续跑");
+      await refresh();
+    } catch (e) {
+      if (e instanceof ApiError && e.code === "REVISION_STALE") {
+        await refresh();
+        setActionError("任务状态刚刚更新，隔离没有生效。已读取最新状态，请再次确认。");
+        setQuarantineKey(null);
+      } else if (e instanceof UnknownOutcomeError) {
+        setActionError("隔离请求未确认：没有收到服务端响应。可以先查询回执，不要直接重复提交。");
+      } else {
+        setActionError(`隔离未完成。${explain(e)}`);
+        setQuarantineKey(null);
+      }
+    } finally {
+      setQuarantineBusy("");
+    }
+  }
+
+  async function checkQuarantineReceipt() {
+    if (!quarantineKey) return;
+    try {
+      const receipt = await getReceipt(quarantineKey);
+      if (receipt.status === "completed") {
+        clearPending(quarantineKey);
+        setQuarantineKey(null);
+        setActionError("回执显示：调用已隔离。继续生成仍是单独动作。");
+        await refresh();
+      } else {
+        setActionError("暂未查到隔离回执，仍不能断定未执行。请继续查询，勿重复提交。");
+      }
+    } catch (e) {
+      setActionError(explain(e));
     }
   }
 
@@ -166,7 +230,7 @@ export default function Workbench({ taskId }: { taskId: string }) {
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {canPause && <button className="btn" onClick={() => void pause()} disabled={pausing || Boolean(pauseKey)} aria-busy={pausing}>{pausing ? "正在请求暂停" : "暂停并保留已有内容"}</button>}
-          {canResume && <button className="btn btn-primary" onClick={() => void resume()} disabled={resumeBusy} aria-busy={resumeBusy}>继续生成</button>}
+          {canResume && <button className="btn btn-primary" onClick={() => void resume()} disabled={resumeBusy || visibleUnknownCalls.length > 0} aria-busy={resumeBusy}>{pendingRetryCalls.length ? `继续生成（含 ${pendingRetryCalls.length} 项重做）` : "继续生成"}</button>}
           {hasDraft && <Link className="btn" href={`/tasks/${taskId}/read?version=${run.version_id}`}>阅读草稿</Link>}
 
           {hasDraft && <button className="btn" onClick={() => setExportOpen(true)}>下载</button>}
@@ -178,7 +242,7 @@ export default function Workbench({ taskId }: { taskId: string }) {
       {actionError && (
         <div className="banner banner-danger" role="alert" style={{ marginBottom: 12 }}>
           <div>{actionError}</div>
-          {pauseKey && <button className="btn btn-sm" onClick={() => void checkPauseReceipt()}>查询回执</button>}
+          {(pauseKey || quarantineKey) && <button className="btn btn-sm" onClick={() => void (pauseKey ? checkPauseReceipt() : checkQuarantineReceipt())}>查询回执</button>}
         </div>
       )}
       {run.state === "paused" && (
@@ -200,27 +264,27 @@ export default function Workbench({ taskId }: { taskId: string }) {
         </div>
       )}
 
-      {unknownCalls && (
+      {visibleUnknownCalls.length > 0 && (
         <section className="panel panel-pad" style={{ marginBottom: 16 }} aria-labelledby="unk">
-          <h2 className="sub" id="unk">有 {unknownCalls.length} 个调用结果不明</h2>
-          <p className="muted">这些调用已发出但没有确认结果。系统不会替你重发。请逐项选择：</p>
+          <h2 className="sub" id="unk">有 {visibleUnknownCalls.length} 个调用结果不明</h2>
+          <p className="muted">这些调用已发出但没有确认结果。先逐项隔离；隔离不会自动续跑，也不会替你重发。继续生成是另一个动作。</p>
           <ul>
-            {unknownCalls.map((id, index) => (
-              <li key={id} style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
+            {visibleUnknownCalls.map((call, index) => (
+              <li key={call.call_id} style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
                 <span>待核实请求 {index + 1}</span>
+                {call.unknown_age_warning && <p className="hint" role="alert">这次调用结果不明已超过 6 小时；系统没有自动隔离、重发或恢复。</p>}
                 <div className="seg" style={{ marginLeft: 12 }} role="group" aria-label={`待核实请求 ${index + 1} 的处理方式`}>
-                  <button type="button" aria-pressed={resolutions[id] === "keep_quarantined"} onClick={() => setResolutions({ ...resolutions, [id]: "keep_quarantined" })}>保留，不重做</button>
-                  <button type="button" aria-pressed={resolutions[id] === "retry_as_new_attempt"} onClick={() => setResolutions({ ...resolutions, [id]: "retry_as_new_attempt" })}>重做为新尝试</button>
-                  <button type="button" aria-pressed={resolutions[id] === "verify_provider_status"} onClick={() => setResolutions({ ...resolutions, [id]: "verify_provider_status" })}>向供应商核实</button>
+                  <button type="button" disabled={!ack || Boolean(quarantineBusy)} aria-busy={quarantineBusy === call.call_id} onClick={() => void quarantine(call, false)}>保留，不重做</button>
+                  <button type="button" disabled={!ack || Boolean(quarantineBusy)} onClick={() => void quarantine(call, true)}>隔离并准备重做</button>
                 </div>
               </li>
             ))}
           </ul>
           <label style={{ display: "flex", gap: 8, margin: "12px 0", minHeight: 44, alignItems: "center" }}>
             <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
-            我知道“重做为新尝试”可能产生重复计费
+            我了解结果不明的调用可能已经产生费用；“重做”可能再次计费
           </label>
-          <button className="btn btn-primary" disabled={resumeBusy || unknownCalls.some((id) => !resolutions[id])} onClick={() => void resume(true)}>按所选方式继续</button>
+          <p className="hint">完成隔离后，页面顶部的“继续生成”才会可用。</p>
         </section>
       )}
 

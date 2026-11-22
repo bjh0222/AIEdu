@@ -17,6 +17,8 @@ from .storage import BlobStore, CallDispatch
 
 LEASE_TTL = 60
 LEASE_RENEW_SECONDS = 15
+ACTIVE_JOB_STATUSES = frozenset({"queued", "running"})
+ACTIVE_PROVIDER_STATUSES = frozenset({"authorized", "sent", "unknown"})
 
 
 @contextmanager
@@ -49,6 +51,42 @@ def job(db, run_id):
 def cas(obj, revision):
     if obj.state_revision != revision:
         raise DomainError("REVISION_STALE", current_revision=obj.state_revision)
+
+
+def active_provider_work(db, *, root_job_id=None, unit_id=None):
+    """Provider attempts that can still block an active queued/running run.
+
+    Historical failed, paused and interrupted runs keep their call receipts for
+    audit, but those receipts no longer occupy the global execution queue.
+    Callers must use this single query so scheduling and authorization agree.
+    """
+    query = db.query(CallDispatch).join(
+        GenerationJob, GenerationJob.id == CallDispatch.root_job_id
+    ).filter(
+        GenerationJob.job_type == "task_v2",
+        GenerationJob.status.in_(ACTIVE_JOB_STATUSES),
+        CallDispatch.status.in_(ACTIVE_PROVIDER_STATUSES),
+    )
+    if root_job_id is not None:
+        query = query.filter(CallDispatch.root_job_id == root_job_id)
+    if unit_id is not None:
+        query = query.filter(CallDispatch.unit_id == unit_id)
+    return query.order_by(CallDispatch.started_at, CallDispatch.call_id).all()
+
+
+def normalize_stopped_run_calls(db, obj):
+    """Release never-sent authorization without inferring outcomes for sent calls."""
+    normalized = []
+    for call in db.query(CallDispatch).filter_by(
+            root_job_id=obj.id, status="authorized").order_by(CallDispatch.call_id):
+        call.status = "not_sent"
+        normalized.append({
+            "call_id": call.call_id,
+            "unit_id": call.unit_id,
+            "before": "authorized",
+            "after": "not_sent",
+        })
+    return normalized
 
 
 def claim_root(run_id: str, worker: str, now=None) -> dict:
@@ -105,23 +143,17 @@ def reconcile_stale_jobs(db, now=None) -> list[dict]:
         stale.status = "interrupted"
         stale.cancel_epoch += 1
         stale.state_revision += 1
-        calls = []
-        for call in db.query(CallDispatch).filter(
-                CallDispatch.root_job_id == stale.id,
-                CallDispatch.status.in_(["authorized", "sent"])).all():
-            before = call.status
-            call.status = "unknown" if before == "sent" else "not_sent"
-            calls.append({
-                "call_id": call.call_id,
-                "unit_id": call.unit_id,
-                "before": before,
-                "after": call.status,
-            })
+        calls = normalize_stopped_run_calls(db, stale)
+        preserved_sent = [
+            call.call_id for call in db.query(CallDispatch).filter_by(
+                root_job_id=stale.id, status="sent").order_by(CallDispatch.call_id)
+        ]
         released.append({
             **previous,
             "state": "interrupted",
             "new_epoch": stale.cancel_epoch,
             "calls": calls,
+            "preserved_sent_call_ids": preserved_sent,
             "method_version": "lease-timeout-reaper.v1",
         })
     return released
@@ -170,8 +202,8 @@ def authorize_call(run_id, unit_id, request_hash, input_hash, epoch, worker, key
                 raise DomainError("IDEMPOTENCY_CONFLICT")
             return previous.call_id
         fence(obj, worker, epoch)
-        unresolved = db.query(CallDispatch).filter_by(status="unknown").all()
-        if any(c.unit_id == unit_id and c.call_id != supersedes for c in unresolved):
+        unresolved = active_provider_work(db, unit_id=unit_id)
+        if any(c.call_id != supersedes for c in unresolved):
             raise DomainError("UNKNOWN_CALL")
         # Unknown calls hold capacity globally until explicitly reconciled. Only
         # the same fenced root may consume its frozen, bounded concurrency.
@@ -226,7 +258,7 @@ def authorize_call(run_id, unit_id, request_hash, input_hash, epoch, worker, key
             if time.time() - started >= budget["seconds"]:
                 raise DomainError("TIME_BUDGET_EXHAUSTED")
         capacity = max(1, min(4, state.get("execution_policy", {}).get("provider_concurrency", 1)))
-        occupied = db.query(CallDispatch).filter(CallDispatch.status.in_(["authorized", "sent", "unknown"])).all()
+        occupied = active_provider_work(db)
         if (any(c.status == "unknown" or c.root_job_id != obj.id for c in occupied)
                 or len(occupied) >= capacity):
             raise DomainError("PROVIDER_BACKPRESSURE")
@@ -308,6 +340,30 @@ def settle(call_id, outcome, usage=None, provider_request_id=None, raw_result=No
                 failure_code in known or re.fullmatch(r"PROVIDER_HTTP_[345]\d{2}",failure_code)) else "PROVIDER_FAILURE_UNCLASSIFIED"
         if isinstance(failure_diagnostics, dict):
             receipt["failure_diagnostics"] = safe_failure_diagnostics(failure_diagnostics)
+        if call.status == "quarantined":
+            state = load(obj.state_json)
+            late_receipts = state.setdefault("late_receipts", {})
+            receipt_hash = digest(receipt)
+            existing = late_receipts.get(call.call_id)
+            if existing is not None:
+                if existing.get("receipt_hash") != receipt_hash:
+                    raise DomainError("SETTLEMENT_CONFLICT")
+                return {"status": "quarantined", "late_receipt": "already_recorded"}
+            late_receipts[call.call_id] = {
+                "method_version": "quarantined-late-receipt.v1",
+                "call_id": call.call_id,
+                "late_outcome": outcome,
+                "receipt_hash": receipt_hash,
+                "receipt": receipt,
+                "late_result_blob_hash": result_blob,
+                "late_usage": usage,
+                "usage_source": "provider" if usage is not None else "unknown",
+                "provider_request_id": provider_request_id,
+                "received_at": time.time(),
+            }
+            obj.state_json = dump(state)
+            obj.state_revision += 1
+            return {"status": "quarantined", "late_receipt": "recorded"}
         if call.status in {"settled", "late"}:
             if load(call.receipt_json) != receipt:
                 raise DomainError("SETTLEMENT_CONFLICT")

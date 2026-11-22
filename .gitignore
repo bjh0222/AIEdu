@@ -17,5 +17,5 @@ services/api/tests/test_analysis*/
 services/api/tests/test_model_settings*.json
 services/api/tests/.sqlite-tmp/
 *.log
-apps/web/test-results/
-apps/web/playwright-report/
+apps/web/test-results*/
+apps/web/playwright-report*/
