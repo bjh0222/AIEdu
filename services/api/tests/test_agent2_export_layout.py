@@ -152,3 +152,26 @@ def test_draft_export_uses_draft_filenames_with_compatible_file_ids(client):
     bundle = zipfile.ZipFile(io.BytesIO(client.get(
         f"/api/v2/export-sets/{manifest['bundle_id']}/files/bundle").content))
     assert bundle.namelist() == ["draft-main.md", "draft-answers.md"]
+
+
+def test_chapter_artifact_projects_as_requested_tutorial_instead_of_missing(client):
+    from app.v2.contracts import sha
+
+    body = "## 第一章 二阶行列式\n\n教程正文。"
+    _, snap = publish_pass(client, [{
+        "unit_id": "chapter-1",
+        "title": "第一章 二阶行列式",
+        "body": body,
+        "content_hash": sha(body),
+        "artifact_role": "chapter",
+        "artifact_roles": ["tutorial"],
+        "display_order": 1,
+    }])
+    manifest = export_complete(client, snap, "chapter-tutorial-projection")
+    assert manifest["missing_required"] == []
+    assert manifest["delivery_status"] == "final"
+    assert {
+        row["artifact_role"] for row in manifest["legacy_role_projections"]
+    } == {"tutorial"}
+    main = client.get(f"/api/v2/export-sets/{manifest['bundle_id']}/files/main").text
+    assert "教程正文。" in main

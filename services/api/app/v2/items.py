@@ -157,4 +157,10 @@ def project_units(units):
                         else render_items(unit["items"], unit["artifact_role"], role == "answer"))
                 yield unit | {"artifact_role": role, "file_id": f"{unit['unit_id']}-{role}", "body": body}
         else:
-            yield unit | {"file_id": unit["unit_id"]}
+            roles = unit.get("artifact_roles") or [unit["artifact_role"]]
+            for role in roles:
+                yield unit | {
+                    "file_id": (unit["unit_id"] if role == unit["artifact_role"]
+                                else f"{unit['unit_id']}-{role}"),
+                    "artifact_role": role,
+                }
