@@ -6,6 +6,32 @@ import { ApiError, clearPending, explain, getReceipt, newKey, pendingActions, Un
 import { Dialog } from "@/components/ui/Dialog";
 import { management, rememberCleanup, OPERATION, RESOURCE_KINDS, type ManagedImpact, type ManagedOperation, type ManagedReceipt } from "@/lib/v2/management-api";
 
+
+// 阻塞来源展示：内容逐字来自后端返回（impact.active_blockers[].reason 或
+// RESOURCE_IN_ACTIVE_RUN 错误 details.blockers/summary），前端不编写新的文案。
+// 旧后端响应无 active_blockers 时，退回渲染引用条目的 label/state。
+const ACTIVE_STATES = new Set(["queued", "running", "sent", "authorized", "unknown"]);
+type BackendBlocker = { reason?: unknown; kind?: unknown; state?: unknown };
+type BackendBlockerList = { blockers?: BackendBlocker[]; summary?: unknown };
+export function backendBlockerLines(detail: unknown): string[] {
+  const d = detail as BackendBlockerList | undefined;
+  const lines = (Array.isArray(d?.blockers) ? d!.blockers! : [])
+    .map((b) => (typeof b?.reason === "string" && b.reason.trim()) || "")
+    .filter(Boolean);
+  if (!lines.length && typeof d?.summary === "string" && d.summary.trim()) return [d.summary];
+  return lines;
+}
+export function activeBlockers(impacts: ManagedImpact[]): string[] {
+  return impacts.filter((x) => x.active).flatMap((x) => {
+    const listed = (x as unknown as { active_blockers?: BackendBlocker[] }).active_blockers;
+    if (Array.isArray(listed) && listed.length) {
+      return listed.map((b) => (typeof b?.reason === "string" && b.reason.trim()) || `${String(b?.kind ?? "引用")}（${String(b?.state ?? "")}）`).filter(Boolean);
+    }
+    return x.references.filter((r) => r.state && ACTIVE_STATES.has(r.state))
+      .map((r) => `${r.label || r.kind}${r.state ? `（${r.state}）` : ""}`);
+  });
+}
+
 export function managementError(error: unknown) {
   if (error instanceof ApiError) {
     const labels: Record<string, string> = {
@@ -111,13 +137,21 @@ export function ResourceActionDialog({ targets, operation, onClose, onChanged }:
   </Dialog>;
 }
 
+async function fetchBlockers(targets: { kind: string; id: string }[]): Promise<string[]> {
+  try {
+    const impacts = await Promise.all(targets.map((t) => management.impact(t.kind, t.id)));
+    return activeBlockers(impacts);
+  } catch { return []; }
+}
+
 export default function ResourceActions({ kind, id, label, onChanged }: { kind: string; id: string; label: string; onChanged: () => void }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState("");
+  const [blockers, setBlockers] = useState<string[]>([]);
   const [pending, setPending] = useState<string | null>(null), [cleanup, setCleanup] = useState<string | null>(null);
   async function submit() {
     const unresolved = unresolvedKey();
     if (unresolved) { setPending(unresolved); setNotice("存在尚未确认的管理操作，先查询原回执。"); return; }
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setBlockers([]);
     try {
       const impacts = await Promise.all(impactTargets([{ kind, id }]).map((t) => management.impact(t.kind, t.id)));
       const key = newKey();
@@ -129,6 +163,10 @@ export default function ResourceActions({ kind, id, label, onChanged }: { kind: 
       onChanged();
     } catch (e) {
       if (e instanceof UnknownOutcomeError) setPending(e.key);
+      if (e instanceof ApiError && e.code === "RESOURCE_IN_ACTIVE_RUN") {
+        const lines = backendBlockerLines(e.details);
+        setBlockers(lines.length ? lines : await fetchBlockers([{ kind, id }]));
+      }
       setError(managementError(e));
     } finally { setBusy(false); }
   }
@@ -147,6 +185,7 @@ export default function ResourceActions({ kind, id, label, onChanged }: { kind: 
   return <>
     <button className="btn btn-sm" aria-label={`将${label}移入回收站`} aria-busy={busy} disabled={busy} onClick={() => void submit()}>移入回收站</button>
     {error && <p className="err" role="alert">{error}</p>}
+    {blockers.length > 0 && <ul className="err" role="alert">{blockers.map((b, i) => <li key={i}>{b}</li>)}</ul>}
     {notice && <p role="status">{notice}</p>}
     {cleanup && <button className="btn btn-sm" disabled={busy} onClick={async () => { setBusy(true); try { const receipt = await management.cleanup(cleanup); rememberCleanup(cleanup, Boolean(receipt.cleanup_pending?.length)); setCleanup(null); setNotice(receipt.cleanup_pending?.length ? "原文文件仍被占用，清理未完成。" : "原回执文件清理已完成。"); } catch (e) { if (e instanceof UnknownOutcomeError) setPending(e.key); setError(managementError(e)); } finally { setBusy(false); } }}>继续清理原回执文件</button>}
     {pending && <button className="btn btn-sm" disabled={busy} onClick={() => void check()}>查询未确认操作回执</button>}

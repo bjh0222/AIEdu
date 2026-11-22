@@ -1,17 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, isRun, type VersionRead, type VersionUnit } from "@/lib/v2/api";
 import { explain } from "@/lib/v2/client";
 import { useSnapshot } from "@/lib/v2/use-snapshot";
-import { diffLines, extractHeadings, locateFinding, splitAnswers, PIN_REASON, type Location } from "@/lib/v2/reader-core";
-import { qualityBadge, FINDING_STATUS } from "@/lib/v2/status";
-import { rememberVersion, seenVersions } from "@/lib/v2/seen-versions";
-import type { VersionListItem } from "@/lib/v2/contracts.generated";
+import { extractHeadings, locateFinding, splitAnswers, PIN_REASON, type Location } from "@/lib/v2/reader-core";
+import { FINDING_STATUS } from "@/lib/v2/status";
+import { rememberVersion } from "@/lib/v2/seen-versions";
 import { readPrefs, savePrefs, type Prefs, defaultPrefs } from "@/lib/prefs";
-import { BadgeView } from "@/components/ui/Badge";
 import { Drawer } from "@/components/ui/Drawer";
 import ExportDialog from "@/components/tasks/ExportDialog";
 import KnowledgeMap from "@/components/tasks/KnowledgeMap";
@@ -40,7 +38,6 @@ function useStablePrefs() {
 }
 
 export default function Reader({ taskId }: { taskId: string }) {
-  const router = useRouter();
   const params = useSearchParams();
   const wantVersion = params.get("version");
   const { snapshot, error: snapError, refresh } = useSnapshot(taskId);
@@ -51,8 +48,6 @@ export default function Reader({ taskId }: { taskId: string }) {
   const [read, setRead] = useState<VersionRead | null>(null);
   const [readError, setReadError] = useState("");
   const [loadingVersion, setLoadingVersion] = useState(false);
-  const [compare, setCompare] = useState<VersionRead | null>(null);
-  const [compareOn, setCompareOn] = useState(false);
   const [unitId, setUnitId] = useState<string | null>(() => params.get("unit"));
   const [focus, setFocus] = useState(false);
   const [active, setActive] = useState<string>("");
@@ -60,34 +55,16 @@ export default function Reader({ taskId }: { taskId: string }) {
   const [answersOpen, setAnswersOpen] = useState(false);
   const [activePin, setActivePin] = useState<number | null>(null);
   const [drawer, setDrawer] = useState<"toc" | "issues" | "tech" | null>(null);
-  const [rulerOpen, setRulerOpen] = useState(true);
   const [chatOpen, setChatOpen] = useState(true);
   const [exportOpen, setExportOpen] = useState(false);
+  // 2026-11-22 轮3：文内位置树与 AI 聊天为 VSCode 式 resizable sidebar。
+  const [rulerWidth, startRulerResize] = usePanelWidth("aiedu.reader.rulerWidth.v1", 240, 160, 480, 1);
+  const [chatWidth, startChatResize] = usePanelWidth("aiedu.reader.chatWidth.v1", 340, 280, 560, -1);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [pins, setPins] = useState<PinState[]>([]);
   const sheetRef = useRef<HTMLDivElement>(null);
 
   const artifactId = run?.artifact_id ?? null;
-  const [catalog, setCatalog] = useState<VersionListItem[] | null>(null);
-  const [catalogError, setCatalogError] = useState("");
-  const [older, setOlder] = useState<number | null>(null);
-  useEffect(() => {
-    if (!artifactId) return;
-    let alive = true;
-    api.versions(taskId, artifactId).then((page) => {
-      if (!alive) return;
-      setCatalog(page.items); setOlder(page.next_before_version); setCatalogError("");
-    }).catch((e) => { if (alive) setCatalogError(explain(e)); });
-    return () => { alive = false; };
-  }, [taskId, artifactId, run?.version_id]);
-
-  async function loadOlder() {
-    if (!artifactId || !older) return;
-    try {
-      const page = await api.versions(taskId, artifactId, older);
-      setCatalog((items) => [...(items ?? []), ...page.items]); setOlder(page.next_before_version);
-    } catch (e) { setCatalogError(explain(e)); }
-  }
 
   useEffect(() => {
     if (!artifactId || !versionId) return;
@@ -174,17 +151,16 @@ export default function Reader({ taskId }: { taskId: string }) {
     return () => window.removeEventListener("keydown", k);
   }, [focus]);
 
+  // Shift+F7 已改由 Shell 折叠最左侧应用导航；Shift+F6 仍折叠 AI 聊天。
   useEffect(() => {
-    const toggleSidebars = (event: KeyboardEvent) => {
+    const toggleChat = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat || event.ctrlKey || event.metaKey || event.altKey || !event.shiftKey) return;
-      if (event.key === "F7") {
-        event.preventDefault(); setRulerOpen((open) => !open);
-      } else if (event.key === "F6") {
+      if (event.key === "F6") {
         event.preventDefault(); setChatOpen((open) => !open);
       }
     };
-    window.addEventListener("keydown", toggleSidebars);
-    return () => window.removeEventListener("keydown", toggleSidebars);
+    window.addEventListener("keydown", toggleChat);
+    return () => window.removeEventListener("keydown", toggleChat);
   }, []);
 
   const gotoPin = useCallback((n: number) => {
@@ -196,25 +172,7 @@ export default function Reader({ taskId }: { taskId: string }) {
     document.getElementById(`issue-${n}`)?.scrollIntoView({ block: "nearest" });
   }, []);
 
-  async function toggleCompare() {
-    if (compareOn) return setCompareOn(false);
-    const others = seen.filter((v) => v.version_id !== read?.version_id && read && v.version < read.version);
-    if (!others.length || !artifactId) return;
-    try {
-      setCompare(await api.version(artifactId, others[0].version_id));
-      setCompareOn(true);
-    } catch (e) {
-      setReadError(explain(e));
-    }
-  }
-
-  const seen = catalog ?? (artifactId ? seenVersions(artifactId) : []);
   const isCurrent = !run?.version_id || read?.version_id === run.version_id;
-  const diff = useMemo(() => {
-    if (!compareOn || !compare || !unit) return null;
-    const prev = compare.content.units.find((u) => u.unit_id === unit.unit_id) ?? compare.content.units[0];
-    return prev ? diffLines(prev.body, unit.body) : null;
-  }, [compareOn, compare, unit]);
 
   if (!run && !snapError) return <div className="skeleton" style={{ height: 480 }} aria-busy="true" aria-label="正在加载" />;
   if (!run) return <div className="empty"><p>{snapError || "无法读取任务。"}</p><Link className="btn" href={`/tasks/${taskId}`}>回到工作台</Link></div>;
@@ -224,7 +182,6 @@ export default function Reader({ taskId }: { taskId: string }) {
     );
   }
 
-  const qb = qualityBadge(read?.quality ?? run.quality);
   const versionLabel = read ? `v${read.version}` : "…";
   const serif = prefs.serif;
   const stale = pins.filter((p) => !p.ok);
@@ -290,24 +247,11 @@ export default function Reader({ taskId }: { taskId: string }) {
           <Link href={`/tasks/${taskId}`}>{title}</Link><span aria-hidden="true">/</span>
           <span aria-current="page">阅读</span>
         </nav>
-        <span aria-label={`质量：${qb.label}`}><BadgeView b={qb} axis="质量" /></span>
-        <label className="sr-only" htmlFor="ver">版本</label>
-        <select id="ver" style={{ width: "auto" }} value={read?.version_id ?? versionId} onChange={(e) => router.push(`/tasks/${taskId}/read?version=${e.target.value}`)}>
-          {(seen.length ? seen : read ? [{ version_id: read.version_id, version: read.version, at: 0 }] : []).map((v) => (
-            <option key={v.version_id} value={v.version_id}>v{v.version}{v.version_id === run.version_id ? "（当前）" : ""}</option>
-          ))}
-        </select>
         <div className="reader-tools" role="group" aria-label="阅读设置">
           <button className="btn btn-sm" onClick={() => setPrefs({ ...prefs, size: Math.max(14, prefs.size - 1) })} aria-label="减小字号">A−</button>
           <button className="btn btn-sm" onClick={() => setPrefs({ ...prefs, size: Math.min(22, prefs.size + 1) })} aria-label="增大字号">A+</button>
-          <button className="btn btn-sm" aria-pressed={serif} onClick={() => setPrefs({ ...prefs, serif: !serif })}>{serif ? "衬线" : "无衬线"}</button>
           <button className="btn btn-sm" aria-pressed={focus} onClick={() => setFocus(!focus)}>{focus ? "退出专注" : "专注"}</button>
-          <button className="btn btn-sm" aria-pressed={compareOn} disabled={!isCurrent || seen.filter((v) => read && v.version < read.version).length === 0} onClick={() => void toggleCompare()}
-            title={seen.length < 2 ? "尚无可比较的更早版本" : undefined}>{compareOn ? "退出对比" : "与上一版对比"}</button>
-          {older && <button className="btn btn-sm" onClick={() => void loadOlder()}>加载更早版本</button>}
-          {catalogError && <span className="hint">版本目录暂不可用，仅显示本机记录：{catalogError}</span>}
-          <button className="btn btn-sm" aria-keyshortcuts="Shift+F7" onClick={() => setRulerOpen(!rulerOpen)} title={rulerOpen ? "折叠侧栏（Shift + F7）" : "展开侧栏（Shift + F7）"}>{rulerOpen ? "折叠目录" : "展开目录"}</button>
-          <button className="btn btn-sm" aria-keyshortcuts="Shift+F6" onClick={() => setChatOpen(!chatOpen)} title={chatOpen ? "折叠聊天（Shift + F6）" : "展开聊天（Shift + F6）"}>{chatOpen ? "折叠聊天" : "展开聊天"}</button>
+          <button className="btn btn-sm chat-toggle-btn" aria-keyshortcuts="Shift+F6" onClick={() => setChatOpen(!chatOpen)} title={chatOpen ? "折叠聊天（Shift + F6）" : "展开聊天（Shift + F6）"}>{chatOpen ? "折叠聊天" : "展开聊天"}</button>
           <button className="btn btn-sm only-narrow issues-btn" onClick={() => setDrawer("issues")}>问题 {issuesCount}</button>
           <button className="btn btn-primary btn-sm" onClick={() => setExportOpen(true)} disabled={!read}>下载 {versionLabel}</button>
         </div>
@@ -327,8 +271,11 @@ export default function Reader({ taskId }: { taskId: string }) {
         {knowledgeOpen && read && <LearningTools key={read.version_id} taskId={taskId} read={read} onNavigate={(id) => { setUnitId(id); setAnswersOpen(false); }} />}
         {knowledgeOpen && read && <SynthesisPanel key={`${read.version_id}:${read.quality_hash}`} taskId={taskId} run={run} read={read} onNavigate={(id) => { setUnitId(id); setAnswersOpen(false); }} />}
       </details>
-      <div className={`reader-grid${focus ? " focus" : ""}`} style={{ gridTemplateColumns: focus ? (chatOpen ? "minmax(0, 1fr) minmax(300px, 360px)" : "minmax(0, 1fr)") : `${rulerOpen ? "240px" : "0px"} minmax(0, 1fr)${chatOpen ? " minmax(320px, 380px)" : ""}` }}>
-        <aside className="ruler" aria-label="目录与章节" hidden={!rulerOpen}>{ruler}</aside>
+      <div className={`reader-grid${focus ? " focus" : ""}`} style={{ gridTemplateColumns: focus ? "minmax(0, 1fr)" : `${rulerWidth}px minmax(0, 1fr)${chatOpen ? ` ${chatWidth}px` : ""}` }}>
+        <aside className="ruler" aria-label="目录与章节" style={{ width: rulerWidth }}>
+          {ruler}
+          <ResizeHandle side="right" label="拖拽调整文内位置面板宽度" onPointerDown={startRulerResize} />
+        </aside>
 
         <article className={`sheet-wrap${serif ? " serif" : ""}`}>
           {loadingVersion && !read ? (
@@ -340,11 +287,7 @@ export default function Reader({ taskId }: { taskId: string }) {
                 <span>固定版本 {versionLabel}{read && (read.quality.tqi_verdict ? "" : "")}</span>
               </header>
               {units.length === 0 && read && <p className="muted">这个版本没有可显示的内容。</p>}
-              {compareOn && diff ? (
-                <DiffView rows={diff} />
-              ) : compareOn ? (
-                <p className="banner banner-warn">差异太大或没有可比较的内容，无法显示行级对比。</p>
-              ) : unit ? (
+              {unit ? (
                 <>
                   <Prose key={`${unit.unit_id}-${read?.version_id}`} source={bodyText} headings={headings} wikiTargets={wikiTargets} pins={renderPins} onPinClick={gotoPin} />
                   {split.answers && (
@@ -367,7 +310,12 @@ export default function Reader({ taskId }: { taskId: string }) {
           {stale.length > 0 && <p className="hint" style={{ marginTop: 8 }}>有 {stale.length} 个问题的位置已过期，没有标在正文里。</p>}
         </article>
 
-        <ReaderChat taskId={taskId} read={read} currentUnitId={unit?.unit_id ?? null} open={chatOpen} onOpenChange={setChatOpen} />
+        {chatOpen && !focus && (
+          <div className="chat-cell" style={{ width: chatWidth }}>
+            <ReaderChat taskId={taskId} read={read} currentUnitId={unit?.unit_id ?? null} open={chatOpen} onOpenChange={setChatOpen} />
+            <ResizeHandle side="left" label="拖拽调整 AI 聊天面板宽度" onPointerDown={startChatResize} />
+          </div>
+        )}
       </div>
 
       <Drawer open={drawer === "toc"} onClose={() => setDrawer(null)} title="目录" side="bottom">{ruler}</Drawer>
@@ -390,6 +338,45 @@ export default function Reader({ taskId }: { taskId: string }) {
   );
 }
 
+
+// VSCode 式 resizable sidebar：面板边缘拖拽调宽，min/max 限界，宽度持久到 localStorage。
+function usePanelWidth(key: string, initial: number, min: number, max: number, grow: 1 | -1): [number, (e: React.PointerEvent<HTMLDivElement>) => void] {
+  const [width, setWidth] = useState(initial);
+  const latest = useRef(initial);
+  useEffect(() => {
+    // 水合后异步读取持久宽度，避免 effect 内同步 setState（react-hooks/set-state-in-effect）。
+    const id = requestAnimationFrame(() => {
+      try {
+        const v = Number(localStorage.getItem(key));
+        if (Number.isFinite(v) && v >= min && v <= max) { setWidth(v); latest.current = v; }
+      } catch { /* 无 localStorage 时使用默认宽度 */ }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [key, min, max]);
+  const start = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = latest.current;
+    const move = (ev: PointerEvent) => {
+      const next = Math.min(max, Math.max(min, Math.round(startW + grow * (ev.clientX - startX))));
+      latest.current = next;
+      setWidth(next);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      try { localStorage.setItem(key, String(latest.current)); } catch { /* 忽略持久化失败 */ }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }, [key, min, max, grow]);
+  return [width, start];
+}
+
+function ResizeHandle({ side, label, onPointerDown }: { side: "left" | "right"; label: string; onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void }) {
+  return <div className={`panel-resize ${side}`} role="separator" aria-orientation="vertical" aria-label={label} onPointerDown={onPointerDown} />;
+}
+
 function DocumentAnswersGate({ source }: { source: string }) {
   const [open, setOpen] = useState(false);
   return (
@@ -402,22 +389,6 @@ function DocumentAnswersGate({ source }: { source: string }) {
   );
 }
 
-function DiffView({ rows }: { rows: { kind: "same" | "add" | "del"; text: string }[] }) {
-  const out: React.ReactNode[] = [];
-  let run = 0;
-  const flush = (i: number) => { if (run > 3) out.push(<div key={`f${i}`} className="diff-fold">{run} 行未变</div>); run = 0; };
-  rows.forEach((r, i) => {
-    if (r.kind === "same") {
-      run++;
-      if (run <= 3) out.push(<div key={i} className="diff-row"><span aria-hidden="true"> </span><span>{r.text}</span></div>);
-      return;
-    }
-    flush(i);
-    out.push(<div key={i} className={`diff-row ${r.kind}`}><span aria-hidden="true">{r.kind === "add" ? "＋" : "－"}</span>{r.kind === "add" ? <ins style={{ textDecoration: "none" }}>{r.text}</ins> : <del>{r.text}</del>}</div>);
-  });
-  flush(rows.length);
-  return <div className="diff" role="region" aria-label="与上一版的差异" tabIndex={0}>{out}</div>;
-}
 
 
 

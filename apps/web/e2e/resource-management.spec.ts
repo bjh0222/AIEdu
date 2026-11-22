@@ -63,9 +63,9 @@ test("资料直接删除、撤销、批量恢复、搜索、勾选确认永久�
   await manager.getByRole("row").filter({ hasText: "代数原文.md" }).getByRole("button", { name: "移入回收站", exact: true }).click();
   await expect(manager.getByRole("checkbox", { name: "选择 代数原文.md" })).toHaveCount(0);
   expect(backend.requests).toHaveLength(1);
+  // 2026-11-22 轮3：恢复不再弹引用清单二次确认，点击即恢复。
   await manager.getByRole("button", { name: "撤销移入回收站" }).click();
-  const restoreDialog = page.getByRole("dialog");
-  await restoreDialog.getByLabel("我已查看引用和影响").check(); await restoreDialog.getByRole("button", { name: "确认从回收站恢复" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(manager.getByRole("checkbox", { name: "选择 代数原文.md" })).toBeVisible();
   await manager.getByRole("checkbox", { name: "选择 代数原文.md" }).check(); await manager.getByRole("checkbox", { name: "选择 补充资料.md" }).check();
   await manager.getByRole("button", { name: "批量移入回收站", exact: true }).click();
@@ -73,8 +73,7 @@ test("资料直接删除、撤销、批量恢复、搜索、勾选确认永久�
   await manager.getByRole("button", { name: "回收站", exact: true }).click();
   await manager.getByRole("checkbox", { name: "选择 代数原文.md" }).check(); await manager.getByRole("checkbox", { name: "选择 补充资料.md" }).check();
   await manager.getByRole("button", { name: "批量恢复", exact: true }).click();
-  const batchRestoreDialog = page.getByRole("dialog");
-  await batchRestoreDialog.getByLabel("我已查看引用和影响").check(); await batchRestoreDialog.getByRole("button", { name: "确认从回收站恢复" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await manager.getByRole("button", { name: "常规目录", exact: true }).click();
   await manager.getByLabel("搜索名称").fill("代数"); await manager.getByRole("button", { name: "搜索", exact: true }).click();
   await expect(manager.getByRole("checkbox")).toHaveCount(1);
@@ -118,6 +117,23 @@ for (const mode of ["active", "referenced", "stale", "unknown"] as const) test(`
   }
 });
 
+test("移入回收站被阻塞时渲染后端返回的阻塞来源", async ({ page }) => {
+  await mockBackend(page);
+  await page.route("**/managed-resources/tasks?*", (r) => r.fulfill({ json: { items: [{ task_id: "fixture-task", id: "fixture-task", kind: "tasks", label: "被阻塞任务", resource_hash: "h", management: { trashed: false, archived: false, revision: 0 }, metadata: {} }], total: 1, next_offset: null } }));
+  await page.route("**/managed-resources/tasks/fixture-task/impact", (r) => r.fulfill({ json: {
+    resource: { kind: "tasks", id: "fixture-task", label: "被阻塞任务", resource_hash: "h", management: { trashed: false, archived: false, revision: 0 }, metadata: {} },
+    impact_hash: "i", active: true,
+    active_blockers: [{ kind: "provider_call", id: "call-1", state: "unknown", blocking: true, stale: false, required_action: "explicit_quarantine", reason: "后端返回的具体阻塞原因文本" }],
+    references: [], purge_allowed: true, purge_blockers: [],
+  } }));
+  await page.route("**/managed-resource-actions", (r) => r.fulfill({ json: { code: "RESOURCE_IN_ACTIVE_RUN", message: "RESOURCE_IN_ACTIVE_RUN", details: { blockers: [{ reason: "后端返回的具体阻塞原因文本" }], summary: "" } }, status: 409, contentType: "application/json" }));
+  await page.goto("/library?tab=manage");
+  const manager = page.getByRole("region", { name: "资源管理" });
+  await manager.getByRole("row").filter({ hasText: "被阻塞任务" }).getByRole("button", { name: "移入回收站", exact: true }).click();
+  // 后端返回的 reason 逐字渲染；不出现前端编写的新文案。
+  await expect(manager.locator("ul.err")).toContainText("后端返回的具体阻塞原因文本");
+});
+
 test("任务列表直接移入回收站入口实际提交并刷新", async ({ page }) => {
   await mockBackend(page);
   let trashed = false;
@@ -148,7 +164,7 @@ test("设置已保存模型直接删除、私有回收站恢复与清除", async
   // The management page refreshes independently after opening.
   await manager.getByRole("button", { name: "搜索", exact: true }).click();
   await manager.getByRole("button", { name: "恢复", exact: true }).click();
-  const restoreDialog = page.getByRole("dialog"); await restoreDialog.getByLabel("我已查看引用和影响").check(); await restoreDialog.getByRole("button", { name: "确认从回收站恢复" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.reload(); await expect(page.getByRole("button", { name: "将测试模型移入回收站" })).toBeVisible();
   await page.getByRole("button", { name: "将测试模型移入回收站" }).click();
   await page.getByText("模型回收站与恢复", { exact: true }).click(); await manager.getByRole("button", { name: "搜索", exact: true }).click();

@@ -16,6 +16,8 @@ const nextConfig: NextConfig = {
   partialPrefetching: true,
   experimental: { proxyTimeout: 3_600_000 },
   allowedDevOrigins: ["127.0.0.1", "localhost"],
+  // 关闭 dev 指示器悬浮层：它会覆盖左下角外链/导航的点击命中区（2026-11-22 轮3）。
+  devIndicators: false,
   async redirects() {
     return legacyRedirects.map((r) => ({ ...r, permanent: false }));
   },

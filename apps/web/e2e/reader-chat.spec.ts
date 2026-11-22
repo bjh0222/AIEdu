@@ -25,7 +25,7 @@ function threeUnitRead() {
 test("reader sidebars collapse and chat context scope is assembled", async ({ page }: { page: Page }) => {
   const chatRequests: Record<string, unknown>[] = [];
   await mockBackend(page, { versions: { [IDS.v2]: threeUnitRead() } });
-  await page.route("**/api/chat", async (route) => {
+  await page.route("**/api/v2/chat", async (route) => {
     chatRequests.push(route.request().postDataJSON() as Record<string, unknown>);
     return route.fulfill({ json: {
       user: { id: "u", role: "user", content: "x" },
@@ -40,11 +40,29 @@ test("reader sidebars collapse and chat context scope is assembled", async ({ pa
   await expect(page.getByText("当前章节已注入。选中正文片段会作为引用；要问整段或全书，用下方范围切换。")).toBeVisible();
   await expect(page.getByText("查看完整质量报告")).toHaveCount(0);
 
+  // 2026-11-22 轮3：工具栏删除 4 项；树面板保留为可拖拽面板；Shift+F7 折叠最左侧应用导航。
+  await expect(page.getByRole("button", { name: "衬线" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /与上一版对比/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /折叠目录|展开目录/ })).toHaveCount(0);
+  await expect(page.locator("#ver")).toHaveCount(0);
+  await expect(page.locator("aside.ruler")).toBeVisible();
+
   await page.keyboard.press("Shift+F7");
-  await expect(page.getByRole("complementary", { name: "目录与章节" })).toBeHidden();
-  await expect(page.getByRole("button", { name: "展开目录" })).toBeVisible();
+  await expect(page.locator("aside.sidebar")).toHaveAttribute("data-collapsed", "true");
+  await expect(page.locator("aside.sidebar .nav")).toBeHidden();
   await page.keyboard.press("Shift+F7");
-  await expect(page.getByRole("complementary", { name: "目录与章节" })).toBeVisible();
+  await expect(page.locator("aside.sidebar")).not.toHaveAttribute("data-collapsed", "true");
+
+  // resizable sidebar：拖拽树面板右缘加宽
+  const rulerBefore = await page.locator("aside.ruler").evaluate((el) => el.getBoundingClientRect().width);
+  const handle = page.locator("aside.ruler .panel-resize");
+  const box = await handle.boundingBox();
+  await page.mouse.move(box!.x + 3, box!.y + 200);
+  await page.mouse.down();
+  await page.mouse.move(box!.x + 63, box!.y + 200, { steps: 4 });
+  await page.mouse.up();
+  const rulerAfter = await page.locator("aside.ruler").evaluate((el) => el.getBoundingClientRect().width);
+  expect(rulerAfter).toBeGreaterThan(rulerBefore);
 
   await page.keyboard.press("Shift+F6");
   await expect(page.getByRole("complementary", { name: "AI 聊天" })).toBeHidden();

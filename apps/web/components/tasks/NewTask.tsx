@@ -1,11 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type Capabilities } from "@/lib/v2/api";
 import { ApiError, UnknownOutcomeError, explain, getReceipt, newKey, act } from "@/lib/v2/client";
-import { EXAMPLES } from "./examples";
 
 type Mode = "configured" | "demo";
 type Conflict = { code?: string; artifact_role?: string; scene?: string; [k: string]: unknown };
@@ -24,8 +23,8 @@ function conflictText(c: Conflict): string {
 
 export default function NewTask() {
   const router = useRouter();
-  const params = useSearchParams();
-  const [text, setText] = useState(() => params.get("example") ?? "");
+  // 2026-11-22 轮3：需求框在任何触发下都不自动填充；仅保留灰色占位提示。
+  const [text, setText] = useState("");
   const [title, setTitle] = useState("");
   const [mode, setMode] = useState<Mode>("configured");
   const [caps, setCaps] = useState<Capabilities | null>(null);
@@ -175,11 +174,7 @@ export default function NewTask() {
       <form className="compose" onSubmit={(e) => { e.preventDefault(); if (canStart) void start(); }} style={{ display: "grid", gap: 20 }}>
         <div className="field">
           <label htmlFor="raw">需求</label>
-          <textarea id="raw" value={text} onChange={(e) => setText(e.target.value)} placeholder={"例如：我想掌握定积分的面积应用；可用学习时间 2 小时，难度从入门到进阶。请生成教程和 10 道练习，包含选择题与计算题，并附答案。\n可按需说明学习目标、学习时间、目标难度、输出模式、题型和题量，不必逐项填写。"} aria-describedby="raw-hint" />
-          <p className="hint" id="raw-hint">原话会逐字保存，不限长度，也不会被改写。</p>
-          <div className="chips" aria-label="示例（可编辑）">
-            {EXAMPLES.map((ex) => <button type="button" key={ex.label} className="chip" onClick={() => setText(ex.text)}>{ex.label}</button>)}
-          </div>
+          <textarea id="raw" value={text} onChange={(e) => setText(e.target.value)} placeholder={"例如：我想掌握定积分的面积应用；可用学习时间 2 小时，难度从入门到进阶。请生成教程和 10 道练习，包含选择题与计算题，并附答案。\n可按需说明学习目标、学习时间、目标难度、输出模式、题型和题量，不必逐项填写。"} />
         </div>
 
         <details className="disclosure panel panel-pad">
@@ -240,10 +235,10 @@ export default function NewTask() {
             {qualityLoop && <div className="field">
               <label htmlFor="call-budget">整条任务模型调用上限</label>
               <input id="call-budget" type="number" min={1} step={1} placeholder="不限" value={callBudget === null ? "" : callBudget} onChange={(e) => setCallBudget(Number.isNaN(e.target.valueAsNumber) ? null : e.target.valueAsNumber)} />
-              <p className="hint">理解、研究、生成、检查和优化共用此上限；留空表示不限。若设置上限，预算耗尽会停止并保留最佳草稿；无进展、取消和未知回执仍受保护。最多 8 轮优化、每个问题最多 6 次。</p>
+              <p className="hint">理解、研究、生成、检查和优化共用此上限；留空表示不限。若设置上限，预算耗尽会停止并保留最佳草稿；无进展、取消和未知回执仍受保护。</p>
             </div>}
             <label><input type="checkbox" checked={research} onChange={(e) => setResearch(e.target.checked)} /> 联网查阅教育文献，建立任务适用的逐维量规</label>
-            <p className="hint">{research ? "研究会增加模型调用；仅把需求主题用于公共教育检索，不发送附件原文。无附件任务也会建立研究量规；无证据保留为未知。" : "按已绑定的评价体系质检。"}费用按实际用量记录；所有角色沿用已保存的模型选择，同族复核不冒充跨族独立认证。</p>
+            <p className="hint">{research ? "研究会增加模型调用；仅把需求主题用于公共教育检索，不发送附件原文。" : "按已绑定的评价体系质检。"}</p>
           </>}
         </fieldset>
 
@@ -268,7 +263,6 @@ export default function NewTask() {
 
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <button className="btn btn-primary" type="submit" disabled={!canStart} aria-busy={busy}>开始生成</button>
-          {text.trim().length === 0 && <span className="hint">先写下你的需求。</span>}
         </div>
       </form>
     </>

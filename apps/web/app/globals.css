@@ -510,3 +510,34 @@ dialog.dlg::backdrop { background: rgba(10, 16, 22, 0.45); }
   .knowledge-node[aria-pressed="true"] { outline-color: Highlight; }
   .knowledge-edges path { stroke: CanvasText; }
 }
+
+/* ===== 2026-11-22 轮3-Agent1：可折叠应用导航 + VSCode 式 resizable sidebar ===== */
+@media (min-width: 1024px) {
+  .brand-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .nav-toggle { flex: none; line-height: 1; padding: 4px 8px; }
+  .app.nav-collapsed { grid-template-columns: 64px minmax(0, 1fr); }
+  .app.nav-collapsed .sidebar { padding: 16px 8px; align-items: center; }
+  .app.nav-collapsed .brand-row { flex-direction: column; gap: 12px; }
+  .app.nav-collapsed .brand span, .app.nav-collapsed .nav, .app.nav-collapsed .external-nav { display: none; }
+  .app.nav-collapsed .external-nav { display: none; }
+}
+.panel-resize { position: absolute; top: 0; bottom: 0; width: 7px; cursor: col-resize; touch-action: none; z-index: 6; }
+.panel-resize.right { right: -3px; }
+.panel-resize.left { left: -3px; }
+/* 文内位置树：隐藏可见滚动条/拖拽指示器，但保留横向与纵向滚动能力 */
+.ruler { scrollbar-width: none; }
+.ruler::-webkit-scrollbar { display: none; }
+.chat-cell { position: relative; min-width: 0; }
+.chat-cell .chat-rail { width: 100%; }
+@media (max-width: 1179px) {
+  /* 覆盖内联列宽：窄屏两栏，聊天面板隐藏 */
+  .reader-grid { grid-template-columns: 220px minmax(0, 1fr) !important; }
+  .chat-cell { display: none !important; }
+  .chat-toggle-btn { display: none !important; }
+}
+@media (max-width: 1023px) {
+  .reader-grid { grid-template-columns: minmax(0, 1fr) !important; }
+  .reader-grid .ruler { display: none !important; }
+  .panel-resize { display: none !important; }
+  .app.nav-collapsed { grid-template-columns: minmax(0, 1fr); }
+}

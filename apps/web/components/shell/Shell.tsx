@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { applyPrefs, readPrefs } from "@/lib/prefs";
 import { ToastProvider } from "@/components/ui/Toast";
 
@@ -14,14 +14,29 @@ const NAV = [
   { href: "/settings", label: "设置", match: (p: string) => p.startsWith("/settings") },
 ];
 
+const NAV_OPEN_KEY = "aiedu.nav.open.v1";
+// 2026-11-22 轮3：最左侧应用导航栏可折叠（Shift+F7 / 顶部按钮），状态持久到 localStorage。
+const navListeners = new Set<() => void>();
+function subscribeNav(listener: () => void) { navListeners.add(listener); return () => { navListeners.delete(listener); }; }
+function navClientSnapshot(): boolean {
+  try { return localStorage.getItem(NAV_OPEN_KEY) !== "0"; } catch { return true; }
+}
+function navServerSnapshot(): boolean { return true; }
+
 export default function Shell({ children }: { children: ReactNode }) {
   const path = usePathname();
   const external = useRef<HTMLElement>(null);
+  const navOpen = useSyncExternalStore(subscribeNav, navClientSnapshot, navServerSnapshot);
+  const toggleNav = useCallback(() => {
+    try { localStorage.setItem(NAV_OPEN_KEY, navClientSnapshot() ? "0" : "1"); } catch { /* 忽略持久化失败 */ }
+    navListeners.forEach((l) => l());
+  }, []);
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.repeat || event.ctrlKey || event.metaKey || event.altKey || !event.shiftKey) return;
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]')) return;
+      if (event.key === "F7") { event.preventDefault(); toggleNav(); return; }
       const name = event.key === "F8" ? "ChatGPT" : event.key === "F9" ? "DeepSeek" : null;
       if (!name) return;
       event.preventDefault();
@@ -29,7 +44,7 @@ export default function Shell({ children }: { children: ReactNode }) {
     };
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
-  }, []);
+  }, [toggleNav]);
   useEffect(() => {
     const sync = () => applyPrefs(readPrefs());
     sync();
@@ -46,12 +61,22 @@ export default function Shell({ children }: { children: ReactNode }) {
   return (
     <ToastProvider>
       <a className="skip" href="#main">跳到正文</a>
-      <div className="app">
-        <aside className="sidebar">
-          <Link className="brand" href="/">
-            <Image src="/ai-edu-mark.svg" alt="" width={30} height={30} unoptimized />
-            <span>AI Edu</span>
-          </Link>
+      <div className={`app${navOpen ? "" : " nav-collapsed"}`}>
+        <aside className="sidebar" data-collapsed={navOpen ? undefined : "true"}>
+          <div className="brand-row">
+            <Link className="brand" href="/">
+              <Image src="/ai-edu-mark.svg" alt="" width={30} height={30} unoptimized />
+              <span>AI Edu</span>
+            </Link>
+            <button
+              type="button"
+              className="btn btn-sm nav-toggle"
+              aria-pressed={navOpen}
+              aria-keyshortcuts="Shift+F7"
+              title={navOpen ? "折叠导航（Shift + F7）" : "展开导航（Shift + F7）"}
+              onClick={toggleNav}
+            >{navOpen ? "⟨" : "⟩"}</button>
+          </div>
           <nav className="nav" aria-label="主导航">
             {NAV.map((n) => (
               <Link key={n.href} href={n.href} aria-current={n.match(path) ? "page" : undefined}>{n.label}</Link>

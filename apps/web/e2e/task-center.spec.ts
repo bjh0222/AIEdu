@@ -127,9 +127,15 @@ test.describe("新建任务", () => {
     await expect(raw).toHaveValue("");
   });
 
-  test("?example= 仍作为用户主动示例填充", async ({ page }) => {
+  test("?example= 深链不再填充需求框（轮3：任何触发都不自动填充）", async ({ page }) => {
     await page.goto("/new?example=" + encodeURIComponent("示例需求原话"));
-    await expect(page.getByLabel("需求")).toHaveValue("示例需求原话");
+    const raw = page.getByLabel("需求");
+    await expect(raw).toHaveValue("");
+    await expect(raw).toHaveAttribute("placeholder", /例如：我想掌握定积分/);
+    // 轮3 删除的文案与示例填充入口
+    await expect(page.getByText("原话会逐字保存")).toHaveCount(0);
+    await expect(page.getByText("先写下你的需求")).toHaveCount(0);
+    await expect(page.locator(".chips")).toHaveCount(0);
   });
 });
 
