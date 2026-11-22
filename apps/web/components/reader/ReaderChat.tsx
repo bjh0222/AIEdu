@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { VersionRead } from "@/lib/v2/api";
 import { sendReaderChat, type ChatContextUnit, type ChatMessageView, type ChatScope } from "@/lib/v2/chat-api";
 
@@ -21,12 +21,13 @@ function unitLabel(unitId: string, read: VersionRead | null): string {
   return unit?.title || unitId;
 }
 
-export default function ReaderChat({ taskId, read, currentUnitId, open, onOpenChange }: {
+export default function ReaderChat({ taskId, read, currentUnitId, open, onOpenChange, width = 400 }: {
   taskId: string;
   currentUnitId: string | null;
   read: VersionRead | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  width?: number;
 }) {
   const [sessions, setSessions] = useState<ChatSession[]>(() => [{
     id: "chat-1",
@@ -40,7 +41,6 @@ export default function ReaderChat({ taskId, read, currentUnitId, open, onOpenCh
   const [quote, setQuote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const listRef = useRef<HTMLDivElement>(null);
 
   const units = useMemo(() => read?.content.units ?? [], [read]);
   const currentUnit = units.find((u) => u.unit_id === currentUnitId) ?? units[0];
@@ -62,9 +62,6 @@ export default function ReaderChat({ taskId, read, currentUnitId, open, onOpenCh
     return () => document.removeEventListener("selectionchange", capture);
   }, []);
 
-  useEffect(() => {
-    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
-  }, [active?.messages.length, activeId]);
 
   function addMessage(sessionId: string, message: ChatMessageView) {
     setSessions((items) => {
@@ -128,36 +125,15 @@ export default function ReaderChat({ taskId, read, currentUnitId, open, onOpenCh
 
   return (
     <aside className="chat-rail" aria-label="AI 聊天" hidden={!open} style={{
-      position: "sticky", top: 72, height: "calc(100vh - 96px)", display: open ? "flex" : "none",
+      position: "relative", display: open ? "flex" : "none",
       flexDirection: "column", gap: 12, padding: 14, borderRadius: 14,
       border: "1px solid var(--line)", background: "color-mix(in srgb, var(--card) 88%, transparent)", minHeight: 0,
     }}>
-      <header style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <b style={{ flex: 1 }}>AI 聊天</b>
+      <header style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8 }}>
         <button className="btn btn-quiet btn-sm" onClick={() => onOpenChange(false)} aria-label="折叠聊天（Shift+F6）" title="折叠聊天（Shift + F6）">⇥</button>
       </header>
 
-      <div className="panel" style={{ flex: "0 0 auto", maxHeight: 120, overflow: "auto", padding: 8 }} aria-label="聊天会话">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-          <small className="muted">会话</small>
-          <button className="btn btn-quiet btn-sm" onClick={newSession}>＋ 新会话</button>
-        </div>
-        <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 4 }}>
-          {sessions.map((s) => (
-            <li key={s.id}>
-              <button className="btn btn-quiet btn-sm" aria-pressed={s.id === activeId}
-                style={{ width: "100%", justifyContent: "flex-start" }}
-                onClick={() => { setActiveId(s.id); setError(""); }}>
-                {s.title}
-                <span className="muted" style={{ marginLeft: "auto" }}>{s.messages.length}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      <div className="panel panel-pad" style={{ flex: "0 0 auto", padding: 10 }} aria-label="上下文范围">
-        <p className="hint" style={{ margin: "0 0 8px" }}>当前章节已注入。选中正文片段会作为引用；要问整段或全书，用下方范围切换。</p>
+      <div className="panel" style={{ flex: "0 0 auto", padding: 8 }} aria-label="上下文范围">
         <div className="seg" role="group" aria-label="上下文范围">
           {(Object.entries(SCOPE_LABEL) as [ChatScope, string][]).map(([value, label]) => (
             <button key={value} aria-pressed={scope === value} onClick={() => setScope(value)}>{label}</button>
@@ -173,29 +149,43 @@ export default function ReaderChat({ taskId, read, currentUnitId, open, onOpenCh
             ))}
           </div>
         )}
-        {quote && (
-          <figure style={{ margin: "10px 0 0", padding: 8, borderRadius: 8, background: "var(--bg)", border: "1px solid var(--line)" }}>
-            <figcaption className="hint">已捕获引用</figcaption>
-            <blockquote style={{ margin: 0, maxHeight: 80, overflow: "auto", fontSize: 12 }}>{quote}</blockquote>
-            <button className="btn btn-quiet btn-sm" onClick={() => setQuote("")}>清除引用</button>
-          </figure>
-        )}
+        {quote && <p className="chat-quote-flag">已捕获引用</p>}
       </div>
 
-      <div ref={listRef} style={{ flex: 1, overflowY: "auto", display: "grid", gap: 10, alignContent: "start", minHeight: 0 }}>
-        {active?.messages.length === 0 && <p className="muted">基于当前阅读上下文提问。回答只作学习辅助，请自行核对。</p>}
+      {width >= 300 && (
+        <div className="panel" style={{ flex: "0 0 auto", maxHeight: 96, overflow: "auto", padding: 7, fontSize: 12 }} aria-label="聊天会话">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+            <small className="muted">会话</small>
+            <button className="btn btn-quiet btn-sm" onClick={newSession}>＋ 新会话</button>
+          </div>
+          <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 3 }}>
+            {sessions.map((s) => (
+              <li key={s.id}>
+                <button className="btn btn-quiet btn-sm" aria-pressed={s.id === activeId}
+                  style={{ width: "100%", justifyContent: "flex-start" }}
+                  onClick={() => { setActiveId(s.id); setError(""); }}>
+                  {s.title}
+                  <span className="muted" style={{ marginLeft: "auto" }}>{s.messages.length}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div style={{ display: "grid", gap: 8, alignContent: "start" }}>
         {active?.messages.map((m) => (
-          <article key={m.id} className={m.role === "user" ? "panel panel-pad" : "panel panel-pad"}
-            style={{ borderColor: m.role === "user" ? "var(--primary)" : "var(--line)", padding: 10 }} aria-label={m.role === "user" ? "用户消息" : "模型回答"}>
+          <article key={m.id} className="panel panel-pad"
+            style={{ borderColor: m.role === "user" ? "var(--primary)" : "var(--line)", padding: 7, fontSize: 12 }} aria-label={m.role === "user" ? "用户消息" : "模型回答"}>
             <b className="muted" style={{ fontSize: 12 }}>{m.role === "user" ? "我" : "助手"}</b>
-            {m.quote && <p className="hint" style={{ marginTop: 4, maxHeight: 70, overflow: "auto" }}>引用：{m.quote}</p>}
-            <div style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>{m.content}</div>
+            {m.quote && <p className="hint" style={{ marginTop: 4 }}>已捕获引用</p>}
+            <div style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{m.content}</div>
           </article>
         ))}
         {busy && <p className="hint" role="status">正在请求模型…</p>}
       </div>
 
-      <form className="panel panel-pad" style={{ flex: "0 0 auto", padding: 10, display: "grid", gap: 8 }} onSubmit={submit}>
+      <form className="panel panel-pad" style={{ flex: "0 0 auto", padding: 8, display: "grid", gap: 6 }} onSubmit={submit}>
         {error && <p className="err" role="alert" style={{ margin: 0 }}>{error}</p>}
         <label className="sr-only" htmlFor="reader-chat-input">聊天输入</label>
         <textarea id="reader-chat-input" value={question} rows={2}

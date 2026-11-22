@@ -7,7 +7,6 @@ import { api, isRun, type VersionRead, type VersionUnit } from "@/lib/v2/api";
 import { explain } from "@/lib/v2/client";
 import { useSnapshot } from "@/lib/v2/use-snapshot";
 import { extractHeadings, locateFinding, splitAnswers, PIN_REASON, type Location } from "@/lib/v2/reader-core";
-import { FINDING_STATUS } from "@/lib/v2/status";
 import { rememberVersion } from "@/lib/v2/seen-versions";
 import { readPrefs, savePrefs, type Prefs, defaultPrefs } from "@/lib/prefs";
 import { Drawer } from "@/components/ui/Drawer";
@@ -53,13 +52,12 @@ export default function Reader({ taskId }: { taskId: string }) {
   const [active, setActive] = useState<string>("");
   const [progress, setProgress] = useState(0);
   const [answersOpen, setAnswersOpen] = useState(false);
-  const [activePin, setActivePin] = useState<number | null>(null);
-  const [drawer, setDrawer] = useState<"toc" | "issues" | "tech" | null>(null);
+  const [drawer, setDrawer] = useState<"toc" | "tech" | null>(null);
   const [chatOpen, setChatOpen] = useState(true);
   const [exportOpen, setExportOpen] = useState(false);
   // 2026-11-22 轮3：文内位置树与 AI 聊天为 VSCode 式 resizable sidebar。
   const [rulerWidth, startRulerResize] = usePanelWidth("aiedu.reader.rulerWidth.v1", 240, 160, 480, 1);
-  const [chatWidth, startChatResize] = usePanelWidth("aiedu.reader.chatWidth.v1", 340, 280, 560, -1);
+  const [chatWidth, startChatResize] = usePanelWidth("aiedu.reader.chatWidth.v1", 340, 240, 560, -1);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [pins, setPins] = useState<PinState[]>([]);
   const sheetRef = useRef<HTMLDivElement>(null);
@@ -102,7 +100,7 @@ export default function Reader({ taskId }: { taskId: string }) {
     return m;
   }, [headings, units, unit]);
 
-  // 问题定位：版本 + unit hash + span hash 全部通过才渲染；否则只在右栏标“位置已过期”。
+  // 问题定位：版本 + unit hash + span hash 全部通过才渲染；hash 不符的问题不渲染标记。
   const findings = useMemo<Finding[]>(() => (read?.quality.findings as Finding[] | undefined) ?? [], [read]);
   useEffect(() => {
     let alive = true;
@@ -164,12 +162,10 @@ export default function Reader({ taskId }: { taskId: string }) {
   }, []);
 
   const gotoPin = useCallback((n: number) => {
-    setActivePin(n);
     document.querySelectorAll(".is-active").forEach((e) => e.classList.remove("is-active"));
     const el = document.querySelector<HTMLElement>(`[data-pin="${n}"], [data-pin-block="${n}"]`);
     el?.classList.add("is-active");
     el?.scrollIntoView({ block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
-    document.getElementById(`issue-${n}`)?.scrollIntoView({ block: "nearest" });
   }, []);
 
   const isCurrent = !run?.version_id || read?.version_id === run.version_id;
@@ -185,7 +181,6 @@ export default function Reader({ taskId }: { taskId: string }) {
   const versionLabel = read ? `v${read.version}` : "…";
   const serif = prefs.serif;
   const stale = pins.filter((p) => !p.ok);
-  const issuesCount = pins.length;
   const title = (run.resolved_task as { title?: string } | undefined)?.title ?? "阅读";
 
   const ruler = (
@@ -223,21 +218,6 @@ export default function Reader({ taskId }: { taskId: string }) {
     </nav>
   );
 
-  const issuePanel = (
-    <section aria-label="问题">
-      <h2>问题（{issuesCount}）</h2>
-      {issuesCount === 0 && <p className="hint">这一份内容没有记录到具体位置的问题。质量总体情况不在此页展示，未评价不等于通过。</p>}
-      {pins.map((p) => (
-        <button key={p.finding.finding_id} id={`issue-${p.n}`} className={`issue${p.ok ? "" : " stale"}`} aria-current={activePin === p.n ? "true" : undefined}
-          onClick={() => { if (p.ok) gotoPin(p.n); }} aria-disabled={!p.ok}>
-          <span><span className="n">{p.finding.status === "confirmed" ? "◆" : "◇"}{p.n}</span> {FINDING_STATUS[p.finding.status] ?? p.finding.status}</span>
-          <span>{p.finding.claim}</span>
-          {!p.ok && <span className="hint">位置已过期：{p.reason}。</span>}
-        </button>
-      ))}
-    </section>
-  );
-
   return (
     <div className="reader-shell">
       <div className="progress-line" style={{ width: `${progress}%` }} aria-hidden="true" />
@@ -252,7 +232,6 @@ export default function Reader({ taskId }: { taskId: string }) {
           <button className="btn btn-sm" onClick={() => setPrefs({ ...prefs, size: Math.min(22, prefs.size + 1) })} aria-label="增大字号">A+</button>
           <button className="btn btn-sm" aria-pressed={focus} onClick={() => setFocus(!focus)}>{focus ? "退出专注" : "专注"}</button>
           <button className="btn btn-sm chat-toggle-btn" aria-keyshortcuts="Shift+F6" onClick={() => setChatOpen(!chatOpen)} title={chatOpen ? "折叠聊天（Shift + F6）" : "展开聊天（Shift + F6）"}>{chatOpen ? "折叠聊天" : "展开聊天"}</button>
-          <button className="btn btn-sm only-narrow issues-btn" onClick={() => setDrawer("issues")}>问题 {issuesCount}</button>
           <button className="btn btn-primary btn-sm" onClick={() => setExportOpen(true)} disabled={!read}>下载 {versionLabel}</button>
         </div>
       </div>
@@ -312,14 +291,16 @@ export default function Reader({ taskId }: { taskId: string }) {
 
         {chatOpen && !focus && (
           <div className="chat-cell" style={{ width: chatWidth }}>
-            <ReaderChat taskId={taskId} read={read} currentUnitId={unit?.unit_id ?? null} open={chatOpen} onOpenChange={setChatOpen} />
+            <ReaderChat taskId={taskId} read={read} currentUnitId={unit?.unit_id ?? null} open={chatOpen} onOpenChange={setChatOpen} width={chatWidth} />
             <ResizeHandle side="left" label="拖拽调整 AI 聊天面板宽度" onPointerDown={startChatResize} />
           </div>
+        )}
+        {!chatOpen && !focus && (
+          <button className="chat-expand-tab" onClick={() => setChatOpen(true)} aria-label="展开 AI 聊天（Shift+F6）" title="展开 AI 聊天（Shift + F6）">‹</button>
         )}
       </div>
 
       <Drawer open={drawer === "toc"} onClose={() => setDrawer(null)} title="目录" side="bottom">{ruler}</Drawer>
-      <Drawer open={drawer === "issues"} onClose={() => setDrawer(null)} title="问题" side="bottom">{issuePanel}</Drawer>
       <Drawer open={drawer === "tech"} onClose={() => setDrawer(null)} title="技术信息" side="right">
         {read && (
           <dl className="kv" style={{ gridTemplateColumns: "auto 1fr" }}>

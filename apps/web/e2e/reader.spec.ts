@@ -42,7 +42,9 @@ The answer is $ad-bc$.`;
     await expect(page.locator('.prose .math-fail')).toHaveCount(0);
     await expect(page.locator('.prose')).toContainText('The next question remains readable.');
     await expect(page.locator('.prose h2#reference-answers')).toHaveText('Reference answers#');
-    expect(calls.every(c => c.method === 'GET')).toBe(true);
+    // 2026-11-22 起首载会先 POST /session 配对（Agent2 修复首载 401 报错），
+    // 故只断言除配对外无任何写请求。
+    expect(calls.filter((c) => c.url !== "/session").every((c) => c.method === "GET")).toBe(true);
   });
 
   test("R01 表格：真实 DOM，宽表局部滚动，整页不溢出", async ({ page }) => {
@@ -192,21 +194,20 @@ test.describe("问题定位 AT-03-R12 / AT-10", () => {
       await expect(page.locator('.prose .pin')).toContainText("合成结论");
       await expect(page.locator('.prose code')).toContainText("答案：答案：保留原代码");
       await page.locator('.prose .pin').click();
-      await expect(page.locator('#issue-1')).toHaveAttribute('aria-current', 'true');
+      // 2026-11-22 用户决定舍弃问题栏入口：不再断言右栏问题条目高亮。
+      await expect(page.locator('#issue-1')).toHaveCount(0);
     });
   }
 
-  test("多字节区间命中原 quote；hash 不符的问题不渲染，右栏标位置已过期", async ({ page }) => {
+  test("多字节区间命中原 quote；hash 不符的问题不渲染", async ({ page }) => {
     const ok = finding(IDS.f1, "这里的结论缺少依据", location(SAMPLE, "这里有==重点内容==", IDS.v2));
     const stale = { ...finding(IDS.f3, "过期的问题", location(SAMPLE, "近似面积", IDS.v2)), location: { ...location(SAMPLE, "近似面积", IDS.v2), span_hash: "0".repeat(64) } };
     await open(page, { findings: [ok, stale] });
     const pins = page.locator(".prose .pin");
     await expect(pins).toHaveCount(1);
     await expect(pins.first()).toContainText("这里有");
-    await expect(page.locator(".issue.stale")).toContainText("位置已过期");
     await expect(page.locator(".prose .pin", { hasText: "近似面积" })).toHaveCount(0);
-    // 点击标记 → 右栏对应条目高亮
+    // 2026-11-22 用户决定舍弃问题栏入口：仅断言坏 hash 不渲染、好 pin 可交互。
     await pins.first().click();
-    await expect(page.locator("#issue-1")).toHaveAttribute("aria-current", "true");
   });
 });

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { useCallback, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import { applyPrefs, readPrefs } from "@/lib/prefs";
 import { ToastProvider } from "@/components/ui/Toast";
 
@@ -23,10 +23,56 @@ function navClientSnapshot(): boolean {
 }
 function navServerSnapshot(): boolean { return true; }
 
+const NAV_WIDTH_KEY = "aiedu.nav.width.v1";
+const NAV_WIDTH_MIN = 170;
+const NAV_WIDTH_MAX = 320;
+const NAV_WIDTH_DEFAULT = 216;
+
+function useNavWidth(): [number, (event: React.PointerEvent<HTMLDivElement>) => void] {
+  const [navWidth, setNavWidth] = useState(NAV_WIDTH_DEFAULT);
+  const latestWidth = useRef(NAV_WIDTH_DEFAULT);
+
+  useEffect(() => {
+    // 水合后异步读取持久宽度，避免 effect 内同步 setState。
+    const id = requestAnimationFrame(() => {
+      try {
+        const value = Number(localStorage.getItem(NAV_WIDTH_KEY));
+        if (Number.isFinite(value) && value >= NAV_WIDTH_MIN && value <= NAV_WIDTH_MAX) {
+          setNavWidth(value);
+          latestWidth.current = value;
+        }
+      } catch { /* 无 localStorage 时使用默认宽度 */ }
+    });
+    return () => cancelAnimationFrame(id);
+  }, []);
+
+  const startNavResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = latestWidth.current;
+    const move = (moveEvent: PointerEvent) => {
+      const next = Math.min(NAV_WIDTH_MAX, Math.max(NAV_WIDTH_MIN, Math.round(startWidth + moveEvent.clientX - startX)));
+      latestWidth.current = next;
+      setNavWidth(next);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      try { localStorage.setItem(NAV_WIDTH_KEY, String(latestWidth.current)); } catch { /* 忽略持久化失败 */ }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }, []);
+
+  return [navWidth, startNavResize];
+}
+
 export default function Shell({ children }: { children: ReactNode }) {
   const path = usePathname();
   const external = useRef<HTMLElement>(null);
   const navOpen = useSyncExternalStore(subscribeNav, navClientSnapshot, navServerSnapshot);
+  const [navWidth, startNavResize] = useNavWidth();
+  const navCollapsed = !navOpen;
   const toggleNav = useCallback(() => {
     try { localStorage.setItem(NAV_OPEN_KEY, navClientSnapshot() ? "0" : "1"); } catch { /* 忽略持久化失败 */ }
     navListeners.forEach((l) => l());
@@ -61,7 +107,10 @@ export default function Shell({ children }: { children: ReactNode }) {
   return (
     <ToastProvider>
       <a className="skip" href="#main">跳到正文</a>
-      <div className={`app${navOpen ? "" : " nav-collapsed"}`}>
+      <div
+        className={`app${navCollapsed ? " nav-collapsed" : ""}`}
+        style={{ "--sidebar": navCollapsed ? "64px" : `${navWidth}px` } as CSSProperties}
+      >
         <aside className="sidebar" data-collapsed={navOpen ? undefined : "true"}>
           <div className="brand-row">
             <Link className="brand" href="/">
@@ -90,6 +139,15 @@ export default function Shell({ children }: { children: ReactNode }) {
               <Image src="/brands/deepseek.svg" alt="DeepSeek 官方标志" width={24} height={24} unoptimized /><span>DeepSeek</span><kbd>Shift F9</kbd>
             </a>
           </nav>
+          {navOpen && (
+            <div
+              className="panel-resize"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="拖拽调整导航栏宽度"
+              onPointerDown={startNavResize}
+            />
+          )}
         </aside>
         <main className="main" id="main" tabIndex={-1}>{children}</main>
       </div>

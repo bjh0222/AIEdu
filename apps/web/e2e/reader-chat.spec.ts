@@ -37,7 +37,12 @@ test("reader sidebars collapse and chat context scope is assembled", async ({ pa
 
   await page.goto(`/tasks/${IDS.task}/read`);
   await expect(page.getByRole("complementary", { name: "AI 聊天" })).toBeVisible();
-  await expect(page.getByText("当前章节已注入。选中正文片段会作为引用；要问整段或全书，用下方范围切换。")).toBeVisible();
+  // 2026-11-22 用户标注：指引/免责文案删除；范围选项卡置顶（在会话卡之上）。
+  await expect(page.getByText("当前章节已注入")).toHaveCount(0);
+  await expect(page.getByText("基于当前阅读上下文提问")).toHaveCount(0);
+  const scopeTop = await page.getByRole("group", { name: "上下文范围" }).boundingBox();
+  const sessionsTop = await page.locator('[aria-label="聊天会话"]').boundingBox().then((b) => b?.y);
+  if (sessionsTop !== undefined && scopeTop) expect(scopeTop.y).toBeLessThan(sessionsTop);
   await expect(page.getByText("查看完整质量报告")).toHaveCount(0);
 
   // 2026-11-22 轮3：工具栏删除 4 项；树面板保留为可拖拽面板；Shift+F7 折叠最左侧应用导航。
