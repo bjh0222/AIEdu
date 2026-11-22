@@ -73,6 +73,8 @@ export default function Shell({ children }: { children: ReactNode }) {
   const navOpen = useSyncExternalStore(subscribeNav, navClientSnapshot, navServerSnapshot);
   const [navWidth, startNavResize] = useNavWidth();
   const navCollapsed = !navOpen;
+  // 2026-11-22：任务/阅读页保持素色背景，其余页面叠加虚化山水背景。
+  const showScenic = !(path === "/" || path.startsWith("/tasks"));
   const toggleNav = useCallback(() => {
     try { localStorage.setItem(NAV_OPEN_KEY, navClientSnapshot() ? "0" : "1"); } catch { /* 忽略持久化失败 */ }
     navListeners.forEach((l) => l());
@@ -106,9 +108,10 @@ export default function Shell({ children }: { children: ReactNode }) {
   }, []);
   return (
     <ToastProvider>
+      {showScenic && <div className="scenic-backdrop" aria-hidden="true" />}
       <a className="skip" href="#main">跳到正文</a>
       <div
-        className={`app${navCollapsed ? " nav-collapsed" : ""}`}
+        className={`app${showScenic ? " scenic" : ""}${navCollapsed ? " nav-collapsed" : ""}`}
         style={{ "--sidebar": navCollapsed ? "64px" : `${navWidth}px` } as CSSProperties}
       >
         <aside className="sidebar" data-collapsed={navOpen ? undefined : "true"}>

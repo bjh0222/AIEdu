@@ -127,9 +127,10 @@ export default function ReaderChat({ taskId, read, currentUnitId, open, onOpenCh
     <aside className="chat-rail" aria-label="AI 聊天" hidden={!open} style={{
       position: "relative", display: open ? "flex" : "none",
       flexDirection: "column", gap: 12, padding: 14, borderRadius: 14,
-      border: "1px solid var(--line)", background: "color-mix(in srgb, var(--card) 88%, transparent)", minHeight: 0,
+      border: "1px solid var(--line)", background: "color-mix(in srgb, var(--surface) 92%, transparent)", minHeight: 0,
     }}>
-      <header style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8 }}>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <h2 className="chat-title">Tips</h2>
         <button className="btn btn-quiet btn-sm" onClick={() => onOpenChange(false)} aria-label="折叠聊天（Shift+F6）" title="折叠聊天（Shift + F6）">⇥</button>
       </header>
 
@@ -173,7 +174,7 @@ export default function ReaderChat({ taskId, read, currentUnitId, open, onOpenCh
         </div>
       )}
 
-      <div style={{ display: "grid", gap: 8, alignContent: "start" }}>
+      <div style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto", display: "grid", gap: 8, alignContent: "start", paddingRight: 2 }}>
         {active?.messages.map((m) => (
           <article key={m.id} className="panel panel-pad"
             style={{ borderColor: m.role === "user" ? "var(--primary)" : "var(--line)", padding: 7, fontSize: 12 }} aria-label={m.role === "user" ? "用户消息" : "模型回答"}>
