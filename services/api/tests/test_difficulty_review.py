@@ -10,7 +10,9 @@ def fixture():
     item = {"item_id": "i1", "ordinal": 1, "stem_markdown": "综合条件甲，选择方法乙，并推广结论丙。",
             "answer": {"final": "精确结论丁", "reasoning": "先分析条件甲；再比较方法乙；最后推广结论丙。"},
             "difficulty_basis": {"private_generator_marker": "must_not_leak"}}
-    unit = {"unit_id": "u1", "title": "合成方法", "items": [item], "output_design": {"difficulty_target": {
+    unit = {"unit_id": "u1", "title": "合成方法", "items": [item],
+            "subject_bindings": [{"domain_key": "math_logic"}],
+            "output_design": {"difficulty_target": {
         "minimum_nonroutine_operations": 1, "minimum_concept_interactions": 1, "minimum_dependency_depth": 3}}}
     def entry(identity, quote, operation="justify", dependencies=None):
         value = {"id": identity, "operation": operation, "reason": "针对实际内容的独立且可定位的推理依据",

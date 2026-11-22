@@ -31,7 +31,7 @@ def consume(report, kind, state, units, version_id):
         return "undecidable", ["assessment_input_unbound_or_stale"]
     try:
         if kind == "difficulty_review":
-            outcome, expected, rows, complete = _difficulty(report, units)
+            outcome, expected, rows, complete = _difficulty(report, state, units)
         elif kind == "automated_assessment":
             outcome, expected, rows, complete = _criteria(report, state, units)
         else:
@@ -63,20 +63,41 @@ def criterion_check_results(report, state, units, version_id):
     coverage fault this returns an explicit undecidable check rather than the
     misleading generic "no verifier" marker.
     """
-    check_ids = [item["item_id"] for item in state.get("check_plan", {}).get("check_items", [])
-                 if item.get("verifier_binding") == "criterion_review.v1"]
+    from .checker import applies
+    criterion_items = {item["item_id"]: item for item in state.get("check_plan", {}).get("check_items", [])
+                       if item.get("verifier_binding") == "criterion_review.v1"}
+    check_ids = list(criterion_items)
+    applicable = {
+        item_id: [unit["unit_id"] for unit in units
+                  if applies(item, unit, state.get("context", {}))]
+        for item_id, item in criterion_items.items()
+    }
+    reduced = {
+        item_id: {
+            "item_id": item_id,
+            "result": "not_applicable",
+            "reason": "no_units_in_declared_domain_scene_role_or_question_form_scope",
+            "method_version": "assessment-input-binding.v1",
+            "matched_unit_ids": [],
+        }
+        for item_id, matched in applicable.items() if not matched
+    }
     outcome, errors = consume(report, "automated_assessment", state, units, version_id)
     if errors or outcome not in RESULTS:
-        return {item_id: {"item_id": item_id, "result": "undecidable",
-                          "reason": "ASSESSMENT_BINDING_INCOMPLETE", "binding_errors": errors,
-                          "method_version": "assessment-input-binding.v1"}
-                for item_id in check_ids}
+        reduced.update({
+            item_id: {"item_id": item_id, "result": "undecidable",
+                      "reason": "ASSESSMENT_BINDING_INCOMPLETE", "binding_errors": errors,
+                      "method_version": "assessment-input-binding.v1"}
+            for item_id in check_ids if applicable[item_id]
+        })
+        return reduced
     grouped = {}
     for row in report.get("criteria", []):
         if isinstance(row, dict) and row.get("check_id") in check_ids:
             grouped.setdefault(row["check_id"], []).append(row.get("result"))
-    reduced = {}
     for item_id in check_ids:
+        if not applicable[item_id]:
+            continue
         results = grouped.get(item_id, [])
         if not results:
             reduced[item_id] = {"item_id": item_id, "result": "undecidable",
@@ -90,12 +111,23 @@ def criterion_check_results(report, state, units, version_id):
         else:
             result = "satisfied"
         reduced[item_id] = {"item_id": item_id, "result": result,
-                            "method_version": "assessment-input-binding.v1"}
+                            "method_version": "assessment-input-binding.v1",
+                            "matched_unit_ids": applicable[item_id]}
     return reduced
 
 
-def _difficulty(report, units):
+def _difficulty(report, state, units):
     from .difficulty_review import bind_item
+    from .quality_policy import difficulty_applicability
+    if report.get("result") == "not_applicable":
+        expected_applicability = difficulty_applicability(state.get("context", {}), units)
+        if (expected_applicability["decision"] != "skip"
+                or report.get("applicability") != expected_applicability
+                or report.get("reason") != expected_applicability["reason"]
+                or report.get("items") != []
+                or report.get("processing_status") != "complete"):
+            raise ValueError("not_applicable_lacks_recomputed_scope")
+        return "not_applicable", 0, [], 0
     rows = report["items"]
     if not isinstance(rows, list):
         raise ValueError("rows required")

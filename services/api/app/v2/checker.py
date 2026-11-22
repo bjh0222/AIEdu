@@ -289,8 +289,12 @@ def _apply_research_review(result, state, units, version_id):
                   if i.get("verifier_binding") == "research_rubric.v1"}
     for dimension_id, item in dimensions.items():
         rubric_ref = item.get("research_rubric_ref", {})
+        identity = {key: rubric_ref.get(key) for key in ("id", "version", "hash")}
         observed = [r for r in rows if r.get("dimension_id") == dimension_id
-                    and r.get("rubric_ref") == rubric_ref]
+                    and all(
+                        (r.get("rubric_ref") or {}).get(key) == value
+                        for key, value in identity.items()
+                    )]
         expected_units = [u["unit_id"] for u in units]
         missing_units = [identity for identity in expected_units
             if len([r for r in observed if r.get("unit_id") == identity

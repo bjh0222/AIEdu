@@ -9,6 +9,7 @@ from copy import deepcopy
 from uuid import uuid4
 
 from .contracts import DomainError, digest, sha
+from .quality_policy import DIFFICULTY_AXIS_DOMAINS, task_domains
 from .resolver import SCENES, canonical_scene
 from ..learning.disciplines import canonical_domain_key
 
@@ -18,12 +19,30 @@ POLICY = {"policy_version": "aiedu.repair.v1", "enabled": True,
 
 def compile_plan(task: dict, network_policy: dict | None = None) -> dict:
     items, conflicts = [], list(task.get("task_intent", {}).get("conflicts", []))
+    declared_task_domains = sorted(task_domains(task))
+
+    def canonical_scope(scope: dict | None) -> dict:
+        value = deepcopy(scope) if isinstance(scope, dict) else {}
+        if "domains" in value:
+            value["domains"] = sorted({
+                canonical_domain_key(str(domain))
+                for domain in value.get("domains") or []
+                if isinstance(domain, str) and domain.strip()
+            })
+        if "scenes" in value:
+            value["scenes"] = sorted({
+                canonical_scene(str(scene))
+                for scene in value.get("scenes") or []
+                if isinstance(scene, str) and scene.strip()
+            })
+        return value
+
     def add(item_id, system, method, condition, severity="blocker", kind="deterministic", scope=None):
         items.append({"item_id": item_id, "system": system, "dimension": item_id,
                       "decision_type": kind, "verifier_binding": method,
                       "severity_class": severity, "required": True,
                       "required_evidence": [method], "pass_condition": condition,
-                      "scope": scope or {}, "applicability_reason": "general frozen task requirement"})
+                      "scope": canonical_scope(scope), "applicability_reason": "general frozen task requirement"})
     add("C1.coverage", "general", "coverage.v1", "all required units and source chunks are accounted for")
     add("C2.structure", "general", "markdown.v1", "nonempty content; balanced code fences; unique stable unit IDs")
     add("C3.correctness", "general", "independent_oracle.v1", "no confirmed severe factual error", kind="semantic_rubric")
@@ -63,7 +82,7 @@ def compile_plan(task: dict, network_policy: dict | None = None) -> dict:
                 "coupled stem/answer/steps; paper scored, exercise unscored",
                 scope={"roles": [role], "requires_items": True})
         domains = {canonical_domain_key(s["domain_key"]) for s in task.get("subject_bindings", [])} or {canonical_domain_key(task.get("domain_key"))}
-        if normalized_scene in {"exam_paper", "exercise"} and "math_logic" in domains:
+        if normalized_scene in {"exam_paper", "exercise"} and domains & DIFFICULTY_AXIS_DOMAINS:
             for q in range(1, 7):
                 add(f"Q{q}.{role}", "spec", "independent_math.v1", f"baseline Q{q}; no invented thresholds", kind="semantic_rubric",
                     scope={"domains": ["math_logic"], "roles": [role], "requires_items": True})
@@ -82,8 +101,9 @@ def compile_plan(task: dict, network_policy: dict | None = None) -> dict:
             if rule["rule_id"] in seen_rules:
                 continue
             seen_rules.add(rule["rule_id"])
+            rule_domain = canonical_domain_key(profile["domain_key"])
             add(rule["rule_id"], "discipline", "independent_oracle.v1", rule["criterion"], kind=rule["decision_type"],
-                scope={"domains": [profile["domain_key"]], "scenes": [profile["scene"]]})
+                scope={"domains": [rule_domain], "scenes": [canonical_scene(profile["scene"])]})
             items[-1]["source_rule"] = {"rule_id": rule["rule_id"], "version": rule["version"], "source_ref": rule["source_ref"]}
         # Item quality is only applicable to item-bearing artifacts.  The
         # common G1-G4 checks above cover all tutorial units; these rows add
@@ -94,37 +114,92 @@ def compile_plan(task: dict, network_policy: dict | None = None) -> dict:
             dimension_id = dimension.get("id")
             if not dimension_id or profile.get("scene") not in {"exercise", "exam", "exam_paper"}:
                 continue
-            item_id = f"I.{profile['domain_key']}.{dimension_id}.{profile['scene']}"
+            profile_domain = canonical_domain_key(profile["domain_key"])
+            profile_scene = canonical_scene(profile["scene"])
+            item_id = f"I.{profile_domain}.{dimension_id}.{profile_scene}"
             if any(existing["item_id"] == item_id for existing in items):
                 continue
             add(item_id, "discipline", "criterion_review.v1",
                 "0=confirmed defect; 1=partial evidence/limitation remains reviewable; 2=all applicable clauses supported; missing evidence=unknown",
-                kind="semantic_rubric", scope={"domains": [profile["domain_key"]],
-                    "scenes": [profile["scene"]], "requires_items": True})
+                kind="semantic_rubric", scope={"domains": [profile_domain],
+                    "scenes": [profile_scene], "requires_items": True})
             items[-1]["quality_dimension"] = {"id": dimension_id, "criterion": dimension.get("criterion"),
                                                 "name": dimension.get("name"), "source_ref": dimension.get("source_ref")}
     # Public research rubrics are frozen task assets, not global default
     # dimensions. C executes these rows directly and can only pass them with
     # literal candidate evidence; missing evidence remains undecidable.
     for binding in task.get("research_rubrics", []):
-        rubric = binding.get("content", {}) if isinstance(binding, dict) else {}
+        if not isinstance(binding, dict):
+            conflicts.append({
+                "code": "RESEARCH_RUBRIC_BINDING_INVALID",
+                "reason": "binding_must_be_an_object",
+            })
+            continue
+        rubric = binding.get("content", {})
+        if not isinstance(rubric, dict):
+            conflicts.append({
+                "code": "RESEARCH_RUBRIC_CONTENT_INVALID",
+                "research_rubric_id": binding.get("id"),
+                "reason": "content_must_be_an_object",
+            })
+            continue
+        frozen_scope = binding.get("scope")
+        if not isinstance(frozen_scope, dict):
+            frozen_scope = rubric.get("applicability_scope")
+        if not isinstance(frozen_scope, dict):
+            frozen_scope = rubric.get("scope")
+        if not isinstance(frozen_scope, dict):
+            frozen_scope = {}
+        research_domains = sorted({
+            canonical_domain_key(str(domain))
+            for domain in frozen_scope.get("domains") or []
+            if isinstance(domain, str) and domain.strip()
+        })
+        legacy_scope_derived = False
+        if not research_domains and rubric.get("domain_key"):
+            research_domains = [canonical_domain_key(str(rubric["domain_key"]))]
+        if not research_domains and len(declared_task_domains) == 1:
+            research_domains = declared_task_domains
+            legacy_scope_derived = True
+        if not research_domains:
+            conflicts.append({
+                "code": "RESEARCH_RUBRIC_SCOPE_AMBIGUOUS",
+                "research_rubric_id": rubric.get("rubric_id") or binding.get("id"),
+                "reason": "legacy_or_external_rubric_has_no_auditable_unique_domain",
+            })
+            continue
+        research_scope = canonical_scope({
+            **frozen_scope,
+            "domains": research_domains,
+        })
+        rubric_ref = {
+            **{k: binding[k] for k in ("id", "version", "hash") if k in binding},
+            "canonical_domain_key": research_domains[0] if len(research_domains) == 1 else None,
+            "scope": research_scope,
+            "legacy_scope_derived": legacy_scope_derived,
+        }
         gaps = rubric.get("scope_gaps", []) if isinstance(rubric, dict) else []
         if gaps:
             gap_id = "R.scope_completion." + str(rubric.get("rubric_id") or "research")
             add(gap_id, "research", "research_scope_completion.v1",
                 "all research-derived scope dimensions applicable before learner-content checks",
-                kind="deterministic")
+                kind="deterministic", scope=research_scope)
             items[-1]["scope_gaps"] = deepcopy(gaps)
-            items[-1]["research_rubric_ref"] = {k: binding[k] for k in ("id", "version", "hash") if k in binding}
+            items[-1]["research_rubric_ref"] = deepcopy(rubric_ref)
+            items[-1]["applicability_reason"] = "research_rubric_task_scope"
         for dimension in rubric.get("dimensions", []):
             dimension_id = dimension.get("dimension_id") or dimension.get("id")
             if not dimension_id:
                 continue
             add(f"R.{dimension_id}", "research", "research_rubric.v1",
                 "the research-derived dimension is executed with evidence and no unknown result",
-                kind="semantic_rubric", scope={})
+                kind="semantic_rubric", scope=research_scope)
             items[-1]["research_dimension_id"] = dimension_id
-            items[-1]["research_rubric_ref"] = {k: binding[k] for k in ("id", "version", "hash") if k in binding}
+            items[-1]["research_rubric_ref"] = deepcopy(rubric_ref)
+            items[-1]["applicability_reason"] = (
+                "legacy_research_rubric_scope_derived_from_unique_task_domain"
+                if legacy_scope_derived else "research_rubric_task_scope"
+            )
     from .check_criteria import bind_criteria, VERSION
     bind_criteria(items)
     research = network_policy or task.get("research_policy") or {
@@ -233,9 +308,18 @@ def deterministic_checks(plan: dict, units: list[dict], version_id: str, materia
             matching = [u for u in units if u.get("format_contract") == item["scope"]["format_contract"]]
             passed = bool(matching) and all(check_layout(u) for u in matching)
         elif method == "research_scope_completion.v1":
-            checks.append({"item_id": item["item_id"], "result": "not_run",
-                           "reason": "RESEARCH_RUBRIC_SCOPE_PARTIAL",
-                           "scope_gaps": deepcopy(item.get("scope_gaps", []))})
+            gaps = item.get("scope_gaps")
+            if not isinstance(gaps, list):
+                result, reason = "violated", "RESEARCH_SCOPE_COMPLETION_CONTRACT_INVALID"
+                gaps = []
+            elif gaps:
+                result, reason = "violated", "RESEARCH_RUBRIC_SCOPE_PARTIAL"
+            else:
+                result, reason = "satisfied", "RESEARCH_RUBRIC_SCOPE_COMPLETE"
+            checks.append({"item_id": item["item_id"], "result": result, "reason": reason,
+                           "method_version": method,
+                           "scope_gaps": deepcopy(gaps),
+                           "research_rubric_ref": deepcopy(item.get("research_rubric_ref", {}))})
             continue
         elif method == "criterion_review.v1":
             checks.append({"item_id": item["item_id"], "result": "not_run",

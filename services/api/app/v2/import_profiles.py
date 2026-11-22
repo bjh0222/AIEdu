@@ -173,6 +173,8 @@ def freeze_import_profiles(db, context):
 def freeze_research_rubrics(db, context):
     """Bind immutable research rubrics while keeping them distinct from imports."""
     from .insights import record
+    from .quality_policy import canonical_domains, context_domains
+    from .resolver import canonical_scene
     bindings = []
     for ref in context.get("research_rubric_refs", []):
         if not all(k in ref for k in ("id", "version", "hash")):
@@ -184,7 +186,33 @@ def freeze_research_rubrics(db, context):
         if head != ref:
             raise DomainError("IMPORT_ASSET_STALE", 409)
         binding = deepcopy(value)
-        _validate_research_rubric_contract(binding["content"])
+        content = binding["content"]
+        _validate_research_rubric_contract(content)
+        frozen_scope = content.get("applicability_scope") or content.get("scope") or {}
+        if not isinstance(frozen_scope, dict):
+            frozen_scope = {}
+        domains = canonical_domains(frozen_scope.get("domains") or [])
+        if content.get("domain_key"):
+            domains.update(canonical_domains([content["domain_key"]]))
+        legacy_scope_derived = False
+        if not domains:
+            task_domains = sorted(context_domains(context))
+            if len(task_domains) == 1:
+                domains = set(task_domains)
+                legacy_scope_derived = True
+        scope = {
+            key: deepcopy(value) for key, value in frozen_scope.items()
+            if key not in {"domains", "scenes"}
+        }
+        if domains:
+            scope["domains"] = sorted(domains)
+        if isinstance(frozen_scope.get("scenes"), list):
+            scope["scenes"] = sorted({
+                canonical_scene(str(scene)) for scene in frozen_scope["scenes"]
+                if isinstance(scene, str) and scene.strip()
+            })
+        binding["scope"] = scope
+        binding["legacy_scope_derived"] = legacy_scope_derived
         binding["binding_hash"] = digest(binding)
         bindings.append(binding)
     return {**context, "research_rubrics": bindings}

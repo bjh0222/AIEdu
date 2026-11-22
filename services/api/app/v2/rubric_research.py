@@ -601,6 +601,7 @@ def _scope_completion(dimensions, rows, reviews, audits):
             usable_dimensions.append(dimension)
         else:
             gaps.append({
+                "scope": reviews[-1].get("scope"),
                 "dimension_id": dimension["dimension_id"],
                 "name": dimension.get("name"),
                 "dimension_hash": digest(dimension),
@@ -968,7 +969,24 @@ def execute_research(run_id, worker, epoch, state, provider_factory=None):
         rubric_audits.append(audit)
         rubric_audits.extend(contract_audits)
         rubric_audits.extend(review_audits)
+    from .quality_policy import task_domains
+    from .resolver import canonical_scene
+    scope_domains = sorted(task_domains(state["context"]))
+    scope_scenes = sorted({
+        canonical_scene(str(binding["scene"]))
+        for binding in state["context"].get("spec_bindings", [])
+        if isinstance(binding, dict) and binding.get("scene")
+    })
+    scope_gaps = [
+        gap for review in scope_reviews
+        for gap in review.get("unresolved_dimensions", [])
+        if isinstance(gap, dict)
+    ]
     rubric = {"rubric_id": "research-rubric-"+digest(claims)[:24], "version": 1, "dimensions": dimensions,
+        "domain_key": scope_domains[0] if len(scope_domains) == 1 else None,
+        "applicability_scope": {"domains": scope_domains, "scenes": scope_scenes},
+        "scope_completion_status": "partial_unresolved" if scope_gaps else "complete",
+        "scope_gaps": scope_gaps,
         "source_claims": claims, "research_method_version": "ai-screened-diagnostic.v1", "calibration_status": "not_calibrated",
         "source_catalog": [{"source_id": s.get("source_id"), "source_hash": s.get("source_hash"),
             "url": s.get("final_url") or s.get("url"), "title": s.get("publication_metadata", {}).get("title"),

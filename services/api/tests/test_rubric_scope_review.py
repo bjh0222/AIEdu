@@ -504,8 +504,9 @@ def test_partial_research_scope_adds_a_required_blocker_not_a_fake_pass():
     assert item["required"] is True and item["scope_gaps"][0]["dimension_id"] == "D6"
     unit = {"unit_id": "u", "body": "content", "content_hash": __import__("app.v2.contracts", fromlist=["sha"]).sha("content")}
     report = deterministic_checks({"check_items": [item], "check_plan_hash": "p"}, [unit], "v")
-    assert report["checks"][0]["result"] == "not_run"
-    assert report["tqi_verdict"] == "blocked"
+    assert report["checks"][0]["result"] == "violated"
+    assert report["checks"][0]["reason"] == "RESEARCH_RUBRIC_SCOPE_PARTIAL"
+    assert report["tqi_verdict"] == "needs_repair"
     assert report["blocking_reasons"][0]["item_id"] == item["item_id"]
 
 def test_undecidable_dimension_is_preserved_not_forced_into_rewrite(monkeypatch):

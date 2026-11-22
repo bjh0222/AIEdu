@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
+from ..learning.disciplines import canonical_domain_key
 from .contracts import DomainError, digest, sha
 
 EVIDENCE_VERSION = "server-evidence-catalog.v1"
@@ -307,16 +308,19 @@ def applicability_decision(item: dict, unit: dict, context: dict) -> dict[str, A
     dimension = str(item.get("dimension") or item.get("item_id") or "")
     roles = set(scope.get("roles") or [])
     scenes = _unit_scenes(unit, context)
-    domains = {str(value) for value in scope.get("domains") or []}
+    domains = {canonical_domain_key(str(value)) for value in scope.get("domains") or []
+               if isinstance(value, str) and value.strip()}
     forms = _unit_question_forms(unit)
     scoped_forms = {re.sub(r"[\s_-]+", "_", str(value).strip().casefold())
                     for value in (scope.get("question_types") or scope.get("question_forms") or [])
                     if isinstance(value, str) and value.strip()}
-    unit_domains = {str(binding.get("domain_key")) for binding in unit.get("subject_bindings", [])
+    unit_domains = {canonical_domain_key(str(binding.get("domain_key"))) for binding in unit.get("subject_bindings", [])
                     if isinstance(binding, dict) and binding.get("domain_key")}
-    unit_domains |= {str(binding.get("domain_key")) for binding in context.get("subject_bindings", [])
+    unit_domains |= {canonical_domain_key(str(binding.get("domain_key"))) for binding in context.get("subject_bindings", [])
                      if isinstance(binding, dict) and binding.get("domain_key")}
-    unit_domains.add(str(context.get("domain_key")))
+    if context.get("domain_key"):
+        unit_domains.add(canonical_domain_key(str(context["domain_key"])))
+    matched_domains = sorted(domains & unit_domains)
     requires_items = bool(scope.get("requires_items") or re.match(
         r"^(?:Q[1-9][0-9]*\.|M\.items\.|I\.)", dimension))
 
@@ -343,6 +347,13 @@ def applicability_decision(item: dict, unit: dict, context: dict) -> dict[str, A
         "scenes": sorted(scenes),
         "question_forms": sorted(forms),
         "consumer": item.get("verifier_binding"),
+        "applicability_reason": reason,
+        "scope": {
+            **deepcopy(scope),
+            **({"domains": sorted(domains)} if "domains" in scope else {}),
+        },
+        "canonical_domain_keys": sorted(unit_domains),
+        "matched_domains": matched_domains,
     }
 
 

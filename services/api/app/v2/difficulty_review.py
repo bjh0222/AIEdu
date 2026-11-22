@@ -115,8 +115,34 @@ def bind_item(raw, item, unit, audit):
 
 def evaluate_difficulty(run_id, worker, epoch, state, units, version_id, provider_factory=None):
     from .assessment_binding import input_binding
+    from .quality_policy import difficulty_applicability
     from .inference import invoke
     from .difficulty_batches import resume_batches, METHOD as BATCH_METHOD
+    applicability = difficulty_applicability(state.get("context", {}), units)
+    if applicability["decision"] == "skip":
+        return {
+            "method_version": VERSION,
+            "status": "completed",
+            "result": "not_applicable",
+            "reason": applicability["reason"],
+            "items": [],
+            "processing_status": "complete",
+            "coverage": {
+                "expected": 0,
+                "recorded": 0,
+                "complete_observations": 0,
+                "decided": 0,
+                "invalid_response_entries": 0,
+            },
+            "protocol_errors": [],
+            "input_binding": input_binding(state, units, version_id),
+            "audits": [],
+            "calibration_status": "not_calibrated",
+            "empirical_status": "not_measured",
+            "professional_certification": False,
+            "version_id": version_id,
+            "applicability": applicability,
+        }
     requests = [(unit, unit["items"][i:i+3]) for unit in units if unit.get("items") for i in range(0, len(unit["items"]), 3)]
     stopped, stop_lock, first_failure = Event(), Lock(), []
 
