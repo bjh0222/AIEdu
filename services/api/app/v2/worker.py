@@ -89,8 +89,6 @@ def execute_run(run_id: str, provider_factory=None):
     stop = threading.Event()
     heartbeat = threading.Thread(target=_heartbeat, args=(run_id, worker, epoch, stop), daemon=True)
     heartbeat.start()
-    pipeline = None
-    pending_check = None
     try:
         from .review_contract import ensure_quality_protocol
         with write() as db:
@@ -197,14 +195,10 @@ def execute_run(run_id: str, provider_factory=None):
                 materials.append(load(material.manifest_json))
         completed = {u["unit_id"] for u in units}
         generation_concurrency = max(1, min(4, state.get("execution_policy", {}).get("generation_concurrency", 1)))
-        if state["mode"] == "configured" and state.get("execution_policy", {}).get("unit_pipeline") and generation_concurrency == 1:
-            pipeline = ThreadPoolExecutor(max_workers=1, thread_name_prefix="v2-unit-pipeline")
         from .model_roles import role_config,for_role
         profile = (for_role("generation") if role_config()[1].get("generation") else runtime_settings()) if state["mode"] == "configured" else None
         candidates, generation_errors = {}, {}
         for planned in state["plan"]["units"]:
-            if pending_check is not None and pending_check.done():
-                pending_check.result()  # a failed/unknown check stops new dispatches.
             if planned["unit_id"] in completed:
                 continue
             if not set(planned["depends_on"]) <= completed:
@@ -269,19 +263,11 @@ def execute_run(run_id: str, provider_factory=None):
             quality["_version_id"] = version_id
             published = publish(run_id, worker, epoch, units, quality, operation_id=f"{run_id}:{planned['unit_id']}:publish", base_version=state.get("version_id"))
             state["version_id"] = published
-            if pipeline is not None:
-                if pending_check is not None:
-                    pending_check.result()
-                from .checker import evaluate
-                pending_check = pipeline.submit(evaluate, run_id, worker, epoch, deepcopy(state), [deepcopy(unit)],
-                                                published, provider_factory, _serial=True, _l4=False)
         if generation_errors:
             raise next(iter(generation_errors.values()))
         # Model checks are distinct from deterministic candidate collection and may
         # only confirm through wrapper-owned evidence. They never sign calibration.
         if state["mode"] == "configured":
-            if pending_check is not None:
-                pending_check.result()
             from .checker import evaluate
             new_version = str(uuid4())
             quality = evaluate(run_id, worker, epoch, state, units, new_version, provider_factory)
@@ -338,8 +324,6 @@ def execute_run(run_id: str, provider_factory=None):
                 obj.status, obj.error_code, obj.state_json = "failed", "WORKER_ERROR", dump(latest)
                 obj.state_revision += 1
     finally:
-        if pipeline is not None:
-            pipeline.shutdown(wait=True, cancel_futures=True)
         stop.set()
         heartbeat.join(timeout=1)
 

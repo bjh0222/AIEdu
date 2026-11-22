@@ -281,7 +281,7 @@ def test_frozen_call_budget_preserves_receipts_and_blocks_new_dispatch(client, m
         authorize_call(run["run_id"], "other", "other", created["context_hash"], lease["epoch"], "budget-worker", "other-key")
 
 
-def test_worker_pipeline_overlaps_and_reuses_settled_checks(client, monkeypatch):
+def test_worker_finishes_generation_before_one_complete_check_and_reuses_requests(client, monkeypatch):
     import json
     import threading
     from types import SimpleNamespace
@@ -303,12 +303,15 @@ def test_worker_pipeline_overlaps_and_reuses_settled_checks(client, monkeypatch)
     with write() as db:
         obj = job(db, run["run_id"])
         state = load(obj.state_json)
+        assert "unit_pipeline" not in state["execution_policy"]
         unit = state["plan"]["units"][0]
         state["plan"]["units"] = [{**unit, "unit_id": f"pipeline-{i}", "title": f"单元{i}", "depends_on": []} for i in range(2)]
         state["plan"]["plan_hash"] = digest(state["plan"]["units"])
         obj.state_json = dump(state)
-    second_started, check_started = threading.Event(), threading.Event()
+    both_generated, first_check_started = threading.Event(), threading.Event()
     seen = []
+    generated = set()
+    checked = set()
     lock = threading.Lock()
     class Provider:
         def complete_json(self, system, user):
@@ -316,19 +319,23 @@ def test_worker_pipeline_overlaps_and_reuses_settled_checks(client, monkeypatch)
             with lock:
                 seen.append((system, user))
             if "check" in data or "checks" in data:
-                if data["unit"]["unit_id"] == "pipeline-0":
-                    check_started.set()
-                    assert second_started.wait(5)
+                with lock:
+                    assert generated == {"pipeline-0", "pipeline-1"}
+                    first_check_started.set()
+                    checked.add(data["unit"]["unit_id"])
                 return ({"checks": [{"item_id": i["item_id"], "result": "undecidable", "findings": []} for i in data["checks"]]}
                     if "checks" in data else {"result": "undecidable", "findings": []}), 1, {"total_tokens": 2}
-            if data["unit"]["unit_id"] == "pipeline-1":
-                second_started.set()
-                assert check_started.wait(5)
+            with lock:
+                generated.add(data["unit"]["unit_id"])
+                if generated == {"pipeline-0", "pipeline-1"}:
+                    both_generated.set()
+                assert not first_check_started.is_set()
             return {"body": "## 方法\n\n这是隔离测试中的解释正文。"}, 1, {"total_tokens": 2}
     worker.execute_run(run["run_id"], lambda _: Provider())
     snap = snapshot(created["task_id"])
     assert snap["state"] == "completed", snap["stop_reason"]
-    assert second_started.is_set() and check_started.is_set()
+    assert both_generated.is_set() and first_check_started.is_set()
+    assert checked == {"pipeline-0", "pipeline-1"}
     assert len(seen) == len(set(seen)), "final reduction must reuse identical pipeline check receipts"
     assert len(snap["calls"]) == len(seen)
     assert all(c["status"] == "settled" for c in snap["calls"])

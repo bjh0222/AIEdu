@@ -229,8 +229,8 @@ def start_run(task_id, payload, key, automatic=False, envelope=None):
             frozen["optimization_policy"] = policy
             frozen["budget"]["calls"] = policy["root_call_budget"]
             frozen["intent_pending"] = True
-        frozen["execution_policy"] = {"version": "bounded-unit-pipeline.v1", "provider_concurrency": concurrency,
-                                      "check_concurrency": concurrency, "unit_pipeline": concurrency > 1,
+        frozen["execution_policy"] = {"version": "single-complete-check.v1", "provider_concurrency": concurrency,
+                                      "check_concurrency": concurrency,
                                       "semantic_batch": True,
                                       "generation_concurrency": min(concurrency, max(1, int(context.get("execution_policy", {}).get("generation_concurrency", concurrency if automatic else 1)))),
                                       "network_enabled": network_enabled,

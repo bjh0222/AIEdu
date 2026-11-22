@@ -95,6 +95,53 @@ def compile_plan(task: dict, network_policy: dict | None = None) -> dict:
                 scope={"roles": [role], "runtime_target": runtime})
         add(f"S.format.{role}", "spec", "spec_fields.v1", "frozen required/forbidden format requirements are individually evaluated",
             kind="semantic_rubric", scope={"roles": [role]})
+
+    derivation_targets = []
+    item_roles = [
+        role for role, binding in roles.items()
+        if canonical_scene(binding["scene"]) in {"exercise", "exam_paper"}
+    ]
+    if (declared_task_domains
+            and set(declared_task_domains) <= set(DIFFICULTY_AXIS_DOMAINS)
+            and item_roles):
+        by_id = {item["item_id"]: item for item in items}
+        blueprints = {
+            "C3.correctness": [
+                {"check_id": "Q1.{role}", "clauses": ["premises", "solvability"]},
+                {"check_id": "Q2.{role}", "clauses": ["answer", "reasoning"]},
+            ],
+            "C4.constraints": [
+                {"check_id": "Q3.{role}", "clauses": ["coverage", "completeness"]},
+            ],
+            "G3.assessment_design": [
+                {"check_id": "Q4.{role}", "clauses": ["core_method", "transfer"]},
+            ],
+        }
+        for target_id, source_blueprints in blueprints.items():
+            sources = []
+            complete = target_id in by_id
+            for role in item_roles:
+                for source_blueprint in source_blueprints:
+                    source_id = source_blueprint["check_id"].format(role=role)
+                    source = by_id.get(source_id)
+                    if source is None:
+                        complete = False
+                        break
+                    sources.append({
+                        "check_id": source_id,
+                        "role": role,
+                        "clauses": list(source_blueprint["clauses"]),
+                    })
+                if not complete:
+                    break
+            if complete and sources:
+                target = by_id[target_id]
+                target["derivation_target"] = True
+                target["derivation_source_ids"] = [source["check_id"] for source in sources]
+                derivation_targets.append({
+                    "target_id": target_id,
+                    "sources": sources,
+                })
     seen_rules = set()
     for profile in task.get("quality_profiles", []):
         for rule in profile["rules"]:
@@ -210,13 +257,37 @@ def compile_plan(task: dict, network_policy: dict | None = None) -> dict:
             )
     from .check_criteria import bind_criteria, VERSION
     bind_criteria(items)
+    if derivation_targets:
+        for target in derivation_targets:
+            for source in target["sources"]:
+                source_item = next(
+                    item for item in items
+                    if item["item_id"] == source["check_id"]
+                )
+                source["criterion_hash"] = source_item["criterion_contract"]["criterion_hash"]
+        derivation_contract = {
+            "schema_version": "aiedu.derivation-contract.v1",
+            "method_version": "assessment-source-derivation.v1",
+            "enabled": True,
+            "canonical_domain": "math_logic",
+            "requires_items": True,
+            "target_ids": [target["target_id"] for target in derivation_targets],
+            "targets": derivation_targets,
+        }
+    else:
+        derivation_contract = {
+            "schema_version": "aiedu.derivation-contract.v1",
+            "method_version": "assessment-source-derivation.v1",
+            "enabled": False,
+            "reason": "not_math_item_plan_or_sources_incomplete",
+        }
     research = network_policy or task.get("research_policy") or {
         "method_version": "task-research-policy.v1",
         "enabled": task.get("research_request", {}).get("enabled") is True,
     }
     plan = {"schema_version": "aiedu.check-plan.v2", "assessment_contract": VERSION, "check_items": items, "conflicts": conflicts,
             "spec_hash": digest(bindings), "constraints_hash": digest(task.get("hard_constraints", [])),
-            "research_policy": deepcopy(research)}
+            "research_policy": deepcopy(research), "derivation_contract": derivation_contract}
     plan["check_plan_hash"] = digest(plan)
     return plan
 

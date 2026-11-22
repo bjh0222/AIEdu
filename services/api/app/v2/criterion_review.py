@@ -114,12 +114,14 @@ def summarize(rows, expected, audits):
 def requests_for_unit(state, unit):
     """One selector for execution and downstream coverage verification."""
     from .checker import applies
+    from .derivation import is_derived_target
     from .planning import review_requirements
     requirements = review_requirements(state, unit)
     quality_refs = requirements.get("global_targets", {}).get(
         "quality_target_contracts", [])
     unit_targets = requirements.get("unit_targets", {})
     semantic = [c for c in state.get("check_plan", {}).get("check_items", []) if c["decision_type"] != "deterministic"
+        and not is_derived_target(state, c)
         and not c["item_id"].startswith("Q5.") and applies(c, unit, state.get("context", {}))
         # These dimensions have dedicated consumers; generic clauses cannot
         # substitute for executing their frozen rubric/runtime contract.

@@ -511,7 +511,7 @@ def run_manifest(task_id, run_id):
             "context_hash": snap["context_hash"], "plan_hash": snap["plan_hash"], "version_id": snap["version_id"],
             "content_hash": snap["content_hash"], "state": snap["state"], "demo": snap["demo"], "calls": calls,
             "scope": context.get("generation_scope"), "scope_resolution": context.get("scope_resolution"),
-            "execution_policy": state.get("execution_policy", {"provider_concurrency": 1, "unit_pipeline": False}),
+            "execution_policy": state.get("execution_policy", {"provider_concurrency": 1, "version": "single-complete-check.v1"}),
             "spec_bindings": [{k: b.get(k) for k in ("spec_id", "spec_version", "snapshot_hash", "scene", "artifact_role")} for b in context["spec_bindings"]],
             "learner_feedback": context.get("learner_feedback"), "quality": snap["quality"],
             "replay": {"kind": "read_only_manifest", "new_paid_attempt_required": True,

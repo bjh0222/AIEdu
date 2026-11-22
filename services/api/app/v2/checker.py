@@ -262,10 +262,16 @@ def evaluate(run_id, worker, epoch, state, units, version_id, provider_factory=N
             provider_factory, literal_evidence=result.get("mathematical_evidence"))
         result["difficulty_review"] = evaluate_difficulty(run_id, worker, epoch, state, units, version_id, provider_factory)
         from .assessment_binding import criterion_check_results
+        from .derivation import derive_assessment_checks
         criterion_checks = criterion_check_results(result["automated_assessment"], state, units, version_id)
-        if criterion_checks:
+        derived_checks = derive_assessment_checks(
+            state, units, result["automated_assessment"], version_id,
+            matrix_hash=(result["automated_assessment"].get("quality_preflight") or {}).get("matrix_hash"),
+        )
+        if criterion_checks or derived_checks:
             checks = {c["item_id"]: c for c in result.get("checks", [])}
             checks.update(criterion_checks)
+            checks.update(derived_checks)
             reduced = reduce_quality(state["check_plan"], list(checks.values()),
                                      list(result.get("findings", [])),
                                      calibration=result.get("calibration_status", "not_calibrated"))
@@ -374,7 +380,9 @@ def _evaluate_core(run_id, worker, epoch, state, units, version_id, provider_fac
         return evaluate_batch(run_id, worker, epoch, state, units, version_id,
                               provider_factory, baseline, generation, review, _l4)
     for item in state["check_plan"]["check_items"]:
+        from .derivation import is_derived_target
         if item["decision_type"] == "deterministic" or item.get("verifier_binding") == "research_rubric.v1" or (
+                is_derived_target(state, item)) or (
                 item.get("verifier_binding") == "criterion_review.v1"
                 and state.get("execution_policy", {}).get("criterion_assessment", False)):
             continue
