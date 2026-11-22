@@ -300,7 +300,16 @@ function UsagePanel({ run }: { run: RunSnapshot }) {
     retry_source_counts?: Record<string, number>;
     stage_distribution?: Record<string, { calls?: number; elapsed_seconds?: number; tokens_known?: number; token_unknown_calls?: number }>;
   } | undefined;
-  const stageRows = Object.entries(metrics?.stage_distribution ?? {}).filter(([, value]) => (value.calls ?? 0) > 0);
+  const groupedStages = new Map<string, { calls: number; elapsed: number }>();
+  for (const [stage, value] of Object.entries(metrics?.stage_distribution ?? {})) {
+    if ((value.calls ?? 0) <= 0) continue;
+    const key = usageStageGroup(stage);
+    const current = groupedStages.get(key) ?? { calls: 0, elapsed: 0 };
+    current.calls += value.calls ?? 0;
+    current.elapsed += value.elapsed_seconds ?? 0;
+    groupedStages.set(key, current);
+  }
+  const stageRows = [...groupedStages.entries()];
   const retryRows = Object.entries(metrics?.retry_source_counts ?? {}).filter(([, value]) => value > 0);
 
   const budget = run.budget as Record<string, unknown>;
@@ -311,7 +320,7 @@ function UsagePanel({ run }: { run: RunSnapshot }) {
         <dt>调用耗时合计</dt><dd>{calls.length ? seconds(total) : "—"}</dd>
         <dt>Token</dt><dd>{run.demo ? "演示（不调用模型）" : tokens === null ? "待核实" : `${tokens.toLocaleString("zh-CN")}${anyUnknownUsage ? "（含待核实）" : ""}`}</dd>
         <dt>费用</dt><dd>{callCostsText(calls, run.demo)}{!run.cost_final && !run.demo ? "（总费用未确认）" : ""}</dd>
-        <dt>阶段分布</dt><dd>{stageRows.length ? stageRows.map(([stage, value]) => `${STAGE_LABEL[stage] ?? stage} ${value.calls ?? 0} 次 / ${seconds(value.elapsed_seconds)}`).join("；") : "—"}</dd>
+        <dt>阶段分布</dt><dd>{stageRows.length ? stageRows.map(([stage, value]) => `${stage} ${value.calls} 次 / ${seconds(value.elapsed)}`).join("；") : "—"}</dd>
         <dt>重试来源</dt><dd>{retryRows.length ? retryRows.map(([source, value]) => `${source === "initial" ? "首次" : source === "stage_reattempt" ? "阶段重试" : source === "ancestor_resume" ? "祖先续跑" : source === "explicit_retry" ? "显式重试" : source} ${value}`).join("；") : "—"}</dd>
         <dt>费用上限</dt><dd>{limitText(budget.amount)}</dd>
         <dt>调用次数上限</dt><dd>{budget.calls === null || budget.calls === undefined ? "不限" : String(budget.calls)}</dd>
@@ -322,5 +331,24 @@ function UsagePanel({ run }: { run: RunSnapshot }) {
           : "调用结果已记录；仍缺提供方价格或费用回执，不能确定总费用。"}费用更新不会改动已冻结的正文。</p>}
     </>
   );
+}
+
+function usageStageGroup(stage: string): string {
+  if (stage === "researching" || stage.startsWith("research_")) return "研究与证据";
+  if (stage === "understanding" || stage === "import_understanding") return "理解需求";
+  if (stage === "planning" || stage === "arrangement_alignment") return "规划结构";
+  if (stage === "generating" || stage.startsWith("generating_")) return "撰写";
+  if (stage === "checking" || stage === "checking_perturbation"
+    || stage === "item_reviewing" || stage === "blind_solving"
+    || stage === "selective_review") return "质量检查";
+  if (stage.startsWith("criterion_") || stage.startsWith("difficulty_")
+    || stage === "optimizing" || stage === "optimization"
+    || stage === "optimization_acceptance") return "质检与整改";
+  if (stage.startsWith("rubric_")) return "研究量规";
+  if (stage.startsWith("synthesis_")) return "跨章综合";
+  if (stage === "repairing") return "内容修复";
+  if (stage === "verifying") return "复验";
+  if (stage === "exporting" || stage === "postprocess") return "整理与导出";
+  return "其它";
 }
 

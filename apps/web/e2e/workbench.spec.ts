@@ -163,6 +163,26 @@ test.describe("工作台 AT-11", () => {
     await expect(usage).not.toContainText("检查进度：");
   });
 
+  test("阶段分布只显示顶层类别，不铺开内部微阶段", async ({ page }) => {
+    const snap = runSnapshot({ run_metrics: {
+      stage_distribution: {
+        "research_scope_review_proposition_2_batch_0_part_1": { calls: 4, elapsed_seconds: 120, tokens_known: 10, token_unknown_calls: 0 },
+        "research_rubric_knowledge": { calls: 2, elapsed_seconds: 60, tokens_known: 10, token_unknown_calls: 0 },
+        "checking_perturbation": { calls: 3, elapsed_seconds: 30, tokens_known: 10, token_unknown_calls: 0 },
+        "criterion_contract_correcting": { calls: 1, elapsed_seconds: 20, tokens_known: 10, token_unknown_calls: 0 },
+      },
+      retry_source_counts: { ancestor_resume: 9, initial: 1 },
+    } });
+    await mockBackend(page, { snapshot: () => snap });
+    await page.goto(`/tasks/${IDS.task}`);
+    const usage = page.getByRole("complementary", { name: "生成状态与用量" });
+    await expect(usage).toContainText("研究与证据 6 次");
+    await expect(usage).toContainText("质量检查 3 次");
+    await expect(usage).toContainText("质检与整改 1 次");
+    await expect(usage).not.toContainText("research_scope_review_proposition_2");
+    await expect(usage).not.toContainText("checking_perturbation");
+  });
+
   test("交付轴分别显示草稿、质检中、受阻与 final 就绪", async ({ page }) => {
     let delivery = "draft_ready";
     await mockBackend(page, {
