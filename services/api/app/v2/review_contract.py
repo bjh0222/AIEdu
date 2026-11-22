@@ -449,6 +449,15 @@ def delivery_outcome(
         call.get("status") in {"authorized", "sent"} and call.get("stage") in _QUALITY_STAGES
         for call in calls
     )
+    quality_prefixes = ("research_", "rubric_", "criterion_", "difficulty_", "synthesis_")
+    active_quality_stage = active_quality_stage or any(
+        value == "running" and str(stage).startswith(quality_prefixes)
+        for stage, value in stages.items()
+    ) or any(
+        call.get("status") in {"authorized", "sent"}
+        and str(call.get("stage", "")).startswith(quality_prefixes)
+        for call in calls
+    )
     if final_ready:
         return {"state": "final_ready", "label": "final 就绪",
                 "detail": "固定版本满足最终交付门；仍需遵守导出清单与专业范围。"}

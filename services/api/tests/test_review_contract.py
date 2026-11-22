@@ -126,6 +126,11 @@ def test_delivery_states_and_accounting_keep_unknown_distinct_from_zero():
     assert delivery_outcome(status="running", stages={"checking": "running"},
                             quality=base, version_id="v", calls=[],
                             ).get("state") == "quality_checking"
+    assert delivery_outcome(
+        status="running", stages={"checking": "done"},
+        quality=base, version_id="v",
+        calls=[{"status": "sent", "stage": "rubric_reviewing"}],
+    ).get("state") == "quality_checking"
     assert delivery_outcome(status="completed", stages={}, quality=base,
                             version_id="v", calls=[]).get("state") == "quality_blocked"
     assert delivery_outcome(
