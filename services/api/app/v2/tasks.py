@@ -215,6 +215,8 @@ def start_run(task_id, payload, key, automatic=False, envelope=None):
                   "artifact_id": artifact_id, "version_id": None, "stages": {}, "stop_reason": None,
                   "intent_pending": (adaptive or automatic or requested_policy.get("structured_arrangement", False)) and payload.mode == "configured", "automatic": automatic,
                   "budget": {"calls": None, "tokens": None, "amount": None, "seconds": None}}
+        from .review_contract import review_protocol_manifest
+        frozen["quality_protocol"] = review_protocol_manifest()
         concurrency = max(1, min(4, int(os.getenv("AIEDU_V2_CONCURRENCY", "2"))))
         # Defaults belong to new configured runs, not to historical frozen runs.
         # Explicit opt-out/demo retain their contracts. A new root is unlimited;
@@ -594,6 +596,34 @@ def snapshot(task_id, run_id=None):
         framework_bundle = state["context"].get("evaluation_frameworks", {})
         tutorial_refs = [profile.get("planning_guidance") for profile in state["context"].get("quality_profiles", [])
                          if profile.get("planning_guidance")]
+        from .review_contract import delivery_outcome, summarize_calls
+        call_rows = []
+        for call in calls:
+            manifest = load(call.manifest_json)
+            current_run = call.root_job_id == obj.id
+            retry_source = ("explicit_retry" if call.supersedes_call_id else
+                            "ancestor_resume" if not current_run else
+                            "stage_reattempt" if call.attempt > 1 else "initial")
+            receipt = load(call.receipt_json)
+            call_rows.append({
+                "call_id": call.call_id, "unit_id": call.unit_id, "status": call.status,
+                "outcome": call.outcome, "attempt": call.attempt,
+                "usage": load(call.usage_json) if call.usage_json else None,
+                "price": load(call.price_json) if call.price_json else None,
+                "model_family": call.model_family, "model": call.model,
+                "stage": manifest.get("stage"),
+                "provider_request_id": call.provider_request_id,
+                "failure_code": receipt.get("failure_code"),
+                "failure_diagnostics": receipt.get("failure_diagnostics"),
+                "elapsed_seconds": call.finished_at-call.started_at if call.finished_at and call.started_at else None,
+                "supersedes_call_id": call.supersedes_call_id,
+                "current_run": current_run, "retry_source": retry_source,
+                "request_hash": call.request_hash,
+            })
+        delivery = delivery_outcome(
+            status=obj.status, stages=visible_stages, quality=quality,
+            version_id=version.id if version else None, calls=call_rows,
+            binding_current=import_status.get("status") == "current")
         return {"schema_version": "aiedu.task-run.v2", "task_id": task_id, "input_revision": owner.input_revision,
                 "run_id": obj.run_id, "root_job_id": obj.id, "state_revision": obj.state_revision,
                 "state": obj.status, "cancel_epoch": obj.cancel_epoch, "demo": state["mode"] == "demo",
@@ -606,15 +636,11 @@ def snapshot(task_id, run_id=None):
                 "knowledge_results":state.get("knowledge_results",[]),"embedding_status":state.get("embedding_status","disabled"),
                 "benchmark_result":state.get("benchmark_result"),
                 "import_profile_status": import_status,
-                "calls": [{"call_id": c.call_id, "unit_id": c.unit_id, "status": c.status, "outcome": c.outcome,
-                           "attempt": c.attempt, "usage": load(c.usage_json) if c.usage_json else None,
-                           "price": load(c.price_json) if c.price_json else None, "model_family": c.model_family,
-                           "model":c.model,"stage":load(c.manifest_json).get("stage"),"provider_request_id":c.provider_request_id,
-                           "failure_code":load(c.receipt_json).get("failure_code"),
-                             "failure_diagnostics":load(c.receipt_json).get("failure_diagnostics"),
-                           "elapsed_seconds":c.finished_at-c.started_at if c.finished_at and c.started_at else None,
-                           "request_hash": c.request_hash} for c in calls],
+                "calls": call_rows,
                 "accounting_revision": digest([(c.call_id, c.status, c.usage_json) for c in calls]),
+                "delivery_state": delivery["state"],
+                "delivery_detail": delivery["detail"],
+                "run_metrics": summarize_calls(call_rows),
                 "research_policy": state.get("check_plan", {}).get("research_policy", {}),
                 "tutorial_rubric_refs": [{k: item.get(k) for k in (
                     "rubric_id", "version", "hash", "status", "calibration_status")} for item in tutorial_refs],

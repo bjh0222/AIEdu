@@ -59,12 +59,14 @@ def compile_plan(task: dict, network_policy: dict | None = None) -> dict:
             add(f"S.layout.{role}", "spec", "inherited_layout.v1", "task-derived projection is intact" if task.get("output_design") else "frozen inherited structural projection is intact",
                 scope={"roles": [role], "format_contract": layout})
         if normalized_scene in {"exam_paper", "exercise"}:
-            add(f"M.items.{role}", "spec", "items.v1", "coupled stem/answer/steps; paper scored, exercise unscored", scope={"roles": [role]})
+            add(f"M.items.{role}", "spec", "items.v1",
+                "coupled stem/answer/steps; paper scored, exercise unscored",
+                scope={"roles": [role], "requires_items": True})
         domains = {canonical_domain_key(s["domain_key"]) for s in task.get("subject_bindings", [])} or {canonical_domain_key(task.get("domain_key"))}
         if normalized_scene in {"exam_paper", "exercise"} and "math_logic" in domains:
             for q in range(1, 7):
                 add(f"Q{q}.{role}", "spec", "independent_math.v1", f"baseline Q{q}; no invented thresholds", kind="semantic_rubric",
-                    scope={"domains": ["math_logic"], "roles": [role]})
+                    scope={"domains": ["math_logic"], "roles": [role], "requires_items": True})
         runtime = task.get("runtime_target", "").lower().replace(" ", "")
         if runtime in {"ps5.1", "powershell5.1", "powershell-5.1-desktop", "5.1/desktop"} and "cs_it" in domains:
             add(f"P.execution.{role}", "spec", "ps51_sandbox.v1", "PS5.1 claims only; verified isolated runtime required", kind="atomic_claim",
@@ -97,7 +99,8 @@ def compile_plan(task: dict, network_policy: dict | None = None) -> dict:
                 continue
             add(item_id, "discipline", "criterion_review.v1",
                 "0=confirmed defect; 1=partial evidence/limitation remains reviewable; 2=all applicable clauses supported; missing evidence=unknown",
-                kind="semantic_rubric", scope={"domains": [profile["domain_key"]], "scenes": [profile["scene"]]})
+                kind="semantic_rubric", scope={"domains": [profile["domain_key"]],
+                    "scenes": [profile["scene"]], "requires_items": True})
             items[-1]["quality_dimension"] = {"id": dimension_id, "criterion": dimension.get("criterion"),
                                                 "name": dimension.get("name"), "source_ref": dimension.get("source_ref")}
     # Public research rubrics are frozen task assets, not global default

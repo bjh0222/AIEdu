@@ -50,3 +50,60 @@ Verification:
   binding, misconception binding, one C row per A target and a synthetic C
   execution matrix across all 21 domain packs.
 - Targeted regression suites cover every C consumer plus A/B receipt wiring.
+
+## ADR-2026-11-22-01: Deterministic review contracts before bounded concurrency
+
+Status: accepted.
+
+Context: Quality consumers repeatedly received valid semantic judgments in
+avoidable wire shapes: string booleans/enums, empty numeric placeholders,
+scalar evidence, and long hand-written quotes that were ambiguous or escaped.
+Those failures consumed corrective calls even when the provider had completed
+the intended review. Applicability was also distributed across several
+ad-hoc checks, and the API did not expose whether a saved draft was waiting on
+quality work or blocked by it.
+
+Decision:
+
+- The server builds a bounded catalog of short, unique evidence spans and gives
+  each span a stable `evidence_id`. A model may select that ID; the server then
+  binds the exact field, quote and span hash. Legacy field/quote observations
+  remain readable when the catalog cannot represent the evidence.
+- A pure normalizer handles only unambiguous wire shape: boolean/result aliases,
+  applicability key aliases, empty null markers and evidence containers. It
+  never changes a semantic verdict, invents a count, or turns malformed
+  evidence into an abstention.
+- A zero-model matrix decides execution per frozen check, unit, scene, role,
+  domain, item presence and question form before quality workers start.
+- New runs freeze versions and implementation-file hashes for the review skill,
+  evidence catalog, normalizer, applicability matrix and correction protocols.
+  Material protocol drift stops the run instead of mixing contracts.
+- Bounded generation/review concurrency still flows through the existing
+  provider-capacity, lease, cancellation and unknown-call gates. The former
+  request-level guards and receipts remain authoritative.
+- Run snapshots expose `draft_ready`, `quality_checking`, `quality_blocked` and
+  `final_ready`, plus token, price-missing, stage latency and retry-source
+  summaries. `final_ready` uses the same strict calibration and profile-binding
+  requirements as final export.
+
+Consequences:
+
+- New evidence-ID requests have a new request identity and cannot reuse a
+  historical quote-shaped receipt. Old receipts remain immutable and readable.
+- More compact evidence reduces escape/ambiguity failures, but semantic quality
+  still comes from the model observation and existing deterministic adapters.
+- Existing paused runs adopt the complete current protocol manifest on their
+  explicit resume child; later code drift blocks such a run instead of silently
+  changing its quality contract.
+- The four delivery states do not change QualityVerdict or make demo,
+  uncalibrated, blocked or repaired content final.
+
+Verification:
+
+- `tests/test_review_contract.py` covers catalog uniqueness, evidence-ID
+  hydration, structural normalization, applicability, freeze drift, four-state
+  delivery and unknown token/price accounting.
+- Criterion and research contract tests bind server evidence IDs to exact spans.
+- Contract generation/check, architecture regeneration, targeted A/B/C,
+  criterion, difficulty, research, optimization and snapshot regressions must
+  pass before live task resumption.

@@ -55,15 +55,30 @@ export function unit(body: string) {
 
 export function runSnapshot(over: Record<string, unknown> = {}) {
   const u = unit(SAMPLE);
-  return {
+  const value = {
     schema_version: "aiedu.task-run.v2", task_id: IDS.task, input_revision: 1, run_id: IDS.run, root_job_id: "77777777-7777-4777-8777-777777777777", state_revision: 5,
     state: "completed", cancel_epoch: 0, demo: true, artifact_id: IDS.artifact, version_id: IDS.v2, content_hash: sha(SAMPLE), context_hash: "a".repeat(64), plan_hash: "b".repeat(64), checkpoint_hash: "d".repeat(64),
     resolved_task: { title: "定积分入门", raw_input: "给我一份定积分入门教程", requested_artifacts: ["tutorial"] },
     units: [u], stages: { generating: "done", checking: "deterministic_only", repairing: "not_applicable", verifying: "not_run" },
     quality: quality([]), budget: { calls: null, tokens: null, amount: null, seconds: null }, stop_reason: "demo_complete",
     calls: [{ call_id: "88888888-8888-4888-8888-888888888888", unit_id: IDS.unit, status: "settled", outcome: "success", attempt: 1, usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, usage_source: "not_applicable_demo" }, price: null, model_family: "demo", request_hash: "e".repeat(64), elapsed_seconds: 0.004 }],
-    accounting_revision: "f".repeat(64), cost_final: true, next_actions: [], ...over,
+    accounting_revision: "f".repeat(64), cost_final: true, next_actions: [], delivery_state: "not_started",
+    delivery_detail: "固定草稿可读；这不表示质量已通过或可以最终交付。",
+    run_metrics: {
+      method_version: "run-accounting-summary.v1", calls: 1, calls_started_or_settled: 1,
+      tokens_known: 0, token_unknown_calls: 0, price_known_calls: 0, price_missing_calls: 0,
+      elapsed_seconds: 0.004, retry_source_counts: { initial: 1 },
+      stage_distribution: { generating: { calls: 1, tokens_known: 0, token_unknown_calls: 0, elapsed_seconds: 0.004 } },
+    },
+    ...over,
   };
+  if (!("delivery_state" in over)) {
+    const stage = Object.entries((value.stages ?? {}) as Record<string, string>).find(([, state]) => state === "running")?.[0];
+    value.delivery_state = !value.version_id ? "not_started" :
+      value.state === "running" && ["checking", "repairing", "verifying", "optimizing"].includes(stage ?? "") ? "quality_checking" :
+      value.state === "completed" || value.state === "failed" || value.state === "interrupted" ? "quality_blocked" : "draft_ready";
+  }
+  return value;
 }
 
 export function versionRead(versionId: string, version: number, body: string, findings: unknown[]) {

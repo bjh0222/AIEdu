@@ -112,7 +112,20 @@ export function calibrationText(status: string | null | undefined): string {
   return `校准状态：${status}`;
 }
 
-export function deliveryBadge(snapshot: Pick<RunSnapshot, "version_id" | "state"> | null | undefined, exportReady?: boolean, partial?: boolean): Badge {
+type DeliverySnapshot = Pick<RunSnapshot, "version_id" | "state"> & { delivery_state?: RunSnapshot["delivery_state"] };
+export function deliveryBadge(snapshot: DeliverySnapshot | null | undefined, exportReady?: boolean, partial?: boolean): Badge {
+  switch (snapshot?.delivery_state) {
+    case "final_ready":
+      return { label: "final 就绪", shape: "solid-square", tone: "ok", hint: "固定版本满足最终交付门" };
+    case "quality_checking":
+      return { label: "质检进行中", shape: "solid-circle", tone: "primary", pulse: true, hint: "草稿已可读；耗时来自复核或整改" };
+    case "quality_blocked":
+      return { label: "质检受阻", shape: "hatched-square", tone: "warn", hint: "草稿可读，但最终交付门尚未满足" };
+    case "draft_ready":
+      return { label: "草稿已就绪", shape: "hollow-square", tone: "neutral", hint: "可阅读和下载草稿，不等于质量通过" };
+    case "not_started":
+      return { label: "尚无草稿", shape: "dashed-circle", tone: "neutral" };
+  }
   if (exportReady) return { label: "固定下载包可用", shape: "solid-square", tone: "ok", hint: "绑定固定版本，不等于质量通过" };
   if (partial) return { label: "部分可用", shape: "half-square", tone: "warn" };
   if (snapshot?.version_id) return { label: "已保存（可读）", shape: "hollow-square", tone: "neutral" };

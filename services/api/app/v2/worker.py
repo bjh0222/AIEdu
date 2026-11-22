@@ -80,8 +80,17 @@ def execute_run(run_id: str, provider_factory=None):
     pipeline = None
     pending_check = None
     try:
-        with SessionLocal() as db:
-            operation_state = load(job(db,run_id).state_json)
+        from .review_contract import ensure_quality_protocol
+        with write() as db:
+            obj = job(db, run_id)
+            operation_state = load(obj.state_json)
+            frozen_protocol = ensure_quality_protocol(operation_state)
+            if operation_state.get("quality_protocol") != frozen_protocol:
+                # Existing paused roots predate the freeze. The explicit resume
+                # child adopts the complete current manifest before any call.
+                operation_state["quality_protocol"] = frozen_protocol
+                obj.state_json = dump(operation_state)
+                obj.state_revision += 1
         if operation_state.get("synthesis_source"):
             from .synthesis import execute_synthesis
             execute_synthesis(run_id, worker, epoch, operation_state, provider_factory)

@@ -42,6 +42,8 @@ def test_known_singleton_stops_whole_check_before_any_dispatch(monkeypatch, conc
             return set()
         bundle = fake_bundle(snapshot, units[1], snapshot["check_plan"]["check_items"][0])
         bundle.pop("check")
+        bundle["evidence_catalog"] = checker_batch.build_evidence_catalog(
+            {"unit:body": units[1]["body"]}, max_entries=180, max_span_chars=280)
         checks = snapshot["check_plan"]["check_items"]
         if stage == "checking_perturbation":
             checks = list(reversed(checks[:2]))
@@ -73,6 +75,8 @@ def test_checklist_preflight_does_not_change_request_identity(monkeypatch):
     expected = fake_bundle(state, unit, checks[0])
     expected.pop("check")
     expected["checks"] = [{k: c[k] for k in ("item_id", "pass_condition", "decision_type")} for c in checks]
+    expected["evidence_catalog"] = checker_batch.build_evidence_catalog(
+        {"unit:body": unit["body"]}, max_entries=180, max_span_chars=280)
     assert bundle == expected
     assert system == checker_batch.PROMPT + checker.PRESENTATION_PROMPT
     assert changed == {**expected, "sources": list(reversed(expected["sources"])),

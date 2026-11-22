@@ -9,8 +9,9 @@ ratings to manufacture a pass. It never invokes a provider or changes storage.
 from copy import deepcopy
 
 from .contracts import DomainError, canonical, digest, sha
+from .review_contract import prepare_review_output
 
-VERSION = "criterion-observation-protocol.v3"
+VERSION = "criterion-observation-protocol.v4"
 MAX_CORRECTIONS = 2  # Finite engineering retry budget, not a quality cutoff.
 RESULTS = {"satisfied", "violated", "undecidable", "not_applicable"}
 CONTEXT_KEYS = ("task", "sources", "requirements", "output_design", "review_scope", "literal_tool_observations")
@@ -19,6 +20,8 @@ INSTRUCTION = (
     "Copy request_id and clause_id exactly. Return assessments, not a renamed root key. "
     "Use only exact field IDs and unique verbatim quotes from fields. context:* fields are canonical input data; "
     "they can support scope/provenance reasoning but cannot alone establish content quality. "
+    "Prefer evidence_id from the supplied server evidence_catalog. When evidence_id is supplied, it overrides "
+    "any model-written field/quote pair. Use a legacy field/quote pair only when no catalog entry represents the span. "
     "Every unit clause needs actual unit/item content evidence, even if you conclude no source or constraint applies. "
     "Every item clause needs its own item's content. Only Q4.transfer may additionally cite peer item fields; "
     "cite both endpoints when comparing them, never peer-only or unit-body-only evidence for an item. "
@@ -99,11 +102,20 @@ def _rating(record, request, result):
     return value, True, result
 
 
-def bind_observations(output, requests, fields, audit, unit_id):
-    """Do not alias keys, choose duplicate rows, discard bad quotes or infer scores."""
+def bind_observations(output, requests, fields, audit, unit_id, catalog=None):
+    """Bind after local structural normalization; never infer content judgments.
+
+    A server evidence ID is resolved to its immutable field/span before the
+    ordinary exact-quote validator runs. Invalid IDs remain explicit protocol
+    failures. The provider output itself is never rewritten in storage.
+    """
     ids, raw = _requests(requests), _rows(output)
+    # Legacy callers do not supply a catalog; the normalizer is still safe and
+    # leaves unknown shapes as explicit failures rather than crashing.
+    prepared, normalization = prepare_review_output(output, catalog)
+    raw = _rows(prepared)
     errors = []
-    if not isinstance(output, dict) or not isinstance(output.get("assessments"), list):
+    if not isinstance(prepared, dict) or not isinstance(prepared.get("assessments"), list):
         errors.append("assessments_array_required")
     if any(not isinstance(r, dict) or not isinstance(r.get("request_id"), str) or r["request_id"] not in ids for r in raw):
         errors.append("unrequested_assessment")
@@ -168,7 +180,7 @@ def bind_observations(output, requests, fields, audit, unit_id):
             "authority": "isolated_ai_observation_not_professional_certification"})
     return {"method_version": VERSION, "rows": rows, "complete": not errors and all(r["processing_status"] == "complete" for r in rows),
         "protocol_errors": errors, "fields_hash": digest(fields), "request_set_hash": digest(requests),
-        "output_hash": digest(output), "unit_id": unit_id}
+        "output_hash": digest(output), "normalization": normalization, "unit_id": unit_id}
 
 
 def binding_identity(bound):
@@ -263,12 +275,17 @@ def response_contract(requests, fields):
         clauses = []
         for clause_id in request["criterion"]["clauses"]:
             clauses.append({"type": "object", "additionalProperties": False,
-                "required": ["clause_id", "result", "reason", "evidence"], "properties": {
+            "required": ["clause_id", "result", "reason", "evidence"], "properties": {
                     "clause_id": {"const": clause_id}, "result": {"enum": sorted(RESULTS)},
                     "reason": {"type": "string", "minLength": 8}, "evidence": {
                         "type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": False,
-                            "required": ["field", "quote"], "properties": {
-                                "field": {"enum": sorted(fields)}, "quote": {"type": "string", "minLength": 1}}}}}})
+                            "oneOf": [
+                                {"required": ["evidence_id"], "properties": {
+                                    "evidence_id": {"type": "string", "pattern": "^E[0-9]{4,}$"}}},
+                                {"required": ["field", "quote"], "properties": {
+                                    "field": {"enum": sorted(fields)},
+                                    "quote": {"type": "string", "minLength": 1}}},
+                            ]}}}})
         scale = request["criterion"].get("rating_scale") or {}
         upper = 3 if request["check_id"].startswith("Q4.") else len(scale) - 1
         rating = {"type": ["integer", "null"], "minimum": 0, "maximum": upper} if upper >= 0 else {"type": "null"}
@@ -288,7 +305,9 @@ def correct_observations(data, output, audit, unit_id, invoke_correction):
     historic model-invented field IDs never acquire retrospective validity.
     The callback must use normal durable inference and the SAME review profile.
     """
-    original = bind_observations(output, data["requests"], data["fields"], audit, unit_id)
+    catalog = data.get("evidence_catalog") if isinstance(data.get("evidence_catalog"), list) else None
+    original = bind_observations(
+        output, data["requests"], data["fields"], audit, unit_id, catalog)
     if original["complete"]:
         return original
     current, current_output, correction_audits, history = original, output, [], []
@@ -297,7 +316,9 @@ def correct_observations(data, output, audit, unit_id, invoke_correction):
         revised, new_audit = invoke_correction(data=payload, system=INSTRUCTION,
             output_schema=response_contract(payload["requests"], payload["fields"]))
         correction_audits.append(new_audit)
-        corrected = bind_observations(revised, payload["requests"], payload["fields"], new_audit, unit_id)
+        corrected = bind_observations(
+            revised, payload["requests"], payload["fields"], new_audit, unit_id,
+            payload.get("evidence_catalog") if isinstance(payload.get("evidence_catalog"), list) else catalog)
         merged = merge_correction(current, corrected, payload)
         history.extend(merged["execution_corrections"])
         current, current_output = merged, revised

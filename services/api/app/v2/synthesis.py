@@ -89,6 +89,7 @@ def candidate_unit(bound):
 def research_diagnostics(run_id, worker, epoch, state, bundle, bound, invoke_call):
     from .import_profiles import _research_review_batches
     from .research_review_corrections import correct_batch, response_contract
+    from .review_contract import build_evidence_catalog
 
     unit = candidate_unit(bound)
     rows, audits = [], []
@@ -100,6 +101,8 @@ def research_diagnostics(run_id, worker, epoch, state, bundle, bound, invoke_cal
             dimensions = scoped["dimensions"]
             targets = [d.get("dimension_id") or d["id"] for d in dimensions]
             data = {"unit": unit, "source_bundle": bundle, "research_rubric": scoped,
+                "evidence_catalog": build_evidence_catalog(
+                    {"body": unit["body"]}, max_entries=180, max_span_chars=280),
                 "source_claims": claims, "full_rubric_hash": digest(rubric), "target_dimension_ids": targets,
                 "binding_hash": binding.get("binding_hash") or digest(binding),
                 "candidate_identity": bound["proposal_hash"], "review_scope": "whole_source_synthesis",

@@ -163,6 +163,25 @@ test.describe("工作台 AT-11", () => {
     await expect(usage).not.toContainText("检查进度：");
   });
 
+  test("交付轴分别显示草稿、质检中、受阻与 final 就绪", async ({ page }) => {
+    let delivery = "draft_ready";
+    await mockBackend(page, {
+      snapshot: () => runSnapshot({
+        state: delivery === "quality_checking" ? "running" : "completed",
+        delivery_state: delivery,
+        next_actions: delivery === "quality_checking" ? ["pause"] : [],
+      }),
+    });
+    await page.goto(`/tasks/${IDS.task}`);
+    const axis = page.getByRole("group", { name: "任务状态（运行、交付两个独立维度）" });
+    await expect(axis).toContainText("草稿已就绪");
+    for (const [state, label] of [["quality_checking", "质检进行中"], ["quality_blocked", "质检受阻"], ["final_ready", "final 就绪"]]) {
+      delivery = state;
+      await page.reload();
+      await expect(axis).toContainText(label);
+    }
+  });
+
   test("暂停后：已有稿可读可下载，列出缺项，继续会创建新运行", async ({ page }) => {
     const paused = runSnapshot({ state: "paused", next_actions: ["resume"], stop_reason: "user_pause", resolved_task: { title: "定积分入门", requested_artifacts: ["tutorial", "answer"] }, demo: false });
     await mockBackend(page, { snapshot: () => paused });

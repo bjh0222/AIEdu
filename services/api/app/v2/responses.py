@@ -84,6 +84,15 @@ class CallSnapshot(Output):
     price: dict[str, Any] | None
     model_family: str
     request_hash: str
+    model: str | None = None
+    stage: str | None = None
+    provider_request_id: str | None = None
+    failure_code: str | None = None
+    failure_diagnostics: dict[str, Any] | None = None
+    elapsed_seconds: float | None = None
+    supersedes_call_id: str | None = None
+    current_run: bool = True
+    retry_source: Literal["initial", "stage_reattempt", "ancestor_resume", "explicit_retry"] = "initial"
 
 
 class RunSnapshot(Output):
@@ -111,6 +120,9 @@ class RunSnapshot(Output):
     accounting_revision: str
     cost_final: bool
     next_actions: list[str]
+    delivery_state: Literal["not_started", "draft_ready", "quality_checking", "quality_blocked", "final_ready"]
+    delivery_detail: str
+    run_metrics: dict[str, Any]
     research_policy: dict[str, Any] = Field(default_factory=dict)
     tutorial_rubric_refs: list[dict[str, Any]] = Field(default_factory=list)
     subject_understanding_ref: dict[str, Any] = Field(default_factory=dict)

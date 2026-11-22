@@ -9,8 +9,9 @@ from __future__ import annotations
 import math
 
 from .contracts import sha
+from .review_contract import prepare_review_output
 
-VERSION = "research-observation-binding.v1"
+VERSION = "research-observation-binding.v2"
 COMPLETE = "complete"
 INVALID = "invalid_or_missing_observation"
 
@@ -167,14 +168,15 @@ def _dimension(raw, expected, unit):
         "validation_errors": list(dict.fromkeys(errors)), "method_version": VERSION}
 
 
-def bind_batch(output, dimensions, unit):
+def bind_batch(output, dimensions, unit, evidence_catalog=None):
     """Bind expected targets, preserving valid siblings and flagging extras.
 
     The caller must retain batch_contract_errors and require them to be fixed;
     unexpected output is never silently accepted by dropping it from a list.
     No score, source quote or observation is inferred from another row.
     """
-    raw = output.get("dimensions") if isinstance(output, dict) else None
+    prepared, normalization = prepare_review_output(output, evidence_catalog)
+    raw = prepared.get("dimensions") if isinstance(prepared, dict) else None
     errors = []
     if not isinstance(raw, list):
         raw = []
@@ -190,6 +192,7 @@ def bind_batch(output, dimensions, unit):
         rows.append(_dimension(matches[0] if len(matches) == 1 else None, dimension, unit))
     complete = sum(r["processing_status"] == COMPLETE for r in rows)
     return {"method_version": VERSION, "dimensions": rows, "batch_contract_errors": errors,
+        "normalization": normalization,
         "status": "completed" if complete == len(rows) and not errors else "incomplete",
         "coverage": {"expected": len(rows), "complete_observations": complete,
             "decided": sum(r["processing_status"] == COMPLETE and r["result"] in {"satisfied", "violated"} for r in rows),

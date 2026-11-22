@@ -7,6 +7,7 @@ from app.v2.contracts import DomainError, digest
 from app.v2.criterion_protocol import (
     bind_observations, correction_payload, correct_observations, merge_correction, review_fields,
 )
+from app.v2.review_contract import build_evidence_catalog
 
 
 def data():
@@ -111,6 +112,25 @@ def test_executed_unknown_and_negative_are_complete_without_certification():
 def test_duplicate_requested_identity_is_rejected_before_model_work():
     with pytest.raises(DomainError, match="CRITERION_REQUEST_DUPLICATE"):
         bind_observations(output(), [req(), req()], review_fields(data()), {}, "u")
+
+
+def test_server_evidence_id_replaces_model_quote_and_binds_exact_span():
+    request = req("C4.constraints", None, {"requirement": "核对原始用户限制"})
+    fields = review_fields(data())
+    catalog = build_evidence_catalog({"unit:body": fields["unit:body"]})
+    evidence_id = catalog[0]["evidence_id"]
+    observed = output(request, rating=None)
+    observed["assessments"][0]["clauses"][0]["evidence"] = [{
+        "evidence_id": evidence_id,
+        "field": "unit:body",
+        "quote": "a spoofed long quote that must be replaced",
+    }]
+    bound = bind_observations(observed, [request], fields, {"call_id": "c"}, "u", catalog)
+    assert bound["complete"]
+    evidence = bound["rows"][0]["clauses"][0]["evidence"][0]
+    assert evidence["quote"] == catalog[0]["quote"]
+    assert evidence["span_hash"] == catalog[0]["span_hash"]
+    assert bound["normalization"]["change_count"] >= 1
 
 
 def test_extra_batch_targets_are_recorded_not_used_to_gain_credit():

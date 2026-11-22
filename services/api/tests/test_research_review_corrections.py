@@ -10,6 +10,7 @@ def test_correction_prompt_requires_exact_quote_occurrence_filtering():
     assert "count exact occurrences" in PROMPT
     assert "never repeat a previously rejected non-unique quote" in PROMPT
 from app.v2.research_observations import bind_batch
+from app.v2.review_contract import build_evidence_catalog
 
 
 @pytest.fixture
@@ -316,3 +317,15 @@ def test_nonapplicable_indicator_accepts_explicit_null_marker_fields():
     indicator = bound["dimensions"][0]["indicators"][0]
     assert indicator["processing_status"] == "complete"
     assert indicator["result"] == "not_applicable"
+
+
+def test_research_evidence_id_binds_exact_body_span_before_validation(sample):
+    unit, dims, rows, _ = sample
+    catalog = build_evidence_catalog({"body": unit["body"]})
+    first = next(row for row in catalog if row["quote"] == "Supported source.")
+    output = {"dimensions": deepcopy(rows)}
+    output["dimensions"][0]["evidence"] = [{
+        "evidence_id": first["evidence_id"], "field": "body", "quote": "spoofed"}]
+    bound = bind_batch(output, dims, unit, catalog)
+    assert bound["status"] == "completed"
+    assert bound["dimensions"][0]["evidence"][0]["quote"] == "Supported source."

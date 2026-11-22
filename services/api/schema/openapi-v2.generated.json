@@ -95,6 +95,56 @@
             "title": "Call Id",
             "type": "string"
           },
+          "current_run": {
+            "default": true,
+            "title": "Current Run",
+            "type": "boolean"
+          },
+          "elapsed_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elapsed Seconds"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "failure_diagnostics": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Diagnostics"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
           "model_family": {
             "title": "Model Family",
             "type": "string"
@@ -115,13 +165,57 @@
             ],
             "title": "Price"
           },
+          "provider_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Request Id"
+          },
           "request_hash": {
             "title": "Request Hash",
             "type": "string"
           },
+          "retry_source": {
+            "default": "initial",
+            "enum": [
+              "initial",
+              "stage_reattempt",
+              "ancestor_resume",
+              "explicit_retry"
+            ],
+            "title": "Retry Source",
+            "type": "string"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
+          },
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "supersedes_call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes Call Id"
           },
           "unit_id": {
             "title": "Unit Id",
@@ -3070,6 +3164,21 @@
             "title": "Cost Final",
             "type": "boolean"
           },
+          "delivery_detail": {
+            "title": "Delivery Detail",
+            "type": "string"
+          },
+          "delivery_state": {
+            "enum": [
+              "not_started",
+              "draft_ready",
+              "quality_checking",
+              "quality_blocked",
+              "final_ready"
+            ],
+            "title": "Delivery State",
+            "type": "string"
+          },
           "demo": {
             "title": "Demo",
             "type": "boolean"
@@ -3112,6 +3221,11 @@
           "run_id": {
             "title": "Run Id",
             "type": "string"
+          },
+          "run_metrics": {
+            "additionalProperties": true,
+            "title": "Run Metrics",
+            "type": "object"
           },
           "schema_version": {
             "const": "aiedu.task-run.v2",
@@ -3204,7 +3318,10 @@
           "calls",
           "accounting_revision",
           "cost_final",
-          "next_actions"
+          "next_actions",
+          "delivery_state",
+          "delivery_detail",
+          "run_metrics"
         ],
         "title": "RunSnapshot",
         "type": "object"

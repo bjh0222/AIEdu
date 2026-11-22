@@ -13,7 +13,7 @@ from .contracts import DomainError, digest, sha
 from .check_criteria import criterion
 from .skills import entry as skill_entry, review_skill
 
-VERSION = "criterion-clause-review.v4"
+VERSION = "criterion-clause-review.v5"
 C_REVIEW_SKILL = review_skill()
 C_REVIEW_SKILL_ENTRY = skill_entry(C_REVIEW_SKILL, "C")
 C_REVIEW_SKILL_PROMPT = "\n" + C_REVIEW_SKILL["instructions"]
@@ -199,6 +199,11 @@ def evaluate_criteria(run_id, worker, epoch, state, units, version_id, provider_
     from .assessment_binding import input_binding
     from .adaptive_format import POLICY_PROMPT
     from .generation_tools import generation_with_sources
+    from .review_contract import quality_preflight
+
+    preflight = quality_preflight(
+        state.get("check_plan", {}).get("check_items", []), units,
+        state.get("context", {}))
 
     stopped, stop_lock, first_failure = Event(), Lock(), []
 
@@ -217,18 +222,22 @@ def evaluate_criteria(run_id, worker, epoch, state, units, version_id, provider_
         requests, semantic = requests_for_unit(state, unit)
         if not requests:
             return [], [], 0
+        from .review_contract import build_evidence_catalog
+        evidence_catalog = build_evidence_catalog(
+            fields, max_entries=320, max_span_chars=280)
         bundle = blind_bundle(state, unit, semantic[0])
         teaching_requirements = (bundle["task"].get("teaching_requirements")
                                  if isinstance(bundle.get("task"), dict) else None)
         # Do not include unit metadata/difficulty_basis from the generator.
         data = {"task": bundle["task"], "sources": bundle["sources"], "requests": requests, "review_scope": bundle.get("review_scope"),
                 "fields": fields, "unit_title": unit["title"], "output_design": unit.get("output_design"),
+                "evidence_catalog": evidence_catalog,
                 "literal_tool_observations": [r for r in (literal_evidence or {}).get("items", []) if r.get("unit_id") == unit["unit_id"]],
                 "requirements": unit.get("teaching_arrangement", {}).get("acceptance_criteria", []),
                 "teaching_requirements": teaching_requirements}
         schema = {"assessments": [{"request_id": "copy supplied ID", "clauses": [{"clause_id": "every supplied clause ID",
             "result": "satisfied|violated|undecidable|not_applicable", "reason": "specific content-based reason",
-            "evidence": [{"field": "exact supplied field ID", "quote": "exact unique substring"}]}],
+            "evidence": [{"evidence_id": "preferred server evidence ID"}]}],
             "rating": "Q4: integer 0..3; domain item dimensions: integer 0..2; null otherwise"}]}
         system = ("Execute EVERY request and EVERY criterion clause on the fixed actual content. Return the supplied JSON schema. "
                 "Give positive as well as negative observations: satisfied means supported by your content-based analysis, NOT certified truth. "
@@ -246,7 +255,10 @@ def evaluate_criteria(run_id, worker, epoch, state, units, version_id, provider_
                 "For Q3 trace ALL original user requirements to actual item content; labels/plans alone do not demonstrate coverage. "
                 "Assess this unit's scoped requirements, not every other method/chapter inside this unit; review_scope lists the frozen whole-task layout. "
                 "For Q6 distinguish exact provenance binding from professional entailment; no selected sources is not an instruction to fabricate citations. "
-                "Use short exact quotes from supplied field IDs for EVERY clause. Per-item quotes must come from that item. "
+                "Use supplied server evidence_id values for EVERY clause whenever an entry represents the span. "
+                "The server resolves each ID to the exact field/span; never handwrite a long quote when an ID exists. "
+                "Legacy field/quote evidence remains allowed only when the catalog cannot represent the evidence. "
+                "Per-item evidence IDs must resolve to that item's own fields. "
                 "Never invent field IDs, scores, tools or calibration. No learner answers/statistics means empirical difficulty not_measured. "
                 "The supplied subject_understanding is an authored, uncalibrated planning and review basis. Apply its applicability, "
                 "misconception and evidence-boundary guidance, but never treat it as professional truth or empirical difficulty. "
@@ -333,4 +345,5 @@ def evaluate_criteria(run_id, worker, epoch, state, units, version_id, provider_
             results.extend(f.result() for f in futures)
     return summarize([r for rows, _, _ in results for r in rows], sum(n for _, _, n in results),
                      [a for _, audits, _ in results for a in audits]) | {
-                         "version_id": version_id, "input_binding": input_binding(state, units, version_id)}
+                         "version_id": version_id, "input_binding": input_binding(state, units, version_id),
+                         "quality_preflight": preflight}

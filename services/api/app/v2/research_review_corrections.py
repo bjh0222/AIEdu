@@ -8,8 +8,8 @@ from copy import deepcopy
 from .contracts import DomainError, digest
 from .research_observations import bind_batch, COMPLETE
 
-METHOD = "research-content-contract-correction.v4"
-SCHEMA_METHOD = "research-content-contract-correction.v5"
+METHOD = "research-content-contract-correction.v5"
+SCHEMA_METHOD = "research-content-contract-correction.v6"
 PROMPT = (
     "Correct ONLY the invalid C output observations listed in target_dimension_ids. "
     "This is output-contract correction, NOT B content repair: the fixed unit body, frozen user/A targets, "
@@ -18,6 +18,7 @@ PROMPT = (
     "Use the complete supplied research_rubric for these targets, including applicability, missing-denominator "
     "rules and anchor alternatives. Copy exact supplied IDs. Every evidence quote must be a unique literal "
     "substring of unit.body with field='body'; do not quote a paraphrase, escaped variant or nonexistent text. "
+    "Prefer a server evidence_id from evidence_catalog; the server resolves it to the exact body span. "
     "Before returning each indicator, count exact occurrences of every proposed quote in unit.body. If any count "
     "is not exactly one, OMIT that evidence entry and retain the other unique evidence entries. One invalid sibling "
     "invalidates the entire indicator, so never repeat a previously rejected non-unique quote and never add a "
@@ -53,8 +54,12 @@ SCHEMA_PROMPT = PROMPT.replace(
 def response_contract(dimensions):
     """Explicit response shape; content/anchor validity still belongs to C/binder."""
     evidence = {"type": "array", "items": {"type": "object", "additionalProperties": False,
-        "required": ["field", "quote"], "properties": {
-            "field": {"const": "body"}, "quote": {"type": "string", "minLength": 1}}}}
+        "oneOf": [
+            {"required": ["evidence_id"], "properties": {
+                "evidence_id": {"type": "string", "pattern": "^E[0-9]{4,}$"}}},
+            {"required": ["field", "quote"], "properties": {
+                "field": {"const": "body"}, "quote": {"type": "string", "minLength": 1}}},
+        ]}}
     alternatives = []
     for dimension in dimensions:
         ids = [i["indicator_id"] for i in dimension.get("indicators", [])]
@@ -133,7 +138,8 @@ def correct_batch(output, audit, dimensions, unit, data, invoke_correction, *, m
     original_rows = {r["dimension_id"]: r for r in _raw_rows(output, list(originals))}
     method = METHOD if _has_response_shape(output, dimensions) else SCHEMA_METHOD
     for attempt in range(max_corrections + 1):
-        bound = bind_batch(working, dimensions, unit)
+        evidence_catalog = data.get("evidence_catalog") if isinstance(data.get("evidence_catalog"), list) else None
+        bound = bind_batch(working, dimensions, unit, evidence_catalog)
         for row in bound["dimensions"]:
             row_audits.setdefault(row["dimension_id"], audit)
         if bound["status"] == "completed":
@@ -180,7 +186,8 @@ def correct_batch(output, audit, dimensions, unit, data, invoke_correction, *, m
         revised, correction_audit = invoke_correction(data=scoped,
             system=SCHEMA_PROMPT if method == SCHEMA_METHOD else PROMPT, attempt=attempt + 1)
         audits.append(correction_audit)
-        revised_bound = bind_batch(revised, [originals[i] for i in invalid], unit)
+        revised_bound = bind_batch(
+            revised, [originals[i] for i in invalid], unit, evidence_catalog)
         proposed = _raw_rows(revised, invalid)
         def evades(row):
             old = original_rows.get(row["dimension_id"], {})

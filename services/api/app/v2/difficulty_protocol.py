@@ -8,8 +8,9 @@ from copy import deepcopy
 from .contracts import DomainError, digest
 from .criterion_review import bound_quote
 from .difficulty_review import AXES, NONROUTINE, OPERATIONS, _entries, _dependency_depth, bind_item
+from .review_contract import prepare_review_output
 
-VERSION = "difficulty-observation-protocol.v1"
+VERSION = "difficulty-observation-protocol.v2"
 MAX_CORRECTIONS = 1  # Project execution budget, not a research-authored cutoff.
 INSTRUCTION = (
     "Correct ONLY execution/schema/quote binding for the exact supplied difficulty targets. "
@@ -45,8 +46,9 @@ def bind_observations(data, output, items, unit, audit):
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise DomainError("DIFFICULTY_REQUEST_CONTRACT_INVALID", 422)
     selected, rows, errors = [], [], []
-    raw = _raw_rows(output)
-    if not isinstance(output, dict) or not isinstance(output.get("items"), list):
+    prepared, normalization = prepare_review_output(output, None)
+    raw = _raw_rows(prepared)
+    if not isinstance(prepared, dict) or not isinstance(prepared.get("items"), list):
         errors.append("items_array_required")
     if any(not isinstance(r, dict) or not isinstance(r.get("item_id"), str) or r["item_id"] not in ids for r in raw):
         errors.append("unrequested_item")
@@ -63,7 +65,7 @@ def bind_observations(data, output, items, unit, audit):
     return {"method_version": VERSION, "unit_id": unit["unit_id"], "rows": rows,
         "complete": not errors and all(r["processing_status"] == "complete" for r in rows),
         "protocol_errors": errors, "data_hash": digest(data), "output_hash": digest(output),
-        "fields_hash": digest(requested)}
+        "fields_hash": digest(requested), "normalization": normalization}
 
 
 def _locks(raw, fields):

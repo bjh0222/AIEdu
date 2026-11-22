@@ -162,6 +162,7 @@ export default function Workbench({ taskId }: { taskId: string }) {
             <span className="axis"><span className="axis-name">运行</span><BadgeView b={rb} axis="运行状态" /></span>
             <span className="axis"><span className="axis-name">交付</span><BadgeView b={db} axis="交付状态" /></span>
           </div>
+          {run.delivery_detail && <p className="hint" style={{ marginTop: 8 }}>{run.delivery_detail}</p>}
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {canPause && <button className="btn" onClick={() => void pause()} disabled={pausing || Boolean(pauseKey)} aria-busy={pausing}>{pausing ? "正在请求暂停" : "暂停并保留已有内容"}</button>}
@@ -291,6 +292,16 @@ function UsagePanel({ run }: { run: RunSnapshot }) {
   const tokens = calls.some((c) => c.usage && typeof c.usage.total_tokens === "number")
     ? calls.reduce((n, c) => n + (typeof c.usage?.total_tokens === "number" ? c.usage.total_tokens : 0), 0)
     : null;
+  const metrics = run.run_metrics as {
+    tokens_known?: number;
+    token_unknown_calls?: number;
+    price_known_calls?: number;
+    price_missing_calls?: number;
+    retry_source_counts?: Record<string, number>;
+    stage_distribution?: Record<string, { calls?: number; elapsed_seconds?: number; tokens_known?: number; token_unknown_calls?: number }>;
+  } | undefined;
+  const stageRows = Object.entries(metrics?.stage_distribution ?? {}).filter(([, value]) => (value.calls ?? 0) > 0);
+  const retryRows = Object.entries(metrics?.retry_source_counts ?? {}).filter(([, value]) => value > 0);
 
   const budget = run.budget as Record<string, unknown>;
   return (
@@ -300,6 +311,8 @@ function UsagePanel({ run }: { run: RunSnapshot }) {
         <dt>调用耗时合计</dt><dd>{calls.length ? seconds(total) : "—"}</dd>
         <dt>Token</dt><dd>{run.demo ? "演示（不调用模型）" : tokens === null ? "待核实" : `${tokens.toLocaleString("zh-CN")}${anyUnknownUsage ? "（含待核实）" : ""}`}</dd>
         <dt>费用</dt><dd>{callCostsText(calls, run.demo)}{!run.cost_final && !run.demo ? "（总费用未确认）" : ""}</dd>
+        <dt>阶段分布</dt><dd>{stageRows.length ? stageRows.map(([stage, value]) => `${STAGE_LABEL[stage] ?? stage} ${value.calls ?? 0} 次 / ${seconds(value.elapsed_seconds)}`).join("；") : "—"}</dd>
+        <dt>重试来源</dt><dd>{retryRows.length ? retryRows.map(([source, value]) => `${source === "initial" ? "首次" : source === "stage_reattempt" ? "阶段重试" : source === "ancestor_resume" ? "祖先续跑" : source === "explicit_retry" ? "显式重试" : source} ${value}`).join("；") : "—"}</dd>
         <dt>费用上限</dt><dd>{limitText(budget.amount)}</dd>
         <dt>调用次数上限</dt><dd>{budget.calls === null || budget.calls === undefined ? "不限" : String(budget.calls)}</dd>
       </dl>
