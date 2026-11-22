@@ -6,10 +6,83 @@ is included in the unit supplied to C. No threshold is invented here.
 """
 from __future__ import annotations
 
+import math
+import random
+
 from .contracts import DomainError, digest, sha
 from .benchmark import wilson
 
-VERSION = "external-process-clause-calibration.v2"
+VERSION = "external-process-clause-calibration.v3"
+BOOTSTRAP_SEED = 20261122
+BOOTSTRAP_ITERATIONS = 2000
+
+
+def _percentile(values, quantile):
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * quantile
+    lower, upper = math.floor(position), math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+
+def _clustered_bootstrap(records, seed=BOOTSTRAP_SEED, iterations=BOOTSTRAP_ITERATIONS):
+    groups = {}
+    for record in records:
+        group = record.get("source_group")
+        key = group if isinstance(group, str) and group.strip() else "__missing__:" + str(record.get("case_hash"))
+        groups.setdefault(key, []).append(record)
+    keys = sorted(groups)
+    agreement, recall, false_positive = [], [], []
+    if not keys:
+        return {
+            "agreement_decided_ci95_clustered": None,
+            "error_recall_ci95_clustered": None,
+            "false_positive_ci95_clustered": None,
+            "clusters": 0,
+            "cases": len(records),
+        }
+    rng = random.Random(seed)
+    for _ in range(iterations):
+        sampled = []
+        for _ in keys:
+            sampled.extend(groups[keys[rng.randrange(len(keys))]])
+        decided = [
+            row for row in sampled
+            if row.get("execution_category") == "valid_decision"
+            and row.get("prediction") in {"satisfied", "violated"}
+            and row.get("evidence_valid") is True
+        ]
+        negatives = [row for row in decided if row.get("expected") == "violated"]
+        positives = [row for row in decided if row.get("expected") == "satisfied"]
+        if decided:
+            agreement.append(sum(
+                row.get("prediction") == row.get("expected") for row in decided
+            ) / len(decided))
+        if negatives:
+            recall.append(sum(
+                row.get("prediction") == "violated" for row in negatives
+            ) / len(negatives))
+        if positives:
+            false_positive.append(sum(
+                row.get("prediction") == "violated" for row in positives
+            ) / len(positives))
+    return {
+        "agreement_decided_ci95_clustered": [
+            _percentile(agreement, 0.025), _percentile(agreement, 0.975)
+        ] if agreement else None,
+        "error_recall_ci95_clustered": [
+            _percentile(recall, 0.025), _percentile(recall, 0.975)
+        ] if recall else None,
+        "false_positive_ci95_clustered": [
+            _percentile(false_positive, 0.025), _percentile(false_positive, 0.975)
+        ] if false_positive else None,
+        "clusters": len(keys),
+        "cases": len(records),
+    }
 
 
 def process_case(row, source):
@@ -97,6 +170,11 @@ def summarize(records, expected_count):
     hits = sum(r["prediction"] == r["expected"] for r in decided)
     tp = sum(r["prediction"] == "violated" for r in negatives)
     fp = sum(r["prediction"] == "violated" for r in positives)
+    clustered = _clustered_bootstrap(records)
+    missing_source_groups = sum(
+        not isinstance(r.get("source_group"), str) or not r.get("source_group").strip()
+        for r in records
+    )
     return {"method_version": VERSION, "expected": expected_count, "recorded": len(records),
         "decided": len(decided), "abstentions": len(abstained), "invalid_observations": invalid,
         "unrecorded_cases": expected_count - len(records),
@@ -111,10 +189,27 @@ def summarize(records, expected_count):
             "agreement_decided": "valid decisions only", "agreement_expected_case_yield": "all predeclared cases",
             "error_recall": "expert-negative cases with valid decisions only",
             "false_positive_rate": "expert-positive cases with valid decisions only"},
+        "metric_denominators_detail": {
+            "expected_cases": expected_count,
+            "recorded_cases": len(records),
+            "decided_cases": len(decided),
+            "positive_cases_decided": len(positives),
+            "negative_cases_decided": len(negatives),
+            "true_positive_cases": tp,
+            "false_positive_cases": fp,
+            "abstentions": len(abstained),
+            "invalid_observations": invalid,
+            "unrecorded_cases": expected_count - len(records),
+            "clusters": clustered["clusters"],
+            "cases_with_missing_source_group": missing_source_groups,
+        },
         "error_recall": tp / len(negatives) if negatives else None,
         "error_recall_ci95": wilson(tp, len(negatives)),
         "false_positive_rate": fp / len(positives) if positives else None,
         "false_positive_ci95": wilson(fp, len(positives)),
+        **clustered,
+        "bootstrap_seed": BOOTSTRAP_SEED,
+        "bootstrap_iterations": BOOTSTRAP_ITERATIONS,
         "status": "completed" if len(records) == expected_count and invalid == 0 else "incomplete",
         "calibration_status": "not_calibrated", "professional_certification": False,
         "threshold": None, "records": records,

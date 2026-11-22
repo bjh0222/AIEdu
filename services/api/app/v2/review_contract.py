@@ -20,7 +20,7 @@ from .quality_policy import context_domains, unit_domains
 EVIDENCE_VERSION = "server-evidence-catalog.v1"
 NORMALIZER_VERSION = "provider-contract-normalizer.v1"
 APPLICABILITY_VERSION = "zero-model-applicability.v1"
-PROTOCOL_VERSION = "quality-protocol-freeze.v2"
+PROTOCOL_VERSION = "quality-protocol-freeze.v3"
 
 _RESULT_ALIASES = {
     "pass": "satisfied",
@@ -387,6 +387,8 @@ def review_protocol_manifest() -> dict[str, Any]:
     from .research_review_corrections import METHOD, SCHEMA_METHOD
     from .difficulty_protocol import VERSION as DIFFICULTY_PROTOCOL
     from .derivation import VERSION as DERIVATION_VERSION
+    from .external_calibration import VERSION as EXTERNAL_CALIBRATION
+    from .calibration_certificate import VERSION as CALIBRATION_CERTIFICATE
 
     skill = review_skill()
     components = {
@@ -400,6 +402,8 @@ def review_protocol_manifest() -> dict[str, Any]:
         "research_correction": {"version": METHOD, "schema_version": SCHEMA_METHOD},
         "difficulty_observation": {"version": DIFFICULTY_PROTOCOL},
         "assessment_derivation": {"version": DERIVATION_VERSION},
+        "external_calibration": {"version": EXTERNAL_CALIBRATION},
+        "calibration_certificate": {"version": CALIBRATION_CERTIFICATE},
     }
     module_dir = Path(__file__).resolve().parent
     implementation_files = {
@@ -408,6 +412,8 @@ def review_protocol_manifest() -> dict[str, Any]:
             "checker.py",
             "checker_batch.py",
             "derivation.py",
+            "external_calibration.py",
+            "calibration_certificate.py",
             "quality.py",
             "quality_policy.py",
             "criterion_protocol.py",
