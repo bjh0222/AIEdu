@@ -134,8 +134,10 @@ def source_bundle(state, version_id, content_hash, units):
         "plan_hash": plan["plan_hash"], "frozen_A_arrangement": deepcopy(plan.get("teaching_arrangement")),
         "frozen_task": {k: deepcopy(context[k]) for k in (
             "raw_input", "hard_constraints", "domain_key", "branch", "generation_scope", "output_design",
-            "spec_bindings", "subject_bindings") if k in context},
+            "spec_bindings", "subject_bindings", "subject_understanding",
+            "evaluation_frameworks", "research_policy") if k in context},
         "research_rubrics": deepcopy(context.get("research_rubrics", [])),
+        "network_policy": deepcopy(plan.get("network_policy")),
         "source_units": ordered, "source_spans": [s for u in ordered for s in _spans(u)],
         "coverage": {"expected_unit_ids": planned, "provided_unit_ids": list(planned),
                      "input_projection": "complete_bodies_not_summaries"}}

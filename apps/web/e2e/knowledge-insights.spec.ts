@@ -15,8 +15,21 @@ const fixture: UnderstandingPage = { items: [{ id: "fixture-profile", version: 2
   limitations: ["实际难度未知，未专业校准"],
 } }], total: 1, inference_triggered: false };
 
+const subjectFixture = {
+  schema_version: "aiedu.subject-understanding.v1", version: 1, updated_at: "2026-11-22T00:00:00+08:00",
+  calibration_status: "not_calibrated", professional_certification: false,
+  general: { kind: "general_understanding", id: "subject-understanding:general", version: 1, hash: "g".repeat(64), domain_key: "general", source_kind: "AI 归纳与工程整理", source_refs: ["fixture source"], updated_at: "2026-11-22T00:00:00+08:00", calibration_status: "not_calibrated", content: { knowledge_model: ["通用知识结构"], difficulty_model: ["实测难度：not_measured"], quality_model: ["证据边界"], common_misconceptions: ["把共识当校准"] } },
+  subjects: Array.from({ length: 21 }, (_, i) => ({ kind: "discipline_understanding", id: `subject-understanding:fixture-${i}`, version: 1, hash: String(i).padStart(64, "0"), domain_key: `fixture_${i}`, display_name: `学科 ${i + 1}`, source_kind: "AI 归纳与研究素材整理", source_refs: ["operational:domain-pack.v1"], updated_at: "2026-11-22T00:00:00+08:00", calibration_status: "not_calibrated", content: { knowledge_model: [`学科 ${i + 1} 核心结构`], difficulty_model: ["实测难度：not_measured"], quality_model: ["质量边界"], common_misconceptions: ["学科误解"] } })),
+  tutorial_planning_version: 1, tutorial_planning_hash: "t".repeat(64),
+};
+
+async function mockSubjects(page: Parameters<typeof mockBackend>[0]) {
+  await page.route("**/subject-understanding", (route) => route.fulfill({ json: subjectFixture }));
+}
+
 test("AI整体理解、原文证据、材料身份时间、失效和刷新错误保留", async ({ page }, info) => {
   const calls = await mockBackend(page);
+  await mockSubjects(page);
   await page.route("**/knowledge/assets/**", (r) => r.fulfill({ json: { items: [], total: 0 } }));
   await page.route("**/evaluation-frameworks", (r) => r.fulfill({ json: { items: [] } }));
   let mode = "current";
@@ -26,6 +39,8 @@ test("AI整体理解、原文证据、材料身份时间、失效和刷新错误
   await page.goto("/library?tab=knowledge");
   const region = page.getByRole("region", { name: "AI 整体理解" });
   await expect(region).toContainText("基础代数材料理解（版本 2）");
+  await expect(region).toContainText("通用理解层");
+  await expect(region).toContainText("逐学科理解（21）");
   for (const text of ["等式性质与逆运算", "需要协调两步变形", "题面与答案一致", sampleQuote, `UTF-8 字节 0–${sample.end_byte}`, "没有学习者实测数据", "材料版本一致", "更新时间", "2026", "可修订的 AI 归纳"]) await expect(region).toContainText(text);
   await expect(region.getByRole("link", { name: "基础代数测试资料.md" }).first()).toHaveAttribute("href", "/tasks/fixture-task");
   await expect(region).not.toContainText(sample.source_hash); await expect(region).not.toContainText("fixture-profile");
@@ -41,6 +56,7 @@ test("AI整体理解、原文证据、材料身份时间、失效和刷新错误
 
 test("理解空态、错误态不造结果，未知更新时间不造日期", async ({ page }) => {
   await mockBackend(page);
+  await mockSubjects(page);
   let mode = "empty";
   await page.route("**/import-understanding", (r) => mode === "error" ? r.fulfill({ status: 503, json: { code: "NOT_AVAILABLE" } }) : r.fulfill({ json: mode === "empty" ? { items: [], total: 0, inference_triggered: false } : fixture }));
   await page.route("**/managed-understanding-context/**", (r) => r.fulfill({ json: { profile_id: "fixture-profile", version: 2, hash: "c".repeat(64), status: "unknown", updated_at: null, materials: [], inference_triggered: false } }));
@@ -54,6 +70,7 @@ test("理解空态、错误态不造结果，未知更新时间不造日期", as
 
 test("实际导入题面字段与原生题号保留，提供直接回收站操作", async ({ page }) => {
   await mockBackend(page);
+  await mockSubjects(page);
   let hidden = false;
   await page.route("**/import-understanding", (r) => r.fulfill({ json: { items: [], total: 0 } }));
   await page.route("**/knowledge/assets/**", (r) => {
@@ -66,6 +83,5 @@ test("实际导入题面字段与原生题号保留，提供直接回收站操�
   const trashQuestion = page.getByRole("button", { name: "将第3题 解方程 2x+3=7移入回收站" });
   await expect(page.getByRole("listitem").filter({ has: trashQuestion })).toContainText("第3题 解方程 2x+3=7");
   await trashQuestion.click();
-  const dialog = page.getByRole("dialog"); await dialog.getByLabel("我已查看引用和影响").check(); await dialog.getByRole("button", { name: "确认移入回收站" }).click();
   await expect(page.getByRole("button", { name: "将第3题 解方程 2x+3=7移入回收站" })).toHaveCount(0);
 });

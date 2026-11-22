@@ -74,6 +74,8 @@ class ManagedImpact(Contract):
     resource: ManagedResource
     impact_hash: str
     active: bool
+    active_blockers: list[dict[str, Any]] = Field(default_factory=list)
+    stale_execution_releasable: bool = False
     references: list[ManagedReference]
     purge_allowed: bool
     purge_blockers: list[ManagedBlocker]
@@ -143,6 +145,7 @@ class UnderstandingContext(Contract):
     hash: str
     status: Literal["current", "stale", "unknown"]
     updated_at: str | None
+    updated_at_source: Literal["asset_wrapper", "research_result", "generation_job", "unknown"] = "unknown"
     materials: list[UnderstandingMaterialContext]
     inference_triggered: Literal[False] = False
 
@@ -176,9 +179,25 @@ def understanding_context(profile_id: str, version: int):
                     result = load(BlobStore().get(state["research_artifacts"]["result"]["blob_hash"]).decode())
                 except DomainError:
                     continue
-            reference = result.get("asset_refs", {}).get("profile") if result else None
-            if reference == {k: value[k] for k in ("id", "version", "hash")} and result.get("completed_at"):
-                updated.append(result["completed_at"])
+            reference = (result.get("asset_refs") or {}).get("profile") if isinstance(result, dict) else None
+            result_profile = result.get("profile") if isinstance(result, dict) else None
+            result_profile_id = (
+                result_profile.get("profile_id") or result_profile.get("id")
+                if isinstance(result_profile, dict) else None
+            )
+            if reference == {k: value[k] for k in ("id", "version", "hash")} or result_profile_id == profile_id:
+                if result.get("completed_at"):
+                    updated.append((result["completed_at"], "research_result"))
+                elif run.updated_at:
+                    updated.append((run.updated_at, "generation_job"))
+        wrapper_time = value.get("updated_at") or value.get("created_at")
+        if wrapper_time:
+            updated_at, updated_at_source = wrapper_time, "asset_wrapper"
+        elif updated:
+            updated_at, updated_at_source = max(updated, key=lambda item: item[0])
+        else:
+            updated_at, updated_at_source = None, "unknown"
         return {"profile_id": profile_id, "version": version, "hash": value["hash"],
             "status": "stale" if head != {k: value[k] for k in ("id", "version", "hash")} or any(m["status"] != "current" for m in materials) else "current" if materials else "unknown",
-            "updated_at": max(updated) if updated else None, "materials": materials, "inference_triggered": False}
+            "updated_at": updated_at, "updated_at_source": updated_at_source,
+            "materials": materials, "inference_triggered": False}

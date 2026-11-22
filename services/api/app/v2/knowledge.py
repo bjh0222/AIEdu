@@ -69,6 +69,8 @@ def freeze_guidance(db,context):
     values = []
     domains = {canonical_domain_key(s["domain_key"]) for s in context.get("subject_bindings",[])}
     domains.add(canonical_domain_key(context["domain_key"]))
+    # General research assets are reusable across every subject.
+    domains.add("general")
     conflicts = {id for link in db.query(DesignPrincipleLink).filter_by(relation="contradicts",status="confirmed") for id in (link.source_id,link.target_id)}
     for row in db.query(DesignPrinciple).filter(DesignPrinciple.status.in_(["confirmed","auto_accepted"])):
         if canonical_domain_key(row.domain_key) not in domains:
@@ -77,6 +79,8 @@ def freeze_guidance(db,context):
         branch = scope.get("branch","")
         if isinstance(branch,list):
             branch = context["branch"] if context["branch"] in branch else "out_of_scope"
+        if canonical_domain_key(row.domain_key) == "general" and row.approval_source == "research_import":
+            branch = ""
         refs = load(row.positive_refs)
         value = {"id":row.id,"version":row.version,"status":row.status,"domain":canonical_domain_key(row.domain_key),
             "branch":branch,"mechanism":row.mechanism or row.statement,"guidance":row.guidance or row.statement,
@@ -90,12 +94,17 @@ def freeze_guidance(db,context):
     for card in searchable_cards(db):
         if card["domain_key"] not in domains:
             continue
+        source_kind = card.get("source_kind", "tutorial_card")
         value = {"id": card["card_id"], "version": card["revision"], "status": "confirmed",
-            "domain": card["domain_key"], "branch": card["branch"], "mechanism": card["title"] + card["quote"],
+            "domain": card["domain_key"],
+            "branch": "" if source_kind == "research_import_card" and card["domain_key"] == "general" else card["branch"],
+            "mechanism": card["title"] + card["quote"],
             "guidance": card["quote"], "source": card["source"], "source_kind": "tutorial_card",
-            "unit_scope": card["source_unit_title"],
+            "unit_scope": (card["source_unit_title"]
+                           if source_kind == "tutorial_card" else None),
             "evidence_hash": card["source"]["quote_hash"], "usage": "guidance", "conflict": False,
             "guidance_eligibility": True, "row_fingerprint": digest({k:v for k,v in card.items() if k != "source_unit_title"})}
+        value["source_kind"] = source_kind
         value["source_fingerprint"] = digest(value)
         values.append(value)
     context["knowledge_sources"] = values
@@ -146,6 +155,58 @@ def unit_guidance(context,unit):
     return bundle,text
 
 
+def planning_experience(context):
+    """Select only frozen, approved, applicable experience for A planning."""
+    enabled = context.get("knowledge", {}).get("guidance_enabled", False)
+    sources = [value for value in context.get("knowledge_sources", [])
+               if guidance_exclusion_reason(value) is None]
+    from ..learning.disciplines import canonical_domain_key
+    domains = sorted({canonical_domain_key(value["domain_key"])
+                      for value in context.get("subject_bindings", [])})
+    domains.append(canonical_domain_key(context.get("domain_key")))
+    bundle = evidence_bundle(
+        sources,
+        domain=domains,
+        branch=context.get("branch", ""),
+        query=context.get("raw_input", ""),
+        call_id="pending-planning",
+        stage="planning",
+        unit_id="task-intent",
+        guidance_enabled=enabled,
+        unit_title="",
+    )
+    selected_ids = {row["id"] for row in bundle["selected"]}
+    selected = [{
+        "id": value["id"],
+        "version": value["version"],
+        "status": value["status"],
+        "evidence_hash": value["evidence_hash"],
+        "mechanism": value.get("mechanism"),
+        "guidance": value.get("guidance"),
+        "source_fingerprint": value.get("source_fingerprint"),
+    } for value in sources if value["id"] in selected_ids]
+    selected.sort(key=lambda value: (value["id"], value["version"]))
+    entries = [{
+        "source_id": "experience:" + value["id"],
+        "source_kind": "confirmed_experience",
+        "version": value["version"],
+        "sha256": value["evidence_hash"],
+        "selected": True,
+        "reason": "approved_applicable_planning_experience",
+        "consumer": "A",
+        "message_position": "context.knowledge_guidance",
+    } for value in selected]
+    return {
+        "method_version": "planning-experience-selection.v1",
+        "enabled": enabled,
+        "selected": selected,
+        "excluded": bundle["excluded"],
+        "entries": entries,
+        "selection_hash": digest([selected, bundle["excluded"], enabled]),
+        "candidate_policy": "proposed_rejected_retracted_are_never_passed_to_A",
+    }
+
+
 def guidance_trace(run_id,worker,epoch,context,unit,bundle,call_id,claims):
     from ..models import DesignPrinciple,PropositionGuidanceTrace
     from .runtime import write,job,fence,dump
@@ -171,6 +232,14 @@ def guidance_trace(run_id,worker,epoch,context,unit,bundle,call_id,claims):
                 from .insights import searchable_cards
                 current = next((c for c in searchable_cards(db) if c["card_id"] == saved["id"]), None)
                 if current is None or digest({k:v for k,v in current.items() if k != "source_unit_title"}) != saved["row_fingerprint"]:
+                    raise DomainError("KNOWLEDGE_SOURCE_INVALIDATED", 422)
+                continue
+            if saved.get("source_kind") == "research_import_card":
+                from .knowledge_assets import CARD_HEAD_PREFIX
+                from .insights import record
+                identity = saved["id"].removeprefix("imported:")
+                head = record(db, CARD_HEAD_PREFIX + identity)
+                if not head or head.get("version") != saved["version"] or head.get("hash") != saved["evidence_hash"]:
                     raise DomainError("KNOWLEDGE_SOURCE_INVALIDATED", 422)
                 continue
             row = db.get(DesignPrinciple,saved["id"])

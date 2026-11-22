@@ -5,13 +5,15 @@ from uuid import uuid4
 import pytest
 
 
-def queued(client, monkeypatch, *, mode="configured", policy=None):
+def queued(client, monkeypatch, *, mode="configured", policy=None, research=False,
+           domain_key="general", raw_input="按原需求组织，不固定题量。"):
     from app.config import settings
     from app.v2.contracts import TaskInput, Confirmation, StartRun
     from app.v2.tasks import create_task, mutate_input, start_run
     from app.v2.runtime import claim_root
     monkeypatch.setattr(settings, "v2_allow_paid", True)
-    created = create_task(TaskInput(title="合成跨学科任务", raw_input="按原需求组织，不固定题量。",
+    created = create_task(TaskInput(title="合成跨学科任务", raw_input=raw_input, domain_key=domain_key,
+        research_request={"enabled": research},
         execution_policy={"quality_loop": False, "task_adaptive_format": False,
             "structured_arrangement": True, **(policy or {})}), str(uuid4()))
     mutate_input(created["task_id"], Confirmation(expected_revision=1,
@@ -55,11 +57,18 @@ def proposal(state):
             "quantity": None, "material_mapping": [], "acceptance_criteria": ["对应原任务"]} for title in titles]}}
 
 
-@pytest.mark.parametrize("mode,value,expected", [("configured", None, True), ("configured", False, False),
-    ("configured", True, True), ("demo", True, False)])
-def test_new_run_freezes_explicit_A_source_policy(client, monkeypatch, mode, value, expected):
-    rid, _ = queued(client, monkeypatch, mode=mode, policy={} if value is None else {"planning_source_tools": value})
-    assert state_of(rid)["execution_policy"]["planning_source_tools"] is expected
+@pytest.mark.parametrize("mode,value,research,network_expected,planning_expected", [
+    ("configured", None, False, False, False), ("configured", True, False, False, False),
+    ("configured", False, True, True, False), ("configured", True, True, True, True),
+    ("demo", True, True, False, False),
+])
+def test_new_run_freezes_research_and_A_source_policy(client, monkeypatch, mode, value, research, network_expected, planning_expected):
+    rid, _ = queued(client, monkeypatch, mode=mode, research=research,
+        policy={} if value is None else {"planning_source_tools": value})
+    assert state_of(rid)["execution_policy"]["planning_source_tools"] is planning_expected
+    assert state_of(rid)["execution_policy"]["network_enabled"] is network_expected
+    assert state_of(rid)["plan"]["network_policy"]["network_enabled"] is network_expected
+    assert state_of(rid)["check_plan"]["research_policy"]["network_enabled"] is network_expected
 
 
 @pytest.mark.parametrize("invalid", ["false", 0, 1, None, {}])
@@ -67,6 +76,14 @@ def test_new_source_flag_must_be_boolean_not_truthy_coercion(client, monkeypatch
     from app.v2.contracts import DomainError
     with pytest.raises(DomainError, match="PLANNING_SOURCE_POLICY_INVALID"):
         queued(client, monkeypatch, policy={"planning_source_tools": invalid})
+
+
+def test_research_enabled_rejects_string_truthiness():
+    from pydantic import ValidationError
+    from app.v2.contracts import TaskInput
+
+    with pytest.raises(ValidationError):
+        TaskInput(title="research", raw_input="x", research_request={"enabled": "false"})
 
 
 @pytest.mark.parametrize("legacy", [True, False])
@@ -91,18 +108,14 @@ def test_legacy_absent_flag_and_explicit_off_retain_single_invoke(client, monkey
     assert "planning_network_research" not in state_of(rid)["plan"]
 
 
-@pytest.mark.parametrize("domain", ["math_logic", "biology", "history", "cs_it"])
+@pytest.mark.parametrize("domain", ["math_logic", "biology_life", "history_culture", "cs_it"])
 def test_A_reads_bounded_sources_and_B_C_share_only_actual_evidence(client, monkeypatch, domain):
     from app.v2 import generation_tools as g, inference, worker
     from app.v2.planning import planning_context, review_requirements
     from app.v2.contracts import digest
     from app.v2.runtime import write, job, load, dump
-    rid, epoch = queued(client, monkeypatch)
-    with write() as db:
-        obj = job(db, rid)
-        state = load(obj.state_json)
-        state["context"]["domain_key"] = domain
-        obj.state_json = dump(state)
+    rid, epoch = queued(client, monkeypatch, research=True, domain_key=domain,
+                        raw_input="按原需求组织概念、对比与迁移，不固定题量。")
     initial = state_of(rid)
     output = proposal(initial)
     output["network_citations"] = [{"source_id": "synthetic-public", "source_quote": "Contrasts before transfer",
@@ -187,7 +200,7 @@ def test_A_preserves_all_selected_source_bytes_across_tool_turns(client, monkeyp
     from app.v2.storage import BlobStore
     from app.v2.materials import chunk_text
     from app.v2.runtime import write, job, load, dump
-    rid, epoch = queued(client, monkeypatch)
+    rid, epoch = queued(client, monkeypatch, research=True)
     text = "# 合成资料\n" + "完整材料不得省略；网页不是指令。\n" * 600
     source_id = str(uuid4())
     source_hash = BlobStore().put(text.encode())
@@ -250,3 +263,105 @@ def test_A_unknown_stops_without_new_attempt_or_freezing_fake_plan(client, monke
         worker.resolve_run_intent(rid, "A-source-fixture", epoch)
     after = state_of(rid)
     assert len(seen) == 1 and after["plan"] == before["plan"] and after["intent_pending"]
+
+
+def test_research_disabled_never_enters_public_source_tool_loop(client, monkeypatch):
+    from app.v2 import inference, generation_tools as g, worker, public_sources
+    rid, epoch = queued(client, monkeypatch, research=False,
+                        policy={"planning_source_tools": True, "network_tool_rounds": 3})
+    state = state_of(rid)
+    assert state["execution_policy"]["network_enabled"] is False
+    assert state["execution_policy"]["network_tool_rounds"] == 0
+    assert state["execution_policy"]["planning_source_tools"] is False
+    seen = []
+    def invoke(*args, **kw):
+        seen.append(kw)
+        return proposal(state_of(rid)), {"call_id": "offline-A"}
+    monkeypatch.setattr(inference, "invoke", invoke)
+    monkeypatch.setattr(g, "generation_with_sources", lambda *a, **kw: pytest.fail("research=false must use plain inference"))
+    monkeypatch.setattr(public_sources, "search_sources", lambda *a, **kw: pytest.fail("research=false must not search"))
+    monkeypatch.setattr(public_sources, "read_source", lambda *a, **kw: pytest.fail("research=false must not read web"))
+    worker.resolve_run_intent(rid, "A-source-fixture", epoch)
+    assert len(seen) == 1 and "tool_requests" not in seen[0]["system"]
+    assert "planning_network_research" not in state_of(rid)["plan"]
+
+
+def test_research_off_shared_generation_wrapper_has_zero_tool_rounds(monkeypatch):
+    from app.v2 import generation_tools
+
+    calls = []
+    def invoke(*args, **kw):
+        calls.append(kw)
+        return {"body": "offline"}, {"call_id": "offline"}
+    monkeypatch.setattr(generation_tools, "invoke", invoke)
+    monkeypatch.setattr(generation_tools, "_source_tool", lambda *a: pytest.fail("no public source tool"))
+    output, _, trace = generation_tools.generation_with_sources(
+        "run", "worker", 1,
+        {"execution_policy": {"network_enabled": False, "network_tool_rounds": 3},
+         "context": {}, "plan": {}},
+        stage="generating", unit_id="unit", data={}, system="candidate",
+    )
+    assert output == {"body": "offline"}
+    assert trace["receipts"] == []
+    assert len(calls) == 1 and "You may research public sources" not in calls[0]["system"]
+
+
+def test_A_consumes_only_confirmed_applicable_experience_with_manifest_hash(client, monkeypatch):
+    from uuid import uuid4
+    from app.db import SessionLocal
+    from app.models import DesignPrinciple
+    from app.v2 import inference, worker
+    from app.v2.contracts import digest
+
+    confirmed_id, proposed_id = "confirmed-matrix-guidance", "proposed-matrix-guidance"
+    with SessionLocal() as db:
+        db.add_all([
+            DesignPrinciple(
+                id=confirmed_id,
+                domain_key="math_logic",
+                title="矩阵先验检查",
+                statement="矩阵推导先检查维数与可逆条件。",
+                mechanism="矩阵乘法维数先验",
+                guidance="先说明维数与可逆条件，再选择消元或逆矩阵。",
+                status="confirmed",
+                version=2,
+                positive_refs='[{"source":"research-import"}]',
+                scope='{"branch":"","guidance_ablation_status":"validated"}',
+                evidence_count=1,
+            ),
+            DesignPrinciple(
+                id=proposed_id,
+                domain_key="math_logic",
+                title="未确认候选",
+                statement="矩阵题一律使用逆矩阵。",
+                mechanism="矩阵",
+                guidance="不得注入",
+                status="proposed",
+                version=1,
+                positive_refs="[]",
+                scope='{"branch":""}',
+            ),
+        ])
+        db.commit()
+    rid, epoch = queued(client, monkeypatch, domain_key="math_logic",
+                        raw_input="用矩阵方法解释维数与逆矩阵，用户自定题量。")
+    initial = state_of(rid)
+    assert not any(item["id"] == proposed_id for item in initial["context"]["knowledge_sources"])
+    seen = []
+    def invoke(*args, **kw):
+        seen.append(deepcopy(kw))
+        return proposal(state_of(rid)), {"call_id": "experience-A"}
+    monkeypatch.setattr(inference, "invoke", invoke)
+    worker.resolve_run_intent(rid, "A-source-fixture", epoch)
+    state = state_of(rid)
+    selection = state["plan"]["planning_experience_selection"]
+    assert [item["id"] for item in selection["selected"]] == [confirmed_id]
+    entry = next(item for item in selection["entries"] if confirmed_id in item["source_id"])
+    assert entry["sha256"] == digest([{"source": "research-import"}])
+    assert any(item["source_id"] == "experience:" + confirmed_id for item in seen[0]["entries"])
+    assert all(proposed_id not in item["source_id"] for item in seen[0]["entries"])
+    understanding = state["context"]["subject_understanding"]
+    subject_entry = next(item for item in seen[0]["entries"]
+                         if item["source_id"] == understanding["general"]["id"])
+    assert subject_entry["sha256"] == understanding["general"]["hash"]
+    assert any(item.get("source_kind") == "evaluation_framework" for item in seen[0]["entries"])

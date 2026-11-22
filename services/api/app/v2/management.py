@@ -9,10 +9,11 @@ from ..models import (DesignPrinciple, FormatSpec, GenerationJob, GoalMaterial, 
                       PropositionBatch, PropositionEvaluation, PropositionQuestion, Tutorial, TutorialVersion)
 from .contracts import DomainError, digest
 from .insights import action, receipt, record, save
-from .runtime import load, write
-from .storage import ExportSet
-from .management_lifecycle import (ACTIVE, canonical_kind, overlay_ids, references,
+from .runtime import LEASE_TTL, load, reconcile_stale_jobs, write
+from .storage import CallDispatch, ExportSet
+from .management_lifecycle import (CALL_ACTIVE, RUN_ACTIVE, canonical_kind, overlay_ids, references,
     blob_references, stage_blobs, restore_blobs, finish_blobs)
+import time
 
 MODELS = {"tasks": LearningGoal, "materials": GoalMaterial, "specs": FormatSpec, "batches": PropositionBatch,
     "questions": PropositionQuestion, "evaluations": PropositionEvaluation, "principles": DesignPrinciple,
@@ -135,12 +136,15 @@ def impact(db, kind, object_id):
     historical_blob_refs = [r for r in shared if r["kind"] != "goal_materials"]
     refs.extend(historical_blob_refs)
     # A paused/failed run can still own a sent/unknown provider call.
-    from .storage import CallDispatch
     run_ids = {r.get("run_id") for r in refs if r.get("run_id")}
-    inflight = db.query(CallDispatch).filter(CallDispatch.run_id.in_(run_ids), CallDispatch.status.in_(ACTIVE)).all() if run_ids else []
-    refs.extend({"kind": "provider_call", "id": c.call_id, "run_id": c.run_id, "state": c.status, "label": "提供方调用尚未隔离或结算"} for c in inflight)
+    inflight = db.query(CallDispatch).filter(
+        CallDispatch.run_id.in_(run_ids), CallDispatch.status.in_(CALL_ACTIVE)
+    ).all() if run_ids else []
+    refs.extend({"kind": "provider_call", "id": c.call_id, "run_id": c.run_id, "state": c.status,
+                 "label": "提供方调用尚未隔离或结算"} for c in inflight)
     unique = {digest(r): r for r in refs}
     refs = sorted(unique.values(), key=lambda r: (r["kind"], r.get("id") or r.get("run_id") or ""))
+    active_blockers = _execution_blockers(db, refs)
     blockers = [{"code": "RESOURCE_REFERENCED", "reason": "仍有来源、子记录或历史证据引用；先处理引用，不能级联删除。"}] if refs else []
     if kind in {"versions", "quality-reports", "exports"}:
         blockers.append({"code": "IMMUTABLE_EVIDENCE_RETAINED", "reason": "固定版本、质量证据和已发放下载包须保留；可移入回收站，永久清除不可用。"})
@@ -149,12 +153,88 @@ def impact(db, kind, object_id):
     if kind == "specs" and (row.is_builtin or row.is_default):
         blockers.append({"code": "PROTECTED_SPEC", "reason": "内置或默认规范受保护；自定义默认规范须先取消默认。"})
     result = {"resource": describe(db, kind, row), "references": refs,
-        "active": any(r.get("state") in ACTIVE for r in refs), "purge_allowed": not blockers,
+        "active": any(item["blocking"] for item in active_blockers),
+        "active_blockers": active_blockers,
+        "stale_execution_releasable": any(item["stale"] and not item["blocking"] for item in active_blockers),
+        "purge_allowed": not blockers,
         "purge_blockers": blockers, "shared_blob_references": shared,
         "effects": {"archive": "仅从归档目录分流，不改原文和历史绑定", "trash": "隐藏常规目录，可恢复；原文字节和历史版本保留",
             "purge": "仅删除本对象及其独占原文blob；不级联；审计/备份/SQLite日志不做安全擦除"},
         "policy": "archive_and_trash_separate; immutable_history_preserved; purge_requires_confirmation_and_hashes"}
     return {**result, "impact_hash": digest(result)}
+
+
+def _execution_blockers(db, refs, now=None):
+    """Turn broad references into exact, user-actionable execution blockers."""
+    now = time.time() if now is None else now
+    run_rows = {
+        row.run_id: row
+        for row in db.query(GenerationJob).filter(
+            GenerationJob.job_type == "task_v2",
+            GenerationJob.run_id.in_({r.get("run_id") for r in refs if r.get("run_id")}),
+        ).all()
+    }
+    call_rows = {
+        row.call_id: row
+        for row in db.query(CallDispatch).filter(
+            CallDispatch.run_id.in_({r.get("run_id") for r in refs if r.get("run_id")})
+        ).all()
+    }
+    selected = {}
+    for ref in refs:
+        run = run_rows.get(ref.get("run_id"))
+        state = ref.get("state")
+        if ref.get("kind") in {"run", "generation_jobs"} and state in RUN_ACTIVE:
+            stale = bool(
+                state == "running"
+                and run is not None
+                and (run.lease_until or 0) <= now
+            )
+            selected[("run", run.run_id if run else ref.get("run_id"))] = {
+                "kind": "task",
+                "id": run.id if run else ref.get("id"),
+                "task_id": run.goal_id if run else ref.get("task_id"),
+                "run_id": run.run_id if run else ref.get("run_id"),
+                "state": state,
+                "lease_until": run.lease_until if run else None,
+                "worker_instance_id": run.worker_instance_id if run else None,
+                "stale": stale,
+                "blocking": not stale,
+                "required_action": "wait_for_worker" if not stale else "automatic_lease_recovery",
+                "reason": (
+                    f"任务 {run.run_id if run else ref.get('run_id')} 状态为 {state}，"
+                    + ("租约已过期，可由确定性回收器释放。" if stale else "执行租约仍有效。")
+                ),
+            }
+        call = call_rows.get(ref.get("id")) if ref.get("kind") in {"generation_call_dispatches", "provider_call"} else None
+        if call is not None and state in CALL_ACTIVE:
+            run = run_rows.get(call.run_id)
+            timed_out = bool(
+                state == "sent"
+                and call.started_at is not None
+                and now - call.started_at >= max(LEASE_TTL, 660)
+            )
+            orphaned = run is None or run.status not in {"running", "queued"}
+            stale = timed_out or orphaned
+            selected[("call", call.call_id)] = {
+                "kind": "provider_call",
+                "id": call.call_id,
+                "task_id": run.goal_id if run else None,
+                "run_id": call.run_id,
+                "unit_id": call.unit_id,
+                "state": state,
+                "started_at": call.started_at,
+                "stale": stale,
+                "blocking": True,
+                "required_action": "explicit_quarantine",
+                "reason": (
+                    f"运行 {call.run_id} 的 {state} 调用 {call.call_id}"
+                    + (" 已超过无回执等待阈值，须在停止运行后显式隔离。" if timed_out
+                       else " 所属运行已停止，须显式隔离以释放执行占用。" if orphaned
+                       else " 仍在提供方调用执行域内。")
+                ),
+            }
+    return sorted(selected.values(), key=lambda item: (item["kind"], item.get("run_id") or "", item["id"]))
 
 
 def change(payload, action_key):
@@ -185,7 +265,11 @@ def change(payload, action_key):
             if current["resource_hash"] != item.expected_hash or refs["impact_hash"] != item.impact_hash:
                 raise DomainError("RESOURCE_STALE")
             if refs["active"]:
-                raise DomainError("RESOURCE_IN_ACTIVE_RUN")
+                raise DomainError(
+                    "RESOURCE_IN_ACTIVE_RUN",
+                    blockers=refs["active_blockers"],
+                    summary="资源仍被精确列出的任务或调用阻塞。",
+                )
             if item.kind == "specs" and (row.is_builtin or (row.is_default and payload.action in {"trash", "purge"})):
                 raise DomainError("BUILTIN_SPEC_IMMUTABLE", 403)
             if payload.action == "purge":
@@ -200,6 +284,11 @@ def change(payload, action_key):
             if refs["references"] and not payload.acknowledge_references:
                 raise DomainError("RESOURCE_REFERENCED", references=refs["references"])
             checked.append((item, current, row, refs))
+        # A stale worker lease must not leave a resource disabled forever.
+        # The preflight hash is validated against the observed state first;
+        # recovery then releases only expired execution leases and never
+        # settles a bill or rewrites an unknown provider outcome.
+        reconcile_stale_jobs(db)
         results = []
         for item, current, row, refs in checked:
             if payload.action == "purge":

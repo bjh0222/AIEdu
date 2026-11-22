@@ -106,8 +106,8 @@ def test_a_and_c_skills_are_versioned_and_executable():
     from app.v2.skills import review_skill
     a = skill()
     c = review_skill()
-    assert a["version"] == 5 and "quality_target_refs" in a["instructions"]
-    assert c["skill_id"] == "assessment-review" and c["version"] == 2
+    assert a["version"] == 6 and "quality_target_refs" in a["instructions"]
+    assert c["skill_id"] == "assessment-review" and c["version"] == 3
     assert "material_evidence" in c["instructions"]
     assert "专业" in c["instructions"]
     assert "非语义呈现顺序" in c["instructions"]

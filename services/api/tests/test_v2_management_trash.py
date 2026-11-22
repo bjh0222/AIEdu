@@ -155,6 +155,72 @@ def test_active_run_or_unresolved_call_cannot_trash(client, status):
     assert not preflight(client, "tasks", created["task_id"])[0]["resource"]["management"]["trashed"]
 
 
+def test_expired_running_lease_is_precise_and_released_on_resource_action(client):
+    import time
+    from app.db import SessionLocal
+    from app.models import GenerationJob
+    headers, created, snap = task_run(client)
+    with SessionLocal() as db:
+        job = db.query(GenerationJob).filter_by(run_id=snap["run_id"]).one()
+        job.status, job.lease_until, job.worker_instance_id = "running", time.time() - 1, "stale-worker"
+        db.commit()
+    impact, target = preflight(client, "tasks", created["task_id"])
+    assert impact["active"] is False and impact["stale_execution_releasable"] is True
+    blocker = impact["active_blockers"][0]
+    assert blocker["run_id"] == snap["run_id"] and blocker["stale"] is True
+    assert blocker["required_action"] == "automatic_lease_recovery"
+    result = post(client, "/managed-resource-actions",
+                  {"action": "trash", "items": [target], "acknowledge_references": True}, headers)
+    assert result.status_code == 200, result.text
+    with SessionLocal() as db:
+        job = db.query(GenerationJob).filter_by(run_id=snap["run_id"]).one()
+        assert job.status == "interrupted"
+
+
+def test_unreceipted_sent_timeout_reports_exact_call_and_quarantine_unlocks(client):
+    import time
+    from uuid import uuid4
+    from app.db import SessionLocal
+    from app.models import GenerationJob
+    from app.v2.storage import CallDispatch
+    headers, created, snap = task_run(client)
+    call_id, request_hash = str(uuid4()), "b" * 64
+    with SessionLocal() as db:
+        job = db.query(GenerationJob).filter_by(run_id=snap["run_id"]).one()
+        job.status = "failed"
+        db.add(CallDispatch(call_id=call_id, root_job_id=job.root_job_id, run_id=job.run_id,
+            unit_id="stale-sent", epoch=job.cancel_epoch, attempt=1,
+            idempotency_key=str(uuid4()), request_hash=request_hash, input_hash="c" * 64,
+            provider="fixture", model_family="fixture", model="fixture",
+            status="sent", started_at=time.time() - 700))
+        db.commit()
+        revision = job.state_revision
+        checkpoint = __import__("app.v2.contracts", fromlist=["digest"]).digest(
+            __import__("app.v2.runtime", fromlist=["load"]).load(job.state_json)["plan"])
+    impact, target = preflight(client, "tasks", created["task_id"])
+    assert impact["active"] is True
+    blocker = next(item for item in impact["active_blockers"] if item["id"] == call_id)
+    assert blocker["state"] == "sent" and blocker["stale"] is True
+    assert blocker["required_action"] == "explicit_quarantine"
+    blocked = post(client, "/managed-resource-actions",
+                   {"action": "trash", "items": [target]}, headers)
+    assert blocked.status_code == 409 and blocked.json()["code"] == "RESOURCE_IN_ACTIVE_RUN"
+    assert blocked.json()["details"]["blockers"][0]["id"] == call_id
+    isolated = post(client, f"/runs/{snap['run_id']}/unknown-quarantines", {
+        "expected_revision": revision,
+        "checkpoint_hash": checkpoint,
+        "calls": [{"call_id": call_id, "request_hash": request_hash}],
+        "acknowledge_possible_duplicate_cost": True,
+    }, headers, "isolate-stale-resource-call")
+    assert isolated.status_code == 200, isolated.text
+    unlocked, _ = change(client, headers, "tasks", created["task_id"], "trash")
+    assert unlocked.status_code == 200, unlocked.text
+    with SessionLocal() as db:
+        call = db.get(CallDispatch, call_id)
+        assert call.status == "quarantined" and call.outcome == "unknown"
+        assert call.receipt_json
+
+
 def test_concurrent_cas_only_one_writer(client):
     from app.api.v2_management import ManagedAction
     from app.v2.management import change as apply

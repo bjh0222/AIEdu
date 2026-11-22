@@ -18,7 +18,7 @@ def _load(filename: str, skill_id: str, version: int) -> dict:
 
 
 def review_skill() -> dict:
-    return _load("review_skill.md", "assessment-review", 2)
+    return _load("review_skill.md", "assessment-review", 3)
 
 
 def entry(skill: dict, consumer: str = "C") -> dict:

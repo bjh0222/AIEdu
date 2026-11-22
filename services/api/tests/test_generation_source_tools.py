@@ -19,6 +19,10 @@ def running(client):
     lease = claim_root(started["run_id"], "source-fixture")
     with SessionLocal() as db:
         state = load(job(db, started["run_id"]).state_json)
+    # These cases exercise the explicit source-tool wrapper. Product tasks
+    # default research/off unless the user enables research_request.
+    state["execution_policy"]["network_enabled"] = True
+    state["execution_policy"]["network_tool_rounds"] = 3
     return started["run_id"], lease["epoch"], state
 
 

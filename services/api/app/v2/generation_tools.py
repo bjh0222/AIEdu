@@ -10,7 +10,17 @@ import unicodedata
 from urllib.parse import parse_qsl, unquote
 
 from .contracts import DomainError, digest
-from .inference import invoke
+
+
+def invoke(*args, **kwargs):
+    """Resolve the inference entrypoint at call time.
+
+    Tests and future adapters may replace ``inference.invoke`` after this module
+    is imported. A module-level ``from ... import invoke`` permanently captures
+    the old function and can cross-contaminate later runs.
+    """
+    from .inference import invoke as inference_invoke
+    return inference_invoke(*args, **kwargs)
 
 TOOL_INSTRUCTION = """
 You may research public sources before producing the requested candidate. Return
@@ -189,9 +199,11 @@ def generation_with_sources(run_id, worker, epoch, state, *, stage, unit_id, dat
                             output_schema=None, output_tokens=16384, entries=None,
                             transport=None, key=None):
     from .runtime import load
-    rounds = state.get("execution_policy", {}).get("network_tool_rounds", 3)
-    if type(rounds) is not int or not 0 <= rounds <= 12:
+    network_enabled = state.get("execution_policy", {}).get("network_enabled", True)
+    configured_rounds = state.get("execution_policy", {}).get("network_tool_rounds", 3)
+    if type(configured_rounds) is not int or not 0 <= configured_rounds <= 12:
         raise DomainError("NETWORK_TOOL_POLICY_INVALID", 422)
+    rounds = configured_rounds if network_enabled else 0
     max_requests = state.get("execution_policy", {}).get("network_requests_per_round", 4)
     if type(max_requests) is not int or not 1 <= max_requests <= 4:
         raise DomainError("NETWORK_TOOL_POLICY_INVALID", 422)

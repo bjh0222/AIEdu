@@ -6,6 +6,10 @@ test("settings persists the reader chat model through the model settings API", a
     const path = new URL(route.request().url()).pathname.replace("/api/v2", "");
     if (path === "/session") return route.fulfill({ json: { csrf_token: "test-csrf", owner: "task_owner", expires_in: 28800 } });
     if (path === "/capabilities") return route.fulfill({ json: { scenes: ["default_tutorial"], paid_calls_enabled: false, obsidian_delivery: false, calibration_status: "not_calibrated", ps51_sandbox: "not_run", verifiers: {}, taxonomy: [], repair_policy: {}, generation: { available: true, requires_paid_permit: true }, materials: { supported: [], unsupported: [], resource_policy_required: true } } });
+    if (path === "/model-settings" && route.request().method() === "PUT") {
+      requests.push(route.request().postDataJSON() as Record<string, unknown>);
+      return route.fulfill({ json: { ok: true } });
+    }
     if (path === "/model-settings") return route.fulfill({ json: {
       config: { active_id: "generation", user_profile: "", profiles: [
         { id: "generation", name: "主生成", model: "deepseek-generation", has_key: true, model_family: "deepseek" },
@@ -21,11 +25,6 @@ test("settings persists the reader chat model through the model settings API", a
     } });
     return route.fulfill({ json: {}, status: 404 });
   });
-  await page.route("**/api/settings/models/roles", async (route) => {
-    requests.push(route.request().postDataJSON() as Record<string, unknown>);
-    return route.fulfill({ json: { ok: true } });
-  });
-
   await page.goto("/settings");
   await expect(page.getByLabel("阅读页聊天")).toBeVisible();
   const options = await page.getByLabel("阅读页聊天").locator("option").allTextContents();
@@ -33,7 +32,7 @@ test("settings persists the reader chat model through the model settings API", a
   await page.getByLabel("阅读页聊天").selectOption("chat-profile");
   await page.getByRole("button", { name: "保存聊天模型" }).click();
   await expect.poll(() => requests.length).toBe(1);
-  expect(requests).toEqual([{ profile_id: "chat-profile" }]);
+  expect(requests).toEqual([{ expected_config_hash: "fixture-hash", action: "roles", value: { chat: "chat-profile" } }]);
 });
 
 

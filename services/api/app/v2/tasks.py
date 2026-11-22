@@ -46,6 +46,16 @@ def context_of(payload, revision):
     return value
 
 
+def research_policy(context):
+    """Freeze the requested research mode as a deterministic task identity."""
+    enabled = context.get("research_request", {}).get("enabled") is True
+    return {
+        "method_version": "task-research-policy.v1",
+        "enabled": enabled,
+        "when_disabled": "no_public_web_retrieval_or_planning_source_tools",
+    }
+
+
 def live_context(db, context):
     """New bindings exclude trash; old frozen contexts remain unchanged."""
     from .management_lifecycle import overlay_ids
@@ -70,10 +80,15 @@ def create_task(payload, key, explicit_fields=None):
                 raise DomainError("IDEMPOTENCY_CONFLICT")
             return load(existing.task_state_json)["creation_receipt"]
         resolved = resolve_task(payload.model_dump(), explicit_fields if explicit_fields is not None else payload.model_fields_set)
+        resolved["research_policy"] = research_policy(resolved)
         from .knowledge import freeze_guidance
         from .insights import freeze_profile
         from .import_profiles import freeze_import_profiles
-        context = context_of(live_context(db, freeze_import_profiles(db, freeze_profile(db, freeze_guidance(db,bind_specs(db, resolved))))), 1)
+        from .understanding_assets import freeze_subject_understanding
+        from .knowledge_assets import freeze_evaluation_frameworks
+        frozen = freeze_import_profiles(db, freeze_profile(db, freeze_guidance(db, bind_specs(db, resolved))))
+        frozen = freeze_evaluation_frameworks(db, frozen)
+        context = context_of(live_context(db, freeze_subject_understanding(frozen)), 1)
         plan = compile_plan(context)
         task_id = str(uuid4())
         response = {"task_id": task_id, "input_revision": 1, "context_hash": context["context_hash"],
@@ -124,7 +139,13 @@ def mutate_input(task_id, payload, key, confirmation=False):
             from .knowledge import freeze_guidance
             from .insights import freeze_profile
             from .import_profiles import freeze_import_profiles
-            state["context"] = context_of(live_context(db, freeze_import_profiles(db, freeze_profile(db, freeze_guidance(db,bind_specs(db, resolve_task(payload.input.model_dump(), payload.input.model_fields_set)))))), obj.input_revision)
+            from .understanding_assets import freeze_subject_understanding
+            from .knowledge_assets import freeze_evaluation_frameworks
+            resolved = resolve_task(payload.input.model_dump(), payload.input.model_fields_set)
+            resolved["research_policy"] = research_policy(resolved)
+            frozen = freeze_import_profiles(db, freeze_profile(db, freeze_guidance(db, bind_specs(db, resolved))))
+            frozen = freeze_evaluation_frameworks(db, frozen)
+            state["context"] = context_of(live_context(db, freeze_subject_understanding(frozen)), obj.input_revision)
             obj.title = payload.input.title
             state["task_state"] = "draft"
         response = {"task_id": task_id, "input_revision": obj.input_revision, "task_state": state["task_state"],
@@ -164,16 +185,33 @@ def start_run(task_id, payload, key, automatic=False, envelope=None):
             if not chunks:
                 raise DomainError("MATERIAL_INCOMPLETE")
         requested_policy = context.get("execution_policy", {})
-        planning_sources = requested_policy.get("planning_source_tools", True)
+        research_enabled = context.get("research_request", {}).get("enabled") is True
+        requested_planning_sources = requested_policy.get("planning_source_tools", True)
+        planning_sources = requested_planning_sources
         if type(planning_sources) is not bool:
             raise DomainError("PLANNING_SOURCE_POLICY_INVALID", 422)
+        requested_rounds = requested_policy.get("network_tool_rounds", 3)
+        if type(requested_rounds) is not int or not 0 <= requested_rounds <= 12:
+            raise DomainError("NETWORK_TOOL_POLICY_INVALID", 422)
+        network_enabled = payload.mode == "configured" and research_enabled
+        planning_sources = network_enabled and planning_sources
+        rounds = requested_rounds if network_enabled else 0
+        network_policy = {
+            "method_version": "run-network-policy.v1",
+            "research_requested": research_enabled,
+            "network_enabled": network_enabled,
+            "planning_source_tools": planning_sources,
+            "network_tool_rounds": rounds,
+            "network_requests_per_round": requested_policy.get("network_requests_per_round", 4),
+            "disabled_behavior": "all_public_web_tools_are_off",
+        }
         adaptive = payload.mode == "configured" and bool(requested_policy.get("task_adaptive_format", True))
         # Do not first bind a new task to a legacy layout and only later ask A
         # to design it. Existing runs already contain their immutable plans.
         units = [] if adaptive else build_units(context, chunks, demo=payload.mode == "demo")
-        plan = {"schema_version": "aiedu.plan.v1", "units": units}
+        plan = {"schema_version": "aiedu.plan.v1", "units": units, "network_policy": network_policy}
         plan["plan_hash"] = digest(plan)
-        frozen = {"context": context, "plan": plan, "check_plan": compile_plan(context), "mode": payload.mode,
+        frozen = {"context": context, "plan": plan, "check_plan": compile_plan(context, network_policy), "mode": payload.mode,
                   "artifact_id": artifact_id, "version_id": None, "stages": {}, "stop_reason": None,
                   "intent_pending": (adaptive or automatic or requested_policy.get("structured_arrangement", False)) and payload.mode == "configured", "automatic": automatic,
                   "budget": {"calls": None, "tokens": None, "amount": None, "seconds": None}}
@@ -193,7 +231,8 @@ def start_run(task_id, payload, key, automatic=False, envelope=None):
                                       "check_concurrency": concurrency, "unit_pipeline": concurrency > 1,
                                       "semantic_batch": True,
                                       "generation_concurrency": min(concurrency, max(1, int(context.get("execution_policy", {}).get("generation_concurrency", concurrency if automatic else 1)))),
-                                      "network_tool_rounds": context.get("execution_policy", {}).get("network_tool_rounds", 3),
+                                      "network_enabled": network_enabled,
+                                      "network_tool_rounds": rounds,
                                       "network_requests_per_round": context.get("execution_policy", {}).get("network_requests_per_round", 4),
                                       "network_stop_policy": "stop_after_budget_or_no_new_cached_evidence",
                                       "planning_source_tools": payload.mode == "configured" and planning_sources,
@@ -441,6 +480,7 @@ def resume(run_id, payload, key):
                 context = deepcopy(state["context"])
                 context.pop("context_hash", None)
                 context["research_request"] = {**context.get("research_request", {}), "enabled": True}
+                context["research_policy"] = research_policy(context)
                 new_state["context"] = context_of(context, owner.input_revision)
                 owner_state = load(owner.task_state_json)
                 owner_state.update(context=new_state["context"],
@@ -450,9 +490,25 @@ def resume(run_id, payload, key):
                     new_state.pop(field, None)
             # Preserve the parent run, all receipts and the current artifact/version
             # as the publish CAS base. New layout IDs never reuse old learner text.
-            new_state["plan"] = {"schema_version": "aiedu.plan.v1", "units": []}
+            research_enabled = new_state["context"].get("research_request", {}).get("enabled") is True
+            network_enabled = research_enabled and new_state.get("mode") == "configured"
+            requested_rounds = new_state.get("execution_policy", {}).get("network_tool_rounds", 3)
+            new_state.setdefault("execution_policy", {}).update(
+                network_enabled=network_enabled,
+                network_tool_rounds=requested_rounds if network_enabled else 0,
+                planning_source_tools=network_enabled,
+            )
+            new_state["plan"] = {"schema_version": "aiedu.plan.v1", "units": [], "network_policy": {
+                "method_version": "run-network-policy.v1",
+                "research_requested": research_enabled,
+                "network_enabled": network_enabled,
+                "planning_source_tools": network_enabled,
+                "network_tool_rounds": requested_rounds if network_enabled else 0,
+                "network_requests_per_round": new_state.get("execution_policy", {}).get("network_requests_per_round", 4),
+                "disabled_behavior": "all_public_web_tools_are_off",
+            }}
             new_state["plan"]["plan_hash"] = digest(new_state["plan"])
-            new_state["check_plan"] = compile_plan(new_state["context"])
+            new_state["check_plan"] = compile_plan(new_state["context"], new_state["plan"]["network_policy"])
             new_state.update(intent_pending=True, stages={}, replan_from_version_id=state.get("version_id"))
             for field in ("intent_call", "review_only_source_version", "optimization_request", "best_so_far_version",
                           "optimization_rounds", "optimization_stop_reason", "repair_rounds", "repair_stop_reason",
@@ -476,7 +532,8 @@ def resume(run_id, payload, key):
         if payload.recheck_completed:
             new_state["review_only_source_version"] = previous_version.id
         if payload.refresh_check_plan:
-            new_state["check_plan"] = compile_plan(new_state["context"])
+            new_state["check_plan"] = compile_plan(
+                new_state["context"], new_state.get("plan", {}).get("network_policy"))
             new_state["check_plan_amendment"] = {
                 "method_version": "explicit-fixed-recheck.v1",
                 "parent_run_id": run_id, "source_version_id": previous_version.id,
@@ -533,6 +590,10 @@ def snapshot(task_id, run_id=None):
                     c.status in {"authorized", "sent", "unknown"} for c in related):
                 latest = max(related, key=lambda c: c.finished_at or c.started_at or 0)
                 visible_stages[stage] = "done" if latest.outcome == "success" else "failed"
+        understanding = state["context"].get("subject_understanding", {})
+        framework_bundle = state["context"].get("evaluation_frameworks", {})
+        tutorial_refs = [profile.get("planning_guidance") for profile in state["context"].get("quality_profiles", [])
+                         if profile.get("planning_guidance")]
         return {"schema_version": "aiedu.task-run.v2", "task_id": task_id, "input_revision": owner.input_revision,
                 "run_id": obj.run_id, "root_job_id": obj.id, "state_revision": obj.state_revision,
                 "state": obj.status, "cancel_epoch": obj.cancel_epoch, "demo": state["mode"] == "demo",
@@ -554,6 +615,21 @@ def snapshot(task_id, run_id=None):
                            "elapsed_seconds":c.finished_at-c.started_at if c.finished_at and c.started_at else None,
                            "request_hash": c.request_hash} for c in calls],
                 "accounting_revision": digest([(c.call_id, c.status, c.usage_json) for c in calls]),
+                "research_policy": state.get("check_plan", {}).get("research_policy", {}),
+                "tutorial_rubric_refs": [{k: item.get(k) for k in (
+                    "rubric_id", "version", "hash", "status", "calibration_status")} for item in tutorial_refs],
+                "subject_understanding_ref": {
+                    "composition_hash": understanding.get("composition_hash"),
+                    "refs": [
+                        {k: item.get(k) for k in ("id", "version", "hash", "domain_key")}
+                        for item in [understanding.get("general"), *understanding.get("subjects", [])]
+                        if isinstance(item, dict)
+                    ],
+                },
+                "evaluation_framework_refs": [
+                    {k: item.get(k) for k in ("id", "version", "source_hash", "domain_key")}
+                    for item in framework_bundle.get("frameworks", [])
+                ],
                 "cost_final": bool(calls) and all(c.status == "not_sent" or
                     (c.status in {"settled", "late"} and c.usage_json is not None and
                      (c.model_family == "demo" or c.price_json is not None)) for c in calls),

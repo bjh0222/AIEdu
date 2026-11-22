@@ -337,6 +337,9 @@ def test_gpt_as_explicit_generation_profile_uses_matching_wire_and_request_manif
             "message":{"content":'{"body":"Source-bound draft."}'},"finish_reason":"stop"}],
             "usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}})
     monkeypatch.setattr("app.v2.inference.httpx.post",http_post)
+    from app.v2 import generation_tools, inference
+    assert generation_tools.invoke.__module__ == "app.v2.generation_tools"
+    assert inference.invoke.__module__ == "app.v2.inference"
     run = start_run(created["task_id"],StartRun(expected_revision=1,confirmed_context_hash=created["context_hash"],mode="configured"),"fixture-gpt-generation")
     worker.execute_run(run["run_id"])
     snap = snapshot(created["task_id"])

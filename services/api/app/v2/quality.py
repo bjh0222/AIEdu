@@ -16,7 +16,7 @@ POLICY = {"policy_version": "aiedu.repair.v1", "enabled": True,
           "max_attempts_per_finding": 3, "max_repair_rounds_per_run": 5}
 
 
-def compile_plan(task: dict) -> dict:
+def compile_plan(task: dict, network_policy: dict | None = None) -> dict:
     items, conflicts = [], list(task.get("task_intent", {}).get("conflicts", []))
     def add(item_id, system, method, condition, severity="blocker", kind="deterministic", scope=None):
         items.append({"item_id": item_id, "system": system, "dimension": item_id,
@@ -124,8 +124,13 @@ def compile_plan(task: dict) -> dict:
             items[-1]["research_rubric_ref"] = {k: binding[k] for k in ("id", "version", "hash") if k in binding}
     from .check_criteria import bind_criteria, VERSION
     bind_criteria(items)
+    research = network_policy or task.get("research_policy") or {
+        "method_version": "task-research-policy.v1",
+        "enabled": task.get("research_request", {}).get("enabled") is True,
+    }
     plan = {"schema_version": "aiedu.check-plan.v2", "assessment_contract": VERSION, "check_items": items, "conflicts": conflicts,
-            "spec_hash": digest(bindings), "constraints_hash": digest(task.get("hard_constraints", []))}
+            "spec_hash": digest(bindings), "constraints_hash": digest(task.get("hard_constraints", [])),
+            "research_policy": deepcopy(research)}
     plan["check_plan_hash"] = digest(plan)
     return plan
 

@@ -4,7 +4,7 @@
 # 架构事实（自动生成）
 
 
-## 路由（205 条 = 路径 × 方法，19 组资源）
+## 路由（208 条 = 路径 × 方法，19 组资源）
 
 ### assessments（1 条）
 
@@ -210,7 +210,7 @@
 | GET | `/api/tutorials/{tutorial_id}/sections/{section_id}` |
 | POST | `/api/tutorials/{tutorial_id}/sections/{section_id}/regenerate` |
 
-### v2（65 条）
+### v2（68 条）
 
 | 方法 | 路径 |
 |---|---|
@@ -222,6 +222,7 @@
 | POST | `/api/v2/benchmarks/sealed/{dataset_hash}/consume` |
 | POST | `/api/v2/benchmarks/semantic-build` |
 | GET | `/api/v2/capabilities` |
+| POST | `/api/v2/chat` |
 | GET | `/api/v2/evaluation-frameworks` |
 | POST | `/api/v2/evaluation-frameworks/math/install` |
 | GET | `/api/v2/export-sets/{bundle_id}/files/{file_id}` |
@@ -232,6 +233,7 @@
 | GET/POST | `/api/v2/format-specs` |
 | PUT | `/api/v2/format-specs/{spec_id}` |
 | GET | `/api/v2/import-understanding` |
+| POST | `/api/v2/knowledge/asset-imports` |
 | GET | `/api/v2/knowledge/assets/{kind}` |
 | POST | `/api/v2/knowledge/batches/import` |
 | GET | `/api/v2/knowledge/cards` |
@@ -262,6 +264,7 @@
 | POST | `/api/v2/spec-packages/preview` |
 | POST | `/api/v2/spec-previews` |
 | GET | `/api/v2/storage/report` |
+| GET | `/api/v2/subject-understanding` |
 | POST | `/api/v2/task-starts` |
 | GET/POST | `/api/v2/tasks` |
 | POST | `/api/v2/tasks/{task_id}/card-extractions` |

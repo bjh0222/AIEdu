@@ -5,6 +5,7 @@ not mutate tutorial versions, promote model claims, or grant paid-call permits.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import re
 from uuid import uuid4
 
@@ -143,6 +144,41 @@ def searchable_cards(db, domain=None, query=""):
             result.append({**card, "task_id": artifact.goal_id, "domain_key": source_domain,
                 "branch": state["context"]["branch"], "source_kind": "tutorial_card", "source_unit_title": unit["title"],
                 "curation_scope": "user_selected_source_excerpt_not_professional_certification"})
+    from .knowledge_assets import imported_cards
+    for imported in imported_cards(db):
+        content = imported["content"]
+        if domain and canonical_domain_key(content["domain_key"]) != canonical_domain_key(domain):
+            continue
+        if query and not tokens(query).intersection(tokens(
+                content["title"] + content["summary"] + " ".join(content.get("knowledge_model", [])))):
+            continue
+        evidence_refs = deepcopy(content["evidence_refs"])
+        result.append({
+            "card_id": "imported:" + imported["id"],
+            "kind": content.get("kind", "method"),
+            "title": content["title"],
+            "quote": content["summary"],
+            "conditions": "；".join(content.get("applicability", [])),
+            "steps": deepcopy(content.get("knowledge_model", [])),
+            "boundaries": "；".join(content.get("transfer_boundaries", [])),
+            "example": None,
+            "related_claims": deepcopy(content.get("common_misconceptions", [])),
+            "status": "confirmed",
+            "revision": imported["version"],
+            "evidence_status": "research_synthesis_not_professionally_calibrated",
+            "source": {
+                "import_id": imported["id"],
+                "import_hash": imported["hash"],
+                "quote_hash": imported["hash"],
+            },
+            "task_id": None,
+            "domain_key": canonical_domain_key(content["domain_key"]),
+            "branch": content.get("branch", ""),
+            "source_kind": "research_import_card",
+            "source_unit_title": content["title"],
+            "source_refs": evidence_refs,
+            "curation_scope": "research_import_not_professional_certification",
+        })
     return sorted(result, key=lambda c: c["card_id"])
 
 

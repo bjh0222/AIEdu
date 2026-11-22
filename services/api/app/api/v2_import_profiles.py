@@ -23,6 +23,8 @@ class UnderstandingAsset(BaseModel):
     calibration_status: Literal["not_calibrated"]
     aggregate_score: None
     threshold: None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class UnderstandingPage(BaseModel):
@@ -42,3 +44,9 @@ def imported_understanding():
             if value:
                 items.append(load(value.settings_json))
         return {"items": items, "total": len(items), "inference_triggered": False}
+
+
+@router.get("/subject-understanding")
+def subject_understanding():
+    from ..v2.understanding_assets import catalog
+    return catalog()

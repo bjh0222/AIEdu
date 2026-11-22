@@ -227,6 +227,108 @@
         "title": "CardRevision",
         "type": "object"
       },
+      "ChatRequest": {
+        "properties": {
+          "artifact_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Id"
+          },
+          "context_scope": {
+            "default": "current_unit",
+            "enum": [
+              "current_unit",
+              "whole_document",
+              "selected_units"
+            ],
+            "title": "Context Scope",
+            "type": "string"
+          },
+          "context_units": {
+            "items": {
+              "$ref": "#/components/schemas/ReaderChatContextUnit"
+            },
+            "maxItems": 50,
+            "title": "Context Units",
+            "type": "array"
+          },
+          "goal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goal Id"
+          },
+          "question": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "section_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Section Id"
+          },
+          "selected_quote": {
+            "anyOf": [
+              {
+                "maxLength": 10000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Quote"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "tutorial_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tutorial Id"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "ChatRequest",
+        "type": "object"
+      },
       "ConfigWrite": {
         "additionalProperties": false,
         "properties": {
@@ -1222,6 +1324,11 @@
             "minLength": 1,
             "title": "Markdown",
             "type": "string"
+          },
+          "source_identity": {
+            "additionalProperties": true,
+            "title": "Source Identity",
+            "type": "object"
           }
         },
         "required": [
@@ -1313,7 +1420,7 @@
             "type": "boolean"
           },
           "guidance_enabled": {
-            "default": false,
+            "default": true,
             "title": "Guidance Enabled",
             "type": "boolean"
           },
@@ -1506,6 +1613,14 @@
             "title": "Active",
             "type": "boolean"
           },
+          "active_blockers": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Active Blockers",
+            "type": "array"
+          },
           "effects": {
             "additionalProperties": {
               "type": "string"
@@ -1548,6 +1663,11 @@
             },
             "title": "Shared Blob References",
             "type": "array"
+          },
+          "stale_execution_releasable": {
+            "default": false,
+            "title": "Stale Execution Releasable",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2471,6 +2591,34 @@
         "title": "QuarantineUnknown",
         "type": "object"
       },
+      "ReaderChatContextUnit": {
+        "properties": {
+          "body": {
+            "maxLength": 200000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Title",
+            "type": "string"
+          },
+          "unit_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Unit Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "unit_id",
+          "body"
+        ],
+        "title": "ReaderChatContextUnit",
+        "type": "object"
+      },
       "Relation": {
         "additionalProperties": false,
         "properties": {
@@ -2543,6 +2691,48 @@
         "title": "RepairRequest",
         "type": "object"
       },
+      "ResearchAssetImport": {
+        "additionalProperties": false,
+        "properties": {
+          "cards": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 100,
+            "title": "Cards",
+            "type": "array"
+          },
+          "frameworks": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 30,
+            "title": "Frameworks",
+            "type": "array"
+          },
+          "principles": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 100,
+            "title": "Principles",
+            "type": "array"
+          },
+          "source_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Source Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_hash"
+        ],
+        "title": "ResearchAssetImport",
+        "type": "object"
+      },
       "ResearchEvidence": {
         "properties": {
           "artifacts": {
@@ -2590,6 +2780,18 @@
           "result"
         ],
         "title": "ResearchEvidence",
+        "type": "object"
+      },
+      "ResearchRequest": {
+        "additionalProperties": true,
+        "properties": {
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "title": "ResearchRequest",
         "type": "object"
       },
       "Resume": {
@@ -2872,6 +3074,14 @@
             "title": "Demo",
             "type": "boolean"
           },
+          "evaluation_framework_refs": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Evaluation Framework Refs",
+            "type": "array"
+          },
           "input_revision": {
             "title": "Input Revision",
             "type": "integer"
@@ -2889,6 +3099,11 @@
           },
           "quality": {
             "$ref": "#/components/schemas/app__v2__responses__QualityReport"
+          },
+          "research_policy": {
+            "additionalProperties": true,
+            "title": "Research Policy",
+            "type": "object"
           },
           "root_job_id": {
             "title": "Root Job Id",
@@ -2929,9 +3144,22 @@
             ],
             "title": "Stop Reason"
           },
+          "subject_understanding_ref": {
+            "additionalProperties": true,
+            "title": "Subject Understanding Ref",
+            "type": "object"
+          },
           "task_id": {
             "title": "Task Id",
             "type": "string"
+          },
+          "tutorial_rubric_refs": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Tutorial Rubric Refs",
+            "type": "array"
           },
           "units": {
             "items": {
@@ -3964,9 +4192,7 @@
             "type": "array"
           },
           "research_request": {
-            "additionalProperties": true,
-            "title": "Research Request",
-            "type": "object"
+            "$ref": "#/components/schemas/ResearchRequest"
           },
           "runtime_target": {
             "default": "",
@@ -4225,9 +4451,7 @@
             "type": "array"
           },
           "research_request": {
-            "additionalProperties": true,
-            "title": "Research Request",
-            "type": "object"
+            "$ref": "#/components/schemas/ResearchRequest"
           },
           "runtime_target": {
             "default": "",
@@ -4319,6 +4543,17 @@
             "title": "Content",
             "type": "object"
           },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
           "hash": {
             "title": "Hash",
             "type": "string"
@@ -4330,6 +4565,17 @@
           "threshold": {
             "title": "Threshold",
             "type": "null"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
           },
           "version": {
             "title": "Version",
@@ -4391,6 +4637,17 @@
               }
             ],
             "title": "Updated At"
+          },
+          "updated_at_source": {
+            "default": "unknown",
+            "enum": [
+              "asset_wrapper",
+              "research_result",
+              "generation_job",
+              "unknown"
+            ],
+            "title": "Updated At Source",
+            "type": "string"
           },
           "version": {
             "title": "Version",
@@ -5359,6 +5616,77 @@
         ]
       }
     },
+    "/api/v2/chat": {
+      "post": {
+        "description": "阅读页 AI 聊天：v2 入口（旧 /api/chat 受 LEGACY 隔离门约束）。",
+        "operationId": "reader_chat_api_v2_chat_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Origin",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "LocalOwner": []
+          }
+        ],
+        "summary": "Reader Chat",
+        "tags": [
+          "task-run.v2"
+        ]
+      }
+    },
     "/api/v2/evaluation-frameworks": {
       "get": {
         "operationId": "evaluation_frameworks_api_v2_evaluation_frameworks_get",
@@ -5989,6 +6317,77 @@
         "summary": "Imported Understanding",
         "tags": [
           "import-understanding.v2"
+        ]
+      }
+    },
+    "/api/v2/knowledge/asset-imports": {
+      "post": {
+        "description": "Idempotent import of model/research-synthesized reusable knowledge assets.",
+        "operationId": "import_research_assets_api_v2_knowledge_asset_imports_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Origin",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResearchAssetImport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "LocalOwner": []
+          }
+        ],
+        "summary": "Import Research Assets",
+        "tags": [
+          "assets.v2"
         ]
       }
     },
@@ -7803,6 +8202,30 @@
         "summary": "Storage Report",
         "tags": [
           "assets.v2"
+        ]
+      }
+    },
+    "/api/v2/subject-understanding": {
+      "get": {
+        "operationId": "subject_understanding_api_v2_subject_understanding_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "LocalOwner": []
+          }
+        ],
+        "summary": "Subject Understanding",
+        "tags": [
+          "import-understanding.v2"
         ]
       }
     },

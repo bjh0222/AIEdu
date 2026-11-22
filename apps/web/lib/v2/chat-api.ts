@@ -1,7 +1,9 @@
 "use client";
 
-// Reader chat uses the existing backend chat route. The backend—not the browser—
-// owns model selection, provider calls and ModelCallLog accounting.
+// Reader chat uses the v2 backend chat route (/api/v2/chat，secured：会话+CSRF+幂等键)。
+// The backend—not the browser—owns model selection, provider calls and ModelCallLog accounting.
+import { act, explain, newKey, UnknownOutcomeError } from "./client";
+
 export type ChatScope = "current_unit" | "whole_document" | "selected_units";
 
 export type ChatContextUnit = {
@@ -38,38 +40,26 @@ export type ChatSendResult = {
 };
 
 export async function sendReaderChat(input: ChatSendInput, signal?: AbortSignal): Promise<ChatSendResult> {
-  const response = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    signal,
-    body: JSON.stringify({
+  const key = newKey();
+  try {
+    const body = await act<Record<string, unknown>>("POST", "/chat", {
       task_id: input.task_id,
       artifact_id: input.artifact_id ?? null,
       question: input.question,
       context_scope: input.scope,
       context_units: input.context_units,
       selected_quote: input.selected_quote ?? null,
-    }),
-  });
-  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!response.ok) {
-    const detail = body.detail;
-    const code = typeof body.code === "string" ? body.code
-      : detail && typeof detail === "object" && typeof (detail as Record<string, unknown>).code === "string"
-        ? String((detail as Record<string, unknown>).code)
-        : `HTTP_${response.status}`;
-    const message = detail && typeof detail === "object" && typeof (detail as Record<string, unknown>).message === "string"
-      ? String((detail as Record<string, unknown>).message)
-      : typeof detail === "string" ? detail : code;
-    throw new Error(message);
+    }, { kind: "reader_chat", key }, { signal });
+    const assistant = body.assistant as { id?: string; content?: string } | undefined;
+    if (!assistant || typeof assistant.content !== "string") {
+      throw new Error("聊天响应缺少 assistant.content");
+    }
+    return {
+      assistant: { id: String(assistant.id ?? crypto.randomUUID()), content: assistant.content },
+      model_call: (body.model_call as ChatSendResult["model_call"]) ?? null,
+    };
+  } catch (e) {
+    if (e instanceof UnknownOutcomeError) throw e;
+    throw new Error(explain(e));
   }
-  const assistant = body.assistant as { id?: string; content?: string } | undefined;
-  if (!assistant || typeof assistant.content !== "string") {
-    throw new Error("聊天响应缺少 assistant.content");
-  }
-  return {
-    assistant: { id: String(assistant.id ?? crypto.randomUUID()), content: assistant.content },
-    model_call: (body.model_call as ChatSendResult["model_call"]) ?? null,
-  };
 }

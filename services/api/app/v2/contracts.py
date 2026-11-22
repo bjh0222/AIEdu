@@ -6,7 +6,7 @@ import json
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 SCHEMA = "aiedu.task-run.v2"
 CANONICAL = "aiedu.canonical-json.v1"
@@ -54,7 +54,7 @@ class SubjectBinding(Contract):
 class KnowledgeRequest(Contract):
     question_ids: list[str] = Field(default_factory=list)
     analyse: bool = False
-    guidance_enabled: bool = False
+    guidance_enabled: bool = True
     embedding_enabled: bool = False
 
 
@@ -67,6 +67,11 @@ class ImportAssetRef(Contract):
 class ImportProfileRef(Contract):
     profile: ImportAssetRef
     rubric: ImportAssetRef
+
+
+class ResearchRequest(BaseModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    enabled: StrictBool = False
 
 
 class TaskInput(Contract):
@@ -85,7 +90,7 @@ class TaskInput(Contract):
     subject_bindings: list[SubjectBinding] = Field(default_factory=list)
     execution_policy: dict = Field(default_factory=dict)
     knowledge: KnowledgeRequest = Field(default_factory=KnowledgeRequest)
-    research_request: dict = Field(default_factory=dict)
+    research_request: ResearchRequest = Field(default_factory=ResearchRequest)
     import_profile_refs: list[ImportProfileRef] = Field(default_factory=list)
     operation: Literal["generate", "knowledge_analysis", "benchmark_build"] = "generate"
 

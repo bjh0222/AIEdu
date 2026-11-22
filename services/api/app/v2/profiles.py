@@ -10,7 +10,7 @@ from .check_criteria import rule_criterion
 from .contracts import digest
 from .math_framework import framework_for_domain
 
-VERSION = "aiedu.domain-rubrics.v1"
+VERSION = "aiedu.domain-rubrics.v2"
 # Each row carries an actual domain-specific distinction, not a renamed generic rubric.
 CRITERIA = {
     "math_logic": ("先列定义域、量词和前提；推导逐步说明等价关系，给出边界反例", "题意可满足、答案与关键步骤相符；典型性绑定考查机制，难度说明先修/操作/算量"),
@@ -61,6 +61,16 @@ def domain_profile(domain, scene="knowledge_tutorial", branch=""):
             profile["item_quality_framework"] = framework_for_domain(key)
         profile["rules"][0]["source_ref"] += ";" + ";".join(asset["source_refs"])
         profile["rules"][0]["criterion"] += "；" + "；".join(d["criterion"] for d in asset["dimensions"])
+    if scene not in {"exercise", "exam", "exam_paper"}:
+        from .understanding_assets import tutorial_planning
+        guidance = tutorial_planning(key)
+        if guidance:
+            profile["planning_guidance"] = guidance
+            profile["rules"][0]["criterion"] += "；规划必须落实：" + "；".join(
+                item for field in ("organization", "knowledge_chain", "question_design", "output_design")
+                for item in guidance.get(field, [])
+                if isinstance(item, str)
+            )
     profile["rules"][0]["criterion_hash"] = rule_criterion(profile["rules"][0])["criterion_hash"]
     profile["profile_hash"] = digest(profile)
     return profile

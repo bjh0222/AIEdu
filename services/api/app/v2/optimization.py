@@ -207,6 +207,24 @@ def _frozen_bindings(state: dict) -> dict:
         "plan_hash": state.get("plan", {}).get("plan_hash"),
         "context_hash": state.get("context", {}).get("context_hash"),
         "planning_skill": {k: planning_skill.get(k) for k in ("skill_id", "version", "hash")},
+        "subject_understanding": {
+            "composition_hash": state.get("context", {}).get("subject_understanding", {}).get("composition_hash"),
+            "refs": [
+                {k: item.get(k) for k in ("id", "version", "hash", "domain_key")}
+                for item in [
+                    state.get("context", {}).get("subject_understanding", {}).get("general", {}),
+                    *state.get("context", {}).get("subject_understanding", {}).get("subjects", []),
+                ] if item
+            ],
+        },
+        "evaluation_frameworks": {
+            "composition_hash": state.get("context", {}).get("evaluation_frameworks", {}).get("composition_hash"),
+            "refs": [
+                {k: item.get(k) for k in ("id", "version", "source_hash", "domain_key")}
+                for item in state.get("context", {}).get("evaluation_frameworks", {}).get("frameworks", [])
+            ],
+        },
+        "network_policy": state.get("plan", {}).get("network_policy"),
         "import_understanding": imports,
         "research_rubrics": research_rubrics,
         "profile_hashes": [p.get("profile_hash") for p in profiles],

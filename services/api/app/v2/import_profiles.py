@@ -6,6 +6,7 @@ Updating an asset head invalidates current eligibility, never old source bytes.
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 import math
 
 from .contracts import DomainError, digest, sha
@@ -103,8 +104,15 @@ def publish_assets(db, result):
             "calibration_status": "not_calibrated", "aggregate_score": None, "threshold": None}
         key = f"import-{kind}:{identity}:{version}"
         previous = record(db, key)
-        if previous and previous != wrapped:
-            raise DomainError("IMPORT_ASSET_VERSION_CONFLICT", 409)
+        if previous:
+            semantic_previous = {k: v for k, v in previous.items()
+                                 if k not in {"created_at", "updated_at"}}
+            if semantic_previous != wrapped:
+                raise DomainError("IMPORT_ASSET_VERSION_CONFLICT", 409)
+            wrapped = previous
+        else:
+            now = datetime.now(timezone.utc).isoformat()
+            wrapped.update(created_at=now, updated_at=now)
         save(db, key, wrapped)
         head_key = f"import-{kind}-head:{identity}"
         head = record(db, head_key)

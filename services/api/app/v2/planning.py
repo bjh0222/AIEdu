@@ -83,7 +83,7 @@ class TeachingArrangement(BaseModel):
 
 def skill():
     text = Path(__file__).with_name("planning_skill.md").read_text(encoding="utf-8")
-    return {"skill_id": "teaching-arrangement", "version": 5, "hash": sha(text), "instructions": text}
+    return {"skill_id": "teaching-arrangement", "version": 6, "hash": sha(text), "instructions": text}
 
 
 A_SOURCE_INSTRUCTION = """
@@ -281,6 +281,10 @@ def review_requirements(state, unit):
         "unit_targets": planned.get("teaching_arrangement", {}),
         "scope": "single_planned_unit" if planned else "no_frozen_unit_arrangement",
         "planned_unit_titles": [u.get("title") for u in plan.get("units", [])]}
+    from .understanding_assets import composition_refs
+    result["understanding_refs"] = composition_refs(context)
+    result["subject_understanding"] = deepcopy(context.get("subject_understanding"))
+    result["evaluation_frameworks"] = deepcopy(context.get("evaluation_frameworks"))
     result["global_targets"]["quality_target_contracts"] = quality_contracts
     evidence = source_evidence(state)
     if evidence:

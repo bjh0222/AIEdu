@@ -68,7 +68,7 @@ def for_role(role, independent_of=()):
 
 def public_roles():
     result = {}
-    for role in ("generation", "review", "blind_solver", "secondary_review", "benchmark_panel", "benchmark_refiner"):
+    for role in ("generation", "review", "blind_solver", "secondary_review", "benchmark_panel", "benchmark_refiner", "chat"):
         try:
             profile = for_role(role)
             result[role] = {"configured": True, "model": profile.llm_model,

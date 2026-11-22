@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response, Uplo
 from ..config import settings
 from ..db import SessionLocal
 from ..models import GenerationJob, GoalMaterial, LearningGoal, TutorialVersion
+from ..schemas import ChatRequest
 from ..v2 import exports, tasks
 from ..v2.contracts import (Confirmation, DomainError, ExportRequest, InputPatch, Pause, QuarantineUnknown, RepairRequest,
                             Resume, StartRun, TaskInput, TaskStart, UserReview, digest, sha)
@@ -46,7 +47,7 @@ def capabilities(domain_key: str = "general", scene: str = "knowledge_tutorial",
               "paid_calls_enabled": settings.v2_allow_paid, "active_root_limit": 1,
               "provider_concurrency": max(1, min(4, int(__import__("os").getenv("AIEDU_V2_CONCURRENCY", "2")))),
             "repair_policy": POLICY, "calibration_status": "not_calibrated", "ps51_sandbox": "not_run",
-            "model_roles": ["generation", "blind_solver", "review", "secondary_review", "benchmark_panel", "benchmark_refiner"],
+            "model_roles": ["generation", "blind_solver", "review", "secondary_review", "benchmark_panel", "benchmark_refiner", "chat"],
             "verifiers": {"markdown.v1": "available", "coverage.v1": "available", "ps51_sandbox.v1": "unsupported",
                           "independent_oracle.v1": "not_calibrated", "polynomial-identity.v2":"available_bounded_literal_equations",
                           "verbatim-source.v1":"available_literal_attribution_only",
@@ -304,6 +305,15 @@ def evidence(finding_id: str, payload: RepairRequest, key=Depends(action_key)):
     with SessionLocal() as db:
         obj, state, finding = locate_finding(db, finding_id)
     raise DomainError("INDEPENDENT_VERIFIER_REQUIRED", 422)
+
+
+@secured.post("/chat")
+def reader_chat(payload: ChatRequest, key=Depends(action_key)):
+    """阅读页 AI 聊天：v2 入口（旧 /api/chat 受 LEGACY 隔离门约束）。"""
+    from ..llm.service import AIService
+    from ..services import chat as chat_service
+    with SessionLocal() as db:
+        return chat_service.chat(db, payload, AIService(db))
 
 
 router.include_router(secured)

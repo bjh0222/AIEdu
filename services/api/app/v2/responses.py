@@ -111,6 +111,10 @@ class RunSnapshot(Output):
     accounting_revision: str
     cost_final: bool
     next_actions: list[str]
+    research_policy: dict[str, Any] = Field(default_factory=dict)
+    tutorial_rubric_refs: list[dict[str, Any]] = Field(default_factory=list)
+    subject_understanding_ref: dict[str, Any] = Field(default_factory=dict)
+    evaluation_framework_refs: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class DraftSnapshot(Output):

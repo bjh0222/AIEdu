@@ -5,6 +5,17 @@ from app.db import SessionLocal
 from app.models import ChatMessage, ModelCallLog
 
 
+ORIGIN = {"Origin": "http://127.0.0.1:3001"}
+
+
+def v2_chat(client, payload: dict, key: str = "chat-test-key-1"):
+    session = client.post("/api/v2/session", headers=ORIGIN)
+    assert session.status_code == 200, session.text
+    csrf = session.json()["csrf_token"]
+    return client.post("/api/v2/chat", json=payload,
+                       headers={**ORIGIN, "X-CSRF-Token": csrf, "Idempotency-Key": key})
+
+
 def save_profile(client, profile_id: str, model: str):
     response = client.post("/api/settings/models", json={
         "id": profile_id,
@@ -55,7 +66,7 @@ def test_reader_chat_defaults_to_generation_role_and_records_provider_receipt(cl
     captured: dict = {}
     mock_complete(monkeypatch, captured)
 
-    response = client.post("/api/chat", json=chat_payload())
+    response = v2_chat(client, chat_payload())
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["demo"] is False
@@ -91,7 +102,7 @@ def test_saved_chat_role_uses_exact_profile_without_silent_replacement(client, m
 
     captured: dict = {}
     mock_complete(monkeypatch, captured)
-    response = client.post("/api/chat", json=chat_payload())
+    response = v2_chat(client, chat_payload())
     assert response.status_code == 200, response.text
     assert response.json()["model_call"]["model"] == "chat-model"
     assert captured["model"] == "chat-model"
@@ -101,4 +112,37 @@ def test_chat_role_endpoint_rejects_missing_profile(client):
     response = client.put("/api/settings/models/roles", json={"profile_id": "missing"})
     assert response.status_code == 422
     from app.model_settings import read_config
+    assert "chat" not in read_config().get("model_roles", {})
+
+
+def test_reader_chat_requires_v2_session(client):
+    # 测试环境 ENABLE_LEGACY_API=1 且 ALLOW_PAID=0，旧路由不在隔离态（隔离基线回归）。
+    # 这里只断言：v2 聊天端点未经会话配对必须拒绝。
+    response = client.post("/api/v2/chat", json=chat_payload(), headers=ORIGIN)
+    assert response.status_code in (401, 403)
+
+
+def test_v2_model_settings_can_save_chat_role(client):
+    save_profile(client, "generation", "generation-model")
+    save_profile(client, "chat-profile", "chat-model")
+    session = client.post("/api/v2/session", headers=ORIGIN)
+    csrf = session.json()["csrf_token"]
+    headers = {**ORIGIN, "X-CSRF-Token": csrf, "Idempotency-Key": "chat-role-key-1"}
+    models = client.get("/api/v2/model-settings", headers={**ORIGIN, "X-CSRF-Token": csrf}).json()
+    response = client.put("/api/v2/model-settings", json={
+        "expected_config_hash": models["config_hash"],
+        "action": "roles",
+        "value": {"chat": "chat-profile"},
+    }, headers=headers)
+    assert response.status_code == 200, response.text
+    from app.model_settings import read_config
+    assert read_config()["model_roles"]["chat"] == "chat-profile"
+    # 清除语义：chat=null 从已保存角色中移除
+    models = client.get("/api/v2/model-settings", headers={**ORIGIN, "X-CSRF-Token": csrf}).json()
+    response = client.put("/api/v2/model-settings", json={
+        "expected_config_hash": models["config_hash"],
+        "action": "roles",
+        "value": {"chat": None},
+    }, headers={**ORIGIN, "X-CSRF-Token": csrf, "Idempotency-Key": "chat-role-key-2"})
+    assert response.status_code == 200, response.text
     assert "chat" not in read_config().get("model_roles", {})

@@ -23,8 +23,33 @@ const TABS: { id: Tab; label: string }[] = [
 
 type Page<T> = { items: T[]; total?: number };
 type Profile = { domain_key: string; display_name: string; tutorial: ProfileBody; exercise: ProfileBody };
-type ProfileBody = { status: string; calibration_status: string; rules: { rule_id: string; criterion: string; required: boolean; decision_type: string; evidence_method_refs: string[] }[] };
-type Question = { id: string; raw_stem?: string; question_number?: string; parse_status?: string; stem?: string; question_text?: string; status?: string; source_hash?: string; domain_key?: string; branch?: string };
+type PlanningGuidance = {
+  rubric_id: string;
+  version: number;
+  hash: string;
+  status: string;
+  organization?: string[];
+  knowledge_chain?: string[];
+  question_design?: string[];
+  quantity_policy?: string[];
+  difficulty_policy?: string[];
+  output_design?: string[];
+  source_refs?: string[];
+};
+type ProfileBody = { status: string; calibration_status: string; planning_guidance?: PlanningGuidance; rules: { rule_id: string; criterion: string; required: boolean; decision_type: string; evidence_method_refs: string[] }[] };
+type Question = {
+  id: string;
+  raw_stem?: string;
+  question_number?: string;
+  parse_status?: string;
+  stem?: string;
+  question_text?: string;
+  status?: string;
+  source_hash?: string;
+  domain_key?: string;
+  branch?: string;
+  source_map?: { source_identity?: { attribution?: string; license?: string; url?: string; verification_level?: string } };
+};
 function questionTitle(question: Question) { return [question.question_number, question.raw_stem || question.stem || question.question_text || "题面暂不可用"].filter(Boolean).join(" "); }
 type Principle = { id: string; status: string; statement?: string; version?: number; mechanism?: string; guidance?: string; };
 
@@ -148,6 +173,23 @@ function Profiles() {
                 </li>
               ))}
             </ul>
+            {open[k].planning_guidance && <section style={{ marginTop: 16 }}>
+              <h4>规划指导（v{open[k].planning_guidance!.version}，已编写未校准）</h4>
+              {([
+                ["organization", "组织形式"],
+                ["knowledge_chain", "知识链"],
+                ["question_design", "题型与题量"],
+                ["quantity_policy", "数量策略"],
+                ["difficulty_policy", "难度目标"],
+                ["output_design", "输出设计"],
+              ] as const).map(([field, label]) => {
+                const rows = open[k].planning_guidance![field];
+                return rows?.length ? <div key={field} style={{ marginTop: 10 }}>
+                  <b>{label}</b><ul>{rows.map((row) => <li key={row}>{row}</li>)}</ul>
+                </div> : null;
+              })}
+              <p className="hint break-anywhere">量规 hash：{open[k].planning_guidance!.hash}。它不是文献阈值或专业认证。</p>
+            </section>}
           </section>
         ))}
       </Drawer>
@@ -164,7 +206,7 @@ function Knowledge() {
   const [understandingRevision, setUnderstandingRevision] = useState(0);
   const q = useAsset<Page<Question>>("/knowledge/assets/questions?limit=50");
   const p = useAsset<Page<Principle>>("/knowledge/assets/principles?limit=50");
-  const b = useAsset<Page<{ id: string; filename: string; status: string; counts?: Record<string, number> }>>("/knowledge/assets/batches?limit=50");
+  const b = useAsset<Page<{ id: string; filename: string; status: string; counts?: Record<string, number>; source_identity?: { license?: string; url?: string; attribution?: string; verification_level?: string } }>>("/knowledge/assets/batches?limit=50");
   return (
     <div style={{ display: "grid", gap: 24 }}>
       <ImportUnderstanding revision={understandingRevision} />
@@ -176,14 +218,23 @@ function Knowledge() {
         <h2 className="sub" style={{ marginBottom: 8 }}>导入批次</h2>
         <State loading={b.loading} error={b.error} reload={b.reload} empty={(b.data?.items.length ?? 0) === 0 ? "还没有命题知识。导入历年试题后，会在这里出现，原文和外部评价都会保留。" : null}>
           <div className="panel table-wrap"><table className="data cards"><thead><tr><th>文件</th><th>状态</th><th>题数</th></tr></thead><tbody>
-            {b.data?.items.map((x) => <tr key={x.id}><td data-label="文件">{x.filename}<ResourceActions kind="batches" id={x.id} label={x.filename} onChanged={b.reload} /></td><td data-label="状态">{x.status === "parsed" ? "已导入" : x.status}</td><td data-label="题数" className="num">{Object.values(x.counts ?? {}).reduce((n, v) => n + (typeof v === "number" ? v : 0), 0)}</td></tr>)}
+            {b.data?.items.map((x) => <tr key={x.id}><td data-label="文件">{x.filename}<ResourceActions kind="batches" id={x.id} label={x.filename} onChanged={b.reload} />{x.source_identity?.attribution && <div className="hint break-anywhere">{x.source_identity.attribution}{x.source_identity.license ? ` · ${x.source_identity.license}` : ""}</div>}</td><td data-label="状态">{x.status === "parsed" ? "已导入" : x.status}</td><td data-label="题数" className="num">{Object.values(x.counts ?? {}).reduce((n, v) => n + (typeof v === "number" ? v : 0), 0)}</td></tr>)}
           </tbody></table></div>
         </State>
       </section>
       <section>
         <h2 className="sub" style={{ marginBottom: 8 }}>题目（{q.data?.total ?? 0}）</h2>
         <State loading={q.loading} error={q.error} reload={q.reload} empty={(q.data?.items.length ?? 0) === 0 ? "没有题目。" : null}>
-          <ul className="panel">{q.data?.items.map((x) => <li key={x.id} style={{ padding: 12, borderBottom: "1px solid var(--line)" }}>{questionTitle(x).slice(0, 120)}<div className="hint">{x.parse_status === "ready" ? "已解析原文（不代表质量通过）" : x.parse_status === "failed" ? "原文解析失败" : x.status ?? "状态未知"}</div><ResourceActions kind="questions" id={x.id} label={questionTitle(x).slice(0, 40)} onChanged={q.reload} /></li>)}</ul>
+          <ul className="panel">{q.data?.items.map((x) => <li key={x.id} style={{ padding: 12, borderBottom: "1px solid var(--line)" }}>
+            {questionTitle(x).slice(0, 180)}
+            <div className="hint">{x.parse_status === "ready" ? "已解析原文（不代表质量通过）" : x.parse_status === "failed" ? "原文解析失败" : x.status ?? "状态未知"}</div>
+            {x.source_map?.source_identity && <div className="hint break-anywhere">
+              {x.source_map.source_identity.attribution ?? x.source_map.source_identity.url}
+              {x.source_map.source_identity.license ? ` · ${x.source_map.source_identity.license}` : ""}
+              {x.source_map.source_identity.verification_level ? ` · ${x.source_map.source_identity.verification_level}` : ""}
+            </div>}
+            <ResourceActions kind="questions" id={x.id} label={questionTitle(x).slice(0, 40)} onChanged={q.reload} />
+          </li>)}</ul>
         </State>
       </section>
       <section>
@@ -198,7 +249,7 @@ function Knowledge() {
 }
 
 function EvaluationFrameworks() {
-  const f = useAsset<Page<{ id: string; title: string; domain_key: string; version: number; status: string; source_hash: string; standards: { id: string; name: string; rule: string }[] }>>("/evaluation-frameworks");
+  const f = useAsset<Page<{ id: string; title: string; domain_key: string; version: number; status: string; source_hash: string; standards: { id: string; name: string; rule: string; source_ref?: string; origin?: string }[]; warnings?: string[]; evidence_refs?: { title?: string; url?: string; license?: string; verification_level?: string }[] }>>("/evaluation-frameworks");
   return <section aria-label="已安装评价体系">
     <h2 className="sub">已安装评价体系</h2>
     <p className="hint">评价体系与导入题目分别保存。形式验证只判定已绑定的断言；独立 AI 观察、专业校准和实测难度分别记录。</p>
@@ -206,6 +257,7 @@ function EvaluationFrameworks() {
       {f.data?.items.map((x) => <details key={x.id} className="panel panel-pad"><summary>{x.title} · v{x.version}</summary>
         <p className="hint">{x.domain_key} · {x.status === "active" ? "已启用，尚未专业校准" : x.status}</p>
         <ul>{x.standards.map((s) => <li key={s.id}><b>{s.name}</b>：{s.rule}</li>)}</ul>
+        {x.evidence_refs?.length ? <div><b>来源与许可</b><ul>{x.evidence_refs.map((ref, index) => <li key={`${ref.title ?? index}`} className="hint break-anywhere">{ref.url ? <a href={ref.url} target="_blank" rel="noreferrer">{ref.title ?? ref.url}</a> : ref.title}{ref.license ? ` · ${ref.license}` : ""}{ref.verification_level ? ` · ${ref.verification_level}` : ""}</li>)}</ul></div> : null}
       </details>)}
     </State>
   </section>;

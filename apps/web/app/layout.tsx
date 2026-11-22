@@ -7,6 +7,7 @@ import { prefsBootstrap } from "@/lib/prefs";
 export const metadata: Metadata = {
   title: { default: "AI Edu", template: "%s · AI Edu" },
   description: "说出需求，生成并检查教程、练习与试卷。过程可见、可暂停，质量依据与缺口如实展示。",
+  icons: { icon: "/ai-edu-mark.svg" },
 };
 export const viewport: Viewport = { width: "device-width", initialScale: 1 };
 

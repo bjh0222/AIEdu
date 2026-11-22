@@ -19,7 +19,9 @@ from .storage import BlobStore
 ALIASES = {"quality-reports": "versions"}
 AUDIT_PREFIXES = ("managed:", "insight-action:", "action:", "knowledge-import:",
                   "principle-action:", "framework-install:", "resource-deletion:")
-ACTIVE = {"queued", "running", "sent", "authorized", "unknown"}
+RUN_ACTIVE = {"queued", "running"}
+CALL_ACTIVE = {"sent", "authorized", "unknown"}
+ACTIVE = RUN_ACTIVE | CALL_ACTIVE
 
 
 def canonical_kind(kind):

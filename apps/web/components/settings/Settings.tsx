@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { act, explain, get, getReceipt, newKey, UnknownOutcomeError } from "@/lib/v2/client";
+import {act, explain, get, getReceipt, newKey, UnknownOutcomeError} from "@/lib/v2/client";
 import { api, type Capabilities } from "@/lib/v2/api";
 import { defaultPrefs, readPrefs, savePrefs, type Prefs } from "@/lib/prefs";
 import { useToast } from "@/components/ui/Toast";
@@ -70,13 +70,12 @@ export default function Settings() {
     if (!models || pending || busy) return;
     setBusy(true); setError("");
     try {
-      const response = await fetch("/api/settings/models/roles", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile_id: profileId || null }), 
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(String((payload as Record<string, unknown>)?.detail ?? "聊天模型保存失败。"));
+      // v2 CAS 写入：action=roles 局部合并，chat:null 表示清除；不触碰其它角色选择。
+      await act("PUT", "/model-settings", {
+        expected_config_hash: models.config_hash,
+        action: "roles",
+        value: { chat: profileId || null },
+      }, { kind: "model_settings", key: newKey() });
       toast("聊天模型已保存"); load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "聊天模型保存失败。");

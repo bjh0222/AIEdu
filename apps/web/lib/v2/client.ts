@@ -125,7 +125,10 @@ type ReqOptions = {
 
 async function send(method: string, path: string, opts: ReqOptions, attempt = 0): Promise<Response> {
   const write = method !== "GET" && method !== "HEAD";
-  if (write) await pair();
+  // Every v2 route is owner-scoped. Establish the local session before the
+  // first GET as well, otherwise a normal page load logs a preventable 401
+  // before the retry path pairs and repeats the request.
+  await pair();
   const headers: Record<string, string> = { ...(opts.headers ?? {}) };
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
   if (write && csrf) headers["X-CSRF-Token"] = csrf;
@@ -163,7 +166,7 @@ export async function getConditional<T>(path: string, etag: string | null, signa
 export type ActionMeta = { kind: string; taskId?: string | null; expectedRevision?: number | null; key?: string };
 
 /** 写动作：必带 Idempotency-Key。网络层失败 → UnknownOutcomeError（不自动重放）。 */
-export async function act<T>(method: "POST" | "PUT" | "PATCH", path: string, body: unknown, meta: ActionMeta, extra: { headers?: Record<string, string>; rawBody?: BodyInit; bodyForHash?: unknown } = {}): Promise<T> {
+export async function act<T>(method: "POST" | "PUT" | "PATCH", path: string, body: unknown, meta: ActionMeta, extra: { headers?: Record<string, string>; rawBody?: BodyInit; bodyForHash?: unknown; signal?: AbortSignal } = {}): Promise<T> {
   const key = meta.key ?? newKey();
   trackPending({
     action_kind: meta.kind,
@@ -175,7 +178,7 @@ export async function act<T>(method: "POST" | "PUT" | "PATCH", path: string, bod
   });
   let res: Response;
   try {
-    res = await send(method, path, { body: extra.rawBody ? undefined : body ?? {}, rawBody: extra.rawBody, headers: extra.headers, key });
+    res = await send(method, path, { body: extra.rawBody ? undefined : body ?? {}, rawBody: extra.rawBody, headers: extra.headers, key, signal: extra.signal });
   } catch {
     throw new UnknownOutcomeError(key);
   }

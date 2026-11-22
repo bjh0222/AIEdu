@@ -113,11 +113,16 @@ def save_config(db: Session, values: dict) -> dict:
 
 def framework_dict(row: EvaluationFramework, *, source: bool = True) -> dict:
     result = {k: getattr(row, k) for k in ("id", "title", "domain_key", "version", "status", "source_hash", "extraction_method", "created_at")}
-    result.update(standards=jload(row.standards, []), source_map=jload(row.source_map, {}), warnings=jload(row.warnings, []))
+    source_map = jload(row.source_map, {})
+    result.update(standards=jload(row.standards, []), source_map=source_map, warnings=jload(row.warnings, []),
+                  evidence_refs=source_map.get("evidence_refs", []))
     # Provenance fields are server-owned. Imported JSON cannot promote an
     # authored framework into a professional certificate.
     result.update(calibration_status="not_calibrated", professional_certification=False)
-    if row.domain_key == "math_logic":
+    if source_map.get("carrier_scope"):
+        result.update(carrier_scope=source_map["carrier_scope"],
+                      consumers=source_map.get("consumers", []))
+    elif row.domain_key == "math_logic":
         result.update(carrier_scope="v2_math_explicit_binding",
                       consumers=["legacy_proposition", "v2_math_explicit"])
     else:
@@ -160,6 +165,11 @@ def _validate_framework_ingestion(standards):
 
 def ensure_framework(db: Session) -> EvaluationFramework:
     row = db.query(EvaluationFramework).filter(EvaluationFramework.title == "AI Edu 内部试题评价 v1").first()
+    if row:
+        return row
+    row = db.query(EvaluationFramework).filter_by(
+        status="active", domain_key="general"
+    ).order_by(EvaluationFramework.version.desc(), EvaluationFramework.created_at.desc()).first()
     if row:
         return row
     source = rubric.SOURCE_PATH.read_text(encoding="utf-8")
@@ -538,6 +548,9 @@ def job_dict(row: PropositionAnalysisJob) -> dict:
 def batch_dict(db: Session, row: PropositionBatch, *, details: bool = False) -> dict:
     result = {k: getattr(row, k) for k in ("id", "filename", "domain_key", "branch", "learner", "status", "source_hash", "created_at")}
     result["counts"] = _counts(db, row.id)
+    metadata = db.get(PropositionConfig, "knowledge-batch-meta:" + row.id)
+    if metadata:
+        result["source_identity"] = jload(metadata.settings_json, {})
     if details:
         result["source_text"] = row.source_text
         result["questions"] = [question_dict(q) for q in db.query(PropositionQuestion).filter(PropositionQuestion.batch_id == row.id).order_by(PropositionQuestion.source_line_start).all()]

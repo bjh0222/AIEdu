@@ -214,9 +214,15 @@ def configure_models(payload:ConfigWrite,key=Depends(action_key)):
         elif payload.action == "roles":
             available,_ = role_config()
             roles = payload.value
-            if set(roles)-{"generation","review","blind_solver","secondary_review","benchmark_panel","benchmark_refiner"} or not set(roles.values()) <= available.keys():
+            # chat：阅读页聊天角色（2026-11-21 前端优化轮2）。值为 null 表示清除该角色。
+            allowed = {"generation","review","blind_solver","secondary_review","benchmark_panel","benchmark_refiner","chat"}
+            if set(roles)-allowed or not {v for v in roles.values() if v is not None} <= available.keys():
                 raise DomainError("MODEL_ROLE_INVALID",422)
-            config["model_roles"] = roles
+            merged = {**config.get("model_roles", {}), **{k: v for k, v in roles.items() if v is not None}}
+            for k in roles:
+                if roles[k] is None:
+                    merged.pop(k, None)
+            config["model_roles"] = merged
         else:
             raise DomainError("MODEL_CONFIG_ACTION_INVALID",422)
         # One atomic private-file replacement includes the idempotency receipt.
@@ -298,6 +304,7 @@ class KnowledgeImport(Contract):
     domain_key:str = "general"
     branch:str = ""
     learner:str = ""
+    source_identity:dict = Field(default_factory=dict)
 
 
 @router.post("/knowledge/batches/import",status_code=201)
@@ -316,9 +323,77 @@ def import_questions(payload:KnowledgeImport,key=Depends(action_key)):
             if saved["request_hash"] != request_hash:
                 raise DomainError("IDEMPOTENCY_CONFLICT")
             return saved["response"]
-        result = import_batch(db,PropositionBatchImport(**payload.model_dump(),auto_analyse=False),start=False,commit=False)
+        result = import_batch(db, PropositionBatchImport(
+            filename=payload.filename, markdown=payload.markdown,
+            domain_key=payload.domain_key, branch=payload.branch,
+            learner=payload.learner, auto_analyse=False,
+        ), start=False, commit=False)
         result["analysis"] = "not_started; use knowledge_analysis task-start for explicit same-root execution"
+        if payload.source_identity:
+            from ..models import PropositionQuestion
+            from ..v2.insights import save as save_insight
+            source_identity = {
+                **payload.source_identity,
+                "filename": payload.filename,
+                "source_hash": result["source_hash"],
+                "calibration_status": "not_calibrated",
+            }
+            save_insight(db, "knowledge-batch-meta:" + result["id"], source_identity)
+            for question in db.query(PropositionQuestion).filter_by(batch_id=result["id"]):
+                source_map = load(question.source_map)
+                source_map["source_identity"] = source_identity
+                question.source_map = dump(source_map)
+            result["source_identity"] = source_identity
         db.add(PropositionConfig(id=receipt_key,settings_json=dump({"request_hash":request_hash,"response":result})))
+        return result
+
+
+class ResearchAssetImport(Contract):
+    source_hash:str = Field(pattern=r"^[a-f0-9]{64}$")
+    cards:list[dict] = Field(default_factory=list,max_length=100)
+    principles:list[dict] = Field(default_factory=list,max_length=100)
+    frameworks:list[dict] = Field(default_factory=list,max_length=30)
+
+
+@router.post("/knowledge/asset-imports", status_code=201)
+def import_research_assets(payload:ResearchAssetImport,key=Depends(action_key)):
+    """Idempotent import of model/research-synthesized reusable knowledge assets."""
+    from ..models import PropositionConfig
+    from ..v2.knowledge_assets import publish_card,publish_framework,publish_principle
+    body = payload.model_dump()
+    if digest({"cards":body["cards"],"principles":body["principles"],"frameworks":body["frameworks"]}) != payload.source_hash:
+        raise DomainError("RESEARCH_ASSET_IMPORT_HASH_MISMATCH",422)
+    request_hash = digest(body)
+    with write() as db:
+        receipt_key = "research-asset-import:" + digest(key)
+        prior = db.get(PropositionConfig,receipt_key)
+        if prior:
+            saved = load(prior.settings_json)
+            if saved["request_hash"] != request_hash:
+                raise DomainError("IDEMPOTENCY_CONFLICT")
+            return saved["response"]
+        cards = [publish_card(db, item) for item in payload.cards]
+        principles = [publish_principle(db, item) for item in payload.principles]
+        frameworks = [publish_framework(db, item) for item in payload.frameworks]
+        result = {
+            "status": "imported",
+            "calibration_status": "not_calibrated",
+            "source_hash": payload.source_hash,
+            "cards": [{"ref": ref,"hash": wrapped["hash"]} for ref, wrapped in cards],
+            "principles": [ref for ref, _ in principles],
+            "frameworks": [{"ref": ref,"source_hash": value["source_hash"]}
+                           for ref, value in frameworks],
+            "receipt_hash": digest({
+                "source_hash": payload.source_hash,
+                "cards": [wrapped["hash"] for _, wrapped in cards],
+                "principles": [ref["evidence_hash"] for ref, _ in principles],
+                "frameworks": [value["source_hash"] for _, value in frameworks],
+            }),
+        }
+        db.add(PropositionConfig(
+            id=receipt_key,
+            settings_json=dump({"request_hash": request_hash, "response": result}),
+        ))
         return result
 
 

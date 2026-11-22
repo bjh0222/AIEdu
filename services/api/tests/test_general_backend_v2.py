@@ -185,8 +185,11 @@ def test_api_saved_role_choices_match_readback_and_runtime(client, tmp_path, mon
     assert client.put("/api/v2/model-settings", json=body, headers=write_headers).json() == saved.json()
     readback = client.get("/api/v2/model-settings")
     assert readback.json()["role_assignments"] == assignments
+    configured_roles = {k: v for k, v in readback.json()["roles"].items()
+                        if k in assignments}
+    assert set(configured_roles) == set(assignments)
     assert all(r["model"] == "deepseek-flash" and r["model_family"] == "deepseek"
-               for r in readback.json()["roles"].values())
+               for r in configured_roles.values())
     assert "fixture-only-secret" not in readback.text and "fixture-other-secret" not in readback.text
     for role in (*assignments, "understanding", "planning", "repair", "knowledge"):
         profile = model_roles.for_role(role)

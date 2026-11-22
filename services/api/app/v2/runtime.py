@@ -77,6 +77,56 @@ def claim_root(run_id: str, worker: str, now=None) -> dict:
         return {"epoch": obj.cancel_epoch, "revision": obj.state_revision, "lease_until": obj.lease_until}
 
 
+def reconcile_stale_jobs(db, now=None) -> list[dict]:
+    """Release expired execution leases without inventing provider outcomes.
+
+    Callers must already hold a write transaction. An expired ``running`` lease
+    becomes ``interrupted``; an in-flight ``sent`` request on that fenced attempt
+    becomes ``unknown`` so it cannot be silently replayed. ``authorized`` work
+    that never reached the wire becomes ``not_sent``. The original call row and
+    receipt are always retained, and an ``unknown`` bill remains unresolved until
+    the explicit quarantine action.
+    """
+    now = time.time() if now is None else now
+    released = []
+    stale_jobs = db.query(GenerationJob).filter(
+        GenerationJob.job_type == "task_v2",
+        GenerationJob.status == "running",
+        GenerationJob.lease_until <= now,
+    ).order_by(GenerationJob.id).all()
+    for stale in stale_jobs:
+        previous = {
+            "run_id": stale.run_id,
+            "state": stale.status,
+            "worker_instance_id": stale.worker_instance_id,
+            "lease_until": stale.lease_until,
+            "epoch": stale.cancel_epoch,
+        }
+        stale.status = "interrupted"
+        stale.cancel_epoch += 1
+        stale.state_revision += 1
+        calls = []
+        for call in db.query(CallDispatch).filter(
+                CallDispatch.root_job_id == stale.id,
+                CallDispatch.status.in_(["authorized", "sent"])).all():
+            before = call.status
+            call.status = "unknown" if before == "sent" else "not_sent"
+            calls.append({
+                "call_id": call.call_id,
+                "unit_id": call.unit_id,
+                "before": before,
+                "after": call.status,
+            })
+        released.append({
+            **previous,
+            "state": "interrupted",
+            "new_epoch": stale.cancel_epoch,
+            "calls": calls,
+            "method_version": "lease-timeout-reaper.v1",
+        })
+    return released
+
+
 def fence(obj, worker, epoch, now=None):
     now = time.time() if now is None else now
     if obj.status != "running" or obj.cancel_epoch != epoch or obj.worker_instance_id != worker or obj.lease_until <= now:
