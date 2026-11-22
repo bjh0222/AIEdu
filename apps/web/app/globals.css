@@ -551,43 +551,25 @@ dialog.dlg::backdrop { background: rgba(10, 16, 22, 0.45); }
 .chat-expand-tab { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 45; writing-mode: vertical-rl; padding: 12px 4px; border: 1px solid var(--line); border-right: 0; border-radius: 8px 0 0 8px; background: var(--surface); color: var(--ink-2); cursor: pointer; }
 .chat-expand-tab:hover { color: var(--primary); }
 
-/* ===== 2026-11-22 视觉优化：山水虚化背景 + 阅读页聊天面板固定 ===== */
-.scenic-backdrop {
-  position: fixed;
-  inset: -64px;
-  z-index: -1;
-  pointer-events: none;
-  background: url("/backdrops/qianli-jiangshan.jpg") center 78% / cover no-repeat;
-  filter: blur(22px) saturate(0.85);
-}
-.scenic-backdrop::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--bg) 80%, transparent) 0%,
-    color-mix(in srgb, var(--bg) 56%, transparent) 55%,
-    color-mix(in srgb, var(--bg) 68%, transparent) 100%
-  );
-}
-.app.scenic .sidebar {
-  background: color-mix(in srgb, var(--bg) 86%, transparent);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-}
+/* ===== 2026-11-22 视觉优化：阅读页问答卡固定 ===== */
 
 /* 聊天面板：随视口固定高度，内部消息滚动，问答输入框常驻可见。 */
-.chat-cell { position: sticky; top: 80px; height: calc(100vh - 104px); min-height: 320px; }
+.chat-cell { position: sticky; top: 80px; height: calc(100vh - 128px); min-height: 320px; }
 .chat-cell .chat-rail { width: 100%; height: 100%; }
 .chat-rail::before {
-  content: "";
+  content: "Edu";
   position: absolute;
   inset: 0;
   z-index: 0;
-  background: url("/ai-edu-mark.svg") center 60% / min(62%, 300px) no-repeat;
-  filter: blur(7px);
-  opacity: 0.16;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-serif);
+  font-size: 96px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--primary);
+  opacity: 0.07;
   pointer-events: none;
 }
 .chat-rail > * { position: relative; z-index: 1; }
@@ -601,5 +583,3 @@ dialog.dlg::backdrop { background: rgba(10, 16, 22, 0.45); }
 }
 .chat-rail .seg { display: flex; width: 100%; }
 .chat-rail .seg button { flex: 1; min-width: 0; padding: 0 6px; white-space: nowrap; font-size: 12px; }
-/* 虚化背景挂载时让 body 背景透明，避免不透明层覆盖 fixed 背景层。 */
-body:has(.scenic-backdrop) { background: transparent; }
