@@ -238,6 +238,11 @@ export default function Workbench({ taskId }: { taskId: string }) {
       </div>
 
       {error && stale && <div className="banner banner-danger" role="alert" style={{ marginBottom: 12 }}><div><b>无法刷新状态。</b> {error} 下面是上次读取的内容，可能已过期。</div><button className="btn btn-sm" onClick={() => void refresh()}>重试</button></div>}
+      {run.research_degradation && (
+        <div className="banner banner-warn" role="status" style={{ marginBottom: 12 }}>
+          <div><b>公开研究未达到证据门槛。</b> 本次已降级为仅使用已绑定的本地材料继续；未取得全文的来源不会被当作已检索证据，也不会伪造引用。</div>
+        </div>
+      )}
       {pausing && <div className="banner banner-warn" role="status" style={{ marginBottom: 12 }}><div><b>正在请求暂停。</b> 已保存的内容会保留；已经发出的模型调用仍会结算。服务端确认后才会显示“已暂停”。</div></div>}
       {actionError && (
         <div className="banner banner-danger" role="alert" style={{ marginBottom: 12 }}>
@@ -329,7 +334,7 @@ export default function Workbench({ taskId }: { taskId: string }) {
       <RunEvidence taskId={taskId} runId={run.run_id} />
 
       {hasDraft && (
-        <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} artifactId={run.artifact_id} versionId={run.version_id!} versionLabel="当前版本" revision={run.state_revision} taskId={taskId} refresh={refresh} />
+        <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} artifactId={run.artifact_id} versionId={run.version_id!} versionLabel="当前版本" revision={run.state_revision} taskId={taskId} runId={run.run_id} checkpointHash={run.checkpoint_hash} deliveryDecision={run.delivery_decision} refresh={refresh} />
       )}
     </>
   );

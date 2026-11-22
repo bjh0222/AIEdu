@@ -7,6 +7,7 @@ import json
 import time
 import threading
 from copy import deepcopy
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from ..config import settings
@@ -591,6 +592,114 @@ def resume(run_id, payload, key):
         return response
 
 
+def delivery_waiver(run_id, payload, key):
+    """Record an explicit final-delivery decision without changing quality facts."""
+    body = digest(payload.model_dump(mode="json"))
+    with write() as db:
+        obj = job(db, run_id)
+        state = load(obj.state_json)
+        prior = receipt(state, key, body)
+        if prior:
+            return prior
+        cas(obj, payload.expected_revision)
+        if obj.status in {"queued", "running"}:
+            raise DomainError("ACTIVE_RUN")
+        if digest(state["plan"]) != payload.checkpoint_hash:
+            raise DomainError("CHECKPOINT_STALE")
+        if state.get("version_id") != payload.version_id:
+            raise DomainError("VERSION_MISMATCH")
+        version = db.get(TutorialVersion, payload.version_id)
+        artifact = db.get(Tutorial, state.get("artifact_id"))
+        if (version is None or artifact is None or version.tutorial_id != artifact.id
+                or artifact.current_version_id != version.id):
+            raise DomainError("VERSION_MISMATCH")
+        units = materialize(version).get("units", [])
+        quality = json.loads(version.quality_report)
+        from .import_profiles import binding_status
+        from .delivery import decision_from_state
+        from .delivery_waiver import build_delivery_waiver, revoke_delivery_waiver
+        profile_binding = binding_status(db, state.get("context", {}))
+
+        def decide(waiver=None):
+            decision_state = (
+                {**state, "delivery_waiver": waiver}
+                if waiver is not None else state
+            )
+            return decision_from_state(
+                decision_state, quality, units,
+                profile_binding_current=profile_binding.get("status") == "current",
+            )
+
+        recorded_at = datetime.now(timezone.utc).isoformat()
+        event = {
+            "event_id": str(uuid4()),
+            "recorded_at": recorded_at,
+            "source": "explicit_delivery_waiver_api",
+            "version_id": payload.version_id,
+            "action": payload.action,
+        }
+        if payload.action == "decline":
+            state["delivery_waiver_declined_at"] = recorded_at
+            state.setdefault("delivery_waiver_events", []).append(event)
+            decision = decide(state.get("delivery_waiver"))
+        elif payload.action == "revoke":
+            existing = state.get("delivery_waiver")
+            if not existing:
+                raise DomainError("DELIVERY_WAIVER_NOT_FOUND", 404)
+            state["delivery_waiver"] = revoke_delivery_waiver(
+                existing, event, revoked_at=recorded_at
+            )
+            state.setdefault("delivery_waiver_events", []).append(event)
+            decision = decide(state["delivery_waiver"])
+        else:
+            if not payload.acknowledge_professional_uncertainty:
+                raise DomainError("DELIVERY_WAIVER_CONFIRMATION_REQUIRED", 422)
+            soft_ids = sorted(set(payload.soft_item_ids))
+            if not soft_ids or len(soft_ids) != len(payload.soft_item_ids):
+                raise DomainError("DELIVERY_WAIVER_ITEM_INVALID", 422)
+            pending = decide()
+            if pending["hard_blockers"]:
+                raise DomainError(
+                    "DELIVERY_WAIVER_HARD_BLOCKED", 422,
+                    hard_blockers=pending["hard_blockers"],
+                )
+            if set(soft_ids) != set(pending["soft_item_ids"]):
+                raise DomainError(
+                    "DELIVERY_WAIVER_ITEM_MISMATCH", 422,
+                    expected=pending["soft_item_ids"], supplied=soft_ids,
+                )
+            results = {
+                row["item_id"]: row["result"] for row in pending["soft_blockers"]
+            }
+            event.update(
+                soft_item_ids=soft_ids,
+                acknowledge_professional_uncertainty=True,
+            )
+            state["delivery_waiver"] = build_delivery_waiver(
+                state["check_plan"], quality, results, event,
+                signer="local-owner", confirmed_at=recorded_at,
+            )
+            state.setdefault("delivery_waiver_events", []).append(event)
+            decision = decide(state["delivery_waiver"])
+            if not decision["final_allowed"]:
+                raise DomainError(
+                    "DELIVERY_WAIVER_NOT_EFFECTIVE", 422,
+                    delivery_decision=decision,
+                )
+        obj.state_json = dump(state)
+        obj.state_revision += 1
+        response = {
+            "run_id": run_id,
+            "action": payload.action,
+            "state_revision": obj.state_revision,
+            "waiver": state.get("delivery_waiver"),
+            "delivery_decision": decision,
+        }
+        remember(state, key, body, response, "delivery_waiver")
+        obj.state_json = dump(state)
+        return response
+
+
 def snapshot(task_id, run_id=None):
     from sqlalchemy import func
     with SessionLocal() as db:
@@ -628,6 +737,12 @@ def snapshot(task_id, run_id=None):
         if import_status["status"] == "stale":
             quality = {**quality, "tqi_verdict": "blocked", "quality_status": "needs_review",
                 "blocking_reasons": [*quality.get("blocking_reasons", []), {"code": "IMPORT_ASSET_STALE"}]}
+        snapshot_units = materialize(version).get("units", []) if version else []
+        from .delivery import decision_from_state
+        delivery_decision = decision_from_state(
+            state, quality, snapshot_units,
+            profile_binding_current=import_status.get("status") == "current",
+        )
         visible_stages = dict(state["stages"])
         for stage in {load(c.manifest_json).get("stage") for c in calls}:
             related = [c for c in calls if load(c.manifest_json).get("stage") == stage]
@@ -681,7 +796,8 @@ def snapshot(task_id, run_id=None):
         delivery = delivery_outcome(
             status=obj.status, stages=visible_stages, quality=quality,
             version_id=version.id if version else None, calls=call_rows,
-            binding_current=import_status.get("status") == "current")
+            binding_current=import_status.get("status") == "current",
+            delivery_decision=delivery_decision)
         return {"schema_version": "aiedu.task-run.v2", "task_id": task_id, "input_revision": owner.input_revision,
                 "run_id": obj.run_id, "root_job_id": obj.id, "state_revision": obj.state_revision,
                 "state": obj.status, "cancel_epoch": obj.cancel_epoch, "demo": state["mode"] == "demo",
@@ -689,7 +805,7 @@ def snapshot(task_id, run_id=None):
                 "content_hash": version.content_hash if version else None, "context_hash": state["context"]["context_hash"],
                 "resolved_task":state["context"],
                 "plan_hash": state["plan"]["plan_hash"], "checkpoint_hash": digest(state["plan"]),
-                  "units": materialize(version).get("units", []) if version else [], "stages": visible_stages,
+                  "units": snapshot_units, "stages": visible_stages,
                 "quality": quality, "budget": state["budget"], "stop_reason": state.get("stop_reason"),
                 "knowledge_results":state.get("knowledge_results",[]),"embedding_status":state.get("embedding_status","disabled"),
                 "benchmark_result":state.get("benchmark_result"),
@@ -702,8 +818,14 @@ def snapshot(task_id, run_id=None):
                 ]),
                 "delivery_state": delivery["state"],
                 "delivery_detail": delivery["detail"],
+                "delivery_decision": delivery_decision,
                 "run_metrics": summarize_calls(call_rows),
                 "research_policy": state.get("check_plan", {}).get("research_policy", {}),
+                "research_status": (state.get("research_result") or {}).get("status"),
+                "research_degradation": (
+                    (state.get("research_result") or {}).get("degradation")
+                    or (state.get("context") or {}).get("research_degradation")
+                ),
                 "tutorial_rubric_refs": [{k: item.get(k) for k in (
                     "rubric_id", "version", "hash", "status", "calibration_status")} for item in tutorial_refs],
                 "subject_understanding_ref": {

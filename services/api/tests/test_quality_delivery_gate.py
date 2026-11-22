@@ -24,9 +24,9 @@ def test_complete_requires_calibrated_strict_pass(client):
     manifest = draft.json()
     assert manifest["delivery_status"] == "draft"
     assert manifest["quality_gate"]["passed"] is False
-    assert manifest["quality_gate"]["calibration_required"] is True
-    assert manifest["quality_gate"]["quality_status_required"] == "passed"
-    assert manifest["quality_gate"]["method"] == "strict_final_delivery.v3"
+    assert manifest["quality_gate"]["certificate_required_for_unwaived_claims"] is True
+    assert manifest["quality_gate"]["method"] == "delivery-decision.v1"
+    assert manifest["delivery_calibration_status"] == "not_calibrated"
     assert [(f["file_id"], f["name"]) for f in manifest["files"]] == [
         ("main", "draft-main.md"), ("bundle", "draft-bundle.zip"),
     ]

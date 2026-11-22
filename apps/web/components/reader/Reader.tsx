@@ -313,7 +313,7 @@ export default function Reader({ taskId }: { taskId: string }) {
       </Drawer>
 
       {read && artifactId && (
-        <ExportDialog key={read.version_id} open={exportOpen} onClose={() => setExportOpen(false)} artifactId={artifactId} versionId={read.version_id} versionLabel={versionLabel} revision={run.state_revision} taskId={taskId} refresh={refresh} />
+        <ExportDialog key={read.version_id} open={exportOpen} onClose={() => setExportOpen(false)} artifactId={artifactId} versionId={read.version_id} versionLabel={versionLabel} revision={run?.state_revision ?? read.export_binding?.state_revision ?? 0} taskId={taskId} runId={run?.run_id ?? read.export_binding?.run_id ?? ""} checkpointHash={run?.checkpoint_hash ?? ""} deliveryDecision={run?.delivery_decision ?? {}} refresh={refresh} />
       )}
     </div>
   );

@@ -12,12 +12,12 @@ METHOD = "difficulty-one-item-batch.v1"
 
 
 def matching_attempts(calls, data, schema, system, profile, output_tokens):
-    from .capacity import get_capacity, request_capacity
+    from .capacity import get_capacity, planned_output_tokens, request_capacity
     from .inference import request_messages
 
     messages = request_messages(system, data, schema)
     capacity = get_capacity(profile.llm_base_url, profile.llm_model)
-    reserve = min(output_tokens, capacity["max_output_tokens"]) if capacity else output_tokens
+    reserve = planned_output_tokens(profile, output_tokens, capacity)["reserved_output_tokens"]
     estimate = request_capacity(messages, capacity, reserve)
     limit = capacity.get("output_limit_parameter", "max_tokens")
     params = {limit: estimate["reserved_output_tokens"],

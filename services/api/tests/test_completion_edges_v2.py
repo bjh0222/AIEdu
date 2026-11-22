@@ -95,6 +95,40 @@ def test_model_config_cas_receipt_and_secret_redaction(client):
     assert client.put("/api/v2/model-settings",json=body,headers=headers|{"Idempotency-Key":"invalid-save"}).status_code == 422
 
 
+def test_delivery_waiver_policy_defaults_on_and_uses_real_cas_action_with_env_override(client, monkeypatch):
+    headers = owner(client)
+    monkeypatch.delenv("AIEDU_DELIVERY_WAIVER", raising=False)
+    current = client.get("/api/v2/model-settings").json()
+    assert current["config"]["delivery_policy"]["auto_waiver_enabled"] is True
+    body = {
+        "expected_config_hash": current["config_hash"],
+        "action": "delivery_policy",
+        "value": {"auto_waiver_enabled": False},
+    }
+    saved = client.put(
+        "/api/v2/model-settings", json=body,
+        headers=headers | {"Idempotency-Key": "delivery-policy-off"},
+    )
+    assert saved.status_code == 200, saved.text
+    assert client.get("/api/v2/model-settings").json()["config"]["delivery_policy"]["auto_waiver_enabled"] is False
+
+    current = client.get("/api/v2/model-settings").json()
+    body = {
+        "expected_config_hash": current["config_hash"],
+        "action": "delivery_policy",
+        "value": {"auto_waiver_enabled": True},
+    }
+    assert client.put(
+        "/api/v2/model-settings", json=body,
+        headers=headers | {"Idempotency-Key": "delivery-policy-on"},
+    ).status_code == 200
+    monkeypatch.setenv("AIEDU_DELIVERY_WAIVER", "false")
+    assert client.get("/api/v2/model-settings").json()["config"]["delivery_policy"] == {
+        "auto_waiver_enabled": False,
+        "source": "environment_disabled",
+    }
+
+
 def test_missing_semantic_panel_abstains_before_any_paid_call(monkeypatch):
     from app.v2.benchmark import compile_semantic
     from app.v2.contracts import DomainError

@@ -223,6 +223,13 @@ def configure_models(payload:ConfigWrite,key=Depends(action_key)):
                 if roles[k] is None:
                     merged.pop(k, None)
             config["model_roles"] = merged
+        elif payload.action == "delivery_policy":
+            if set(payload.value) - {"auto_waiver_enabled"}:
+                raise DomainError("MODEL_CONFIG_ACTION_INVALID", 422)
+            enabled = payload.value.get("auto_waiver_enabled")
+            if type(enabled) is not bool:
+                raise DomainError("MODEL_CONFIG_ACTION_INVALID", 422)
+            config["delivery_policy"] = {"auto_waiver_enabled": enabled}
         else:
             raise DomainError("MODEL_CONFIG_ACTION_INVALID",422)
         # One atomic private-file replacement includes the idempotency receipt.

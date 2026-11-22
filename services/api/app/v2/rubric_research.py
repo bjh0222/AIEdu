@@ -821,7 +821,7 @@ def _public_research_topic(request, context):
     return " ".join(f"{key}:{value}" for key, value in clean.items() if value not in (None, "", [])) or "education content and assessment quality"
 
 
-def execute_research(run_id, worker, epoch, state, provider_factory=None):
+def _execute_research_strict(run_id, worker, epoch, state, provider_factory=None):
     request = state["context"].get("research_request", {})
     materials = selected_materials(state)
     public_topic = _public_research_topic(request, state["context"])
@@ -1073,3 +1073,74 @@ def execute_research(run_id, worker, epoch, state, provider_factory=None):
             *([p_audit] if p_audit else []), *profile_audits], "completed_at": datetime.now(timezone.utc).isoformat(),
         "professional_certification": "not_calibrated", "aggregate_score": None, "threshold": None}
     return _save(run_id, worker, epoch, "result", result)
+
+
+DEGRADABLE_EVIDENCE_ERRORS = frozenset({
+    "RESEARCH_TWO_INDEXES_NOT_RETRIEVED",
+    "RESEARCH_ACADEMIC_AND_OFFICIAL_EVIDENCE_REQUIRED",
+    "RESEARCH_CLAIMS_WITHOUT_LITERAL_EVIDENCE",
+    "RESEARCH_RUBRIC_SCOPE_NOT_USABLE",
+})
+
+
+def _degraded_research_result(run_id, worker, epoch, error):
+    discovery = _previous(run_id, "discovery") or {}
+    source_reads = _previous(run_id, "source_reads") or {}
+    discovery_rows = discovery.get("results", []) if isinstance(discovery, dict) else []
+    attempts = source_reads.get("attempts", []) if isinstance(source_reads, dict) else []
+    sources = source_reads.get("sources", []) if isinstance(source_reads, dict) else []
+    attempted_indexes = sorted({
+        row.get("index") for row in discovery_rows
+        if isinstance(row, dict) and row.get("index")
+    })
+    successful_indexes = sorted({
+        row.get("index") for row in discovery_rows
+        if isinstance(row, dict) and row.get("status") == "ok" and row.get("index")
+    })
+    failures = [
+        {
+            "index": row.get("index"),
+            "query": row.get("query"),
+            "status": row.get("status"),
+            "reason": row.get("reason"),
+        }
+        for row in discovery_rows
+        if isinstance(row, dict) and row.get("status") != "ok"
+    ]
+    result = {
+        "schema_version": "aiedu.research-result.v2",
+        "status": "degraded",
+        "research_mode": "local_materials_only",
+        "rubric": None,
+        "research_rubric_ref": None,
+        "discovery": discovery,
+        "source_reads": source_reads,
+        "sources": sources,
+        "source_claims": [],
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "professional_certification": "not_calibrated",
+        "calibration_status": "not_calibrated",
+        "degradation": {
+            "method_version": "research-evidence-degrade.v1",
+            "reason": error.code,
+            "attempted_indexes": attempted_indexes,
+            "successful_indexes": successful_indexes,
+            "source_read_attempts": len(attempts),
+            "sources_with_fulltext": len(sources),
+            "failures": failures,
+            "evidence_gap": "public_research_evidence_did_not_reach_project_threshold",
+            "citation_boundary": "No unavailable public source may be cited as retrieved; local selected materials remain the only bound evidence.",
+            "research_request_enabled_does_not_equal_evidence_obtained": True,
+        },
+    }
+    return _save(run_id, worker, epoch, "result", result)
+
+
+def execute_research(run_id, worker, epoch, state, provider_factory=None):
+    """Run public research; only evidence insufficiency may degrade to local mode."""
+    try:
+        return _execute_research_strict(run_id, worker, epoch, state, provider_factory)
+    except DomainError as exc:
+        if exc.code not in DEGRADABLE_EVIDENCE_ERRORS:
+            raise
+        return _degraded_research_result(run_id, worker, epoch, exc)

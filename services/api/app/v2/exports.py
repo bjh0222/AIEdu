@@ -91,7 +91,8 @@ def create_export(artifact_id, payload, key):
             raise DomainError("VERSION_MISMATCH")
         root = job(db, version.run_id)
         cas(root, payload.expected_revision)
-        frozen_context = json.loads(root.state_json)["context"]
+        root_state = json.loads(root.state_json)
+        frozen_context = root_state["context"]
         from .import_profiles import binding_status
         profile_binding = binding_status(db, frozen_context)
         body, quality = materialize(version), json.loads(version.quality_report)
@@ -109,14 +110,30 @@ def create_export(artifact_id, payload, key):
         raise DomainError("EMPTY_DRAFT", 422)
     if missing and payload.kind == "complete":
         raise DomainError("INCOMPLETE_REQUEST", 422, missing_required=missing)
-    delivery_status = "draft" if payload.kind == "available_draft" else "final"
+    from .delivery import decision_from_state
+    delivery_decision = decision_from_state(
+        root_state, quality, selected,
+        profile_binding_current=profile_binding.get("status") == "current",
+    )
+    delivery_status = "draft"
     if payload.kind == "complete" and profile_binding.get("status") != "current":
         raise DomainError("PROFILE_BINDING_STALE", 422, stale_refs=profile_binding.get("stale_refs", []))
-    if payload.kind == "complete" and not strict_delivery_gate(quality):
-        raise DomainError("FINAL_EXPORT_NOT_PASSED", 422,
-                          tqi_verdict=quality.get("tqi_verdict"), quality_status=quality.get("quality_status"),
-                          calibration_status=quality.get("calibration_status"),
-                          blocking_reason_count=len(quality.get("blocking_reasons") or []))
+    if payload.kind == "complete":
+        if delivery_decision["state"] == "waiver_required":
+            raise DomainError(
+                "FINAL_WAIVER_CONFIRM_REQUIRED", 409,
+                delivery_decision=delivery_decision,
+            )
+        if not delivery_decision["final_allowed"]:
+            raise DomainError(
+                "FINAL_EXPORT_NOT_PASSED", 422,
+                tqi_verdict=quality.get("tqi_verdict"),
+                quality_status=quality.get("quality_status"),
+                calibration_status=quality.get("calibration_status"),
+                blocking_reason_count=len(quality.get("blocking_reasons") or []),
+                delivery_decision=delivery_decision,
+            )
+        delivery_status = "final"
     store, files, archive = BlobStore(), [], io.BytesIO()
     wiki_mode = payload.options.get("wikilinks", "relative")
     if wiki_mode not in {"relative", "text"}:
@@ -198,8 +215,19 @@ def create_export(artifact_id, payload, key):
                 "options_hash": digest(payload.options), "files": files, "missing_required": missing,
                 "original_required": sorted(required), "quality": {k: quality[k] for k in ("tqi_verdict", "quality_status", "calibration_status")}, "demo": demo,
                 "profile_binding": profile_binding,
-                "quality_gate": {"method": "strict_final_delivery.v3", "tqi_verdict_required": "pass",
-                                 "quality_status_required": "passed", "calibration_required": True, "profile_binding_required": "current",
+                "delivery_decision": delivery_decision,
+                "delivery_calibration_status": delivery_decision["delivery_calibration_status"],
+                "certificate_ref": {
+                    "certificate_hash": (root_state.get("calibration_certificate") or {}).get("certificate_hash"),
+                    "status": delivery_decision["certificate_status"],
+                },
+                "delivery_waiver_ref": {
+                    key: (root_state.get("delivery_waiver") or {}).get(key)
+                    for key in ("schema_version", "waiver_hash", "status", "soft_items")
+                } if root_state.get("delivery_waiver") else None,
+                "quality_gate": {"method": "delivery-decision.v1", "profile_binding_required": "current",
+                                 "certificate_required_for_unwaived_claims": True,
+                                 "soft_items": ["C3.correctness", "G2.knowledge_integration"],
                                  "passed": delivery_status == "final"},
                 "legacy_role_projections": projections}
     from .resolver import spec_entries

@@ -20,7 +20,7 @@ from .quality_policy import context_domains, unit_domains
 EVIDENCE_VERSION = "server-evidence-catalog.v1"
 NORMALIZER_VERSION = "provider-contract-normalizer.v1"
 APPLICABILITY_VERSION = "zero-model-applicability.v1"
-PROTOCOL_VERSION = "quality-protocol-freeze.v3"
+PROTOCOL_VERSION = "quality-protocol-freeze.v5"
 
 _RESULT_ALIASES = {
     "pass": "satisfied",
@@ -389,6 +389,8 @@ def review_protocol_manifest() -> dict[str, Any]:
     from .derivation import VERSION as DERIVATION_VERSION
     from .external_calibration import VERSION as EXTERNAL_CALIBRATION
     from .calibration_certificate import VERSION as CALIBRATION_CERTIFICATE
+    from .delivery import VERSION as DELIVERY_DECISION
+    from .delivery_waiver import VERSION as DELIVERY_WAIVER
 
     skill = review_skill()
     components = {
@@ -404,6 +406,10 @@ def review_protocol_manifest() -> dict[str, Any]:
         "assessment_derivation": {"version": DERIVATION_VERSION},
         "external_calibration": {"version": EXTERNAL_CALIBRATION},
         "calibration_certificate": {"version": CALIBRATION_CERTIFICATE},
+        "delivery_decision": {"version": DELIVERY_DECISION},
+        "delivery_waiver": {"version": DELIVERY_WAIVER},
+        "model_output_budget": {"version": "model-output-budget.v1"},
+        "research_evidence_degradation": {"version": "research-evidence-degrade.v1"},
     }
     module_dir = Path(__file__).resolve().parent
     implementation_files = {
@@ -414,6 +420,12 @@ def review_protocol_manifest() -> dict[str, Any]:
             "derivation.py",
             "external_calibration.py",
             "calibration_certificate.py",
+            "delivery.py",
+            "delivery_waiver.py",
+            "capacity.py",
+            "inference.py",
+            "research_length_recovery.py",
+            "worker.py",
             "quality.py",
             "quality_policy.py",
             "criterion_protocol.py",
@@ -450,12 +462,13 @@ def delivery_outcome(
     version_id: str | None,
     calls: list[dict[str, Any]],
     binding_current: bool = True,
+    delivery_decision: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Map run facts to the four user-visible delivery states without changing quality."""
     if not version_id:
         return {"state": "not_started", "label": "尚无草稿",
                 "detail": "还没有可用于阅读的固定版本。"}
-    final_ready = (
+    final_ready = bool(delivery_decision and delivery_decision.get("final_allowed")) if delivery_decision else (
         quality.get("tqi_verdict") == "pass"
         and quality.get("quality_status") == "passed"
         and quality.get("calibration_status") == "calibrated"
@@ -480,6 +493,9 @@ def delivery_outcome(
     if final_ready:
         return {"state": "final_ready", "label": "final 就绪",
                 "detail": "固定版本满足最终交付门；仍需遵守导出清单与专业范围。"}
+    if delivery_decision and delivery_decision.get("state") == "waiver_required":
+        return {"state": "quality_blocked", "label": "待确认交付",
+                "detail": "必需检查已完成，但 C3/G2 专业项需要用户显式确认；授权不改变质检结果或校准事实。"}
     if status in {"queued", "running"} and active_quality_stage:
         return {"state": "quality_checking", "label": "质检进行中",
                 "detail": "已有固定草稿；当前耗时属于复核或整改，不是仍在撰写未保存正文。"}

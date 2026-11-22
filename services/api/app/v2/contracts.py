@@ -166,6 +166,16 @@ class ExportRequest(Revision):
     options: dict = Field(default_factory=dict)
 
 
+class DeliveryWaiverRequest(Revision):
+    checkpoint_hash: str
+    version_id: str
+    action: Literal["accept", "decline", "revoke"]
+    soft_item_ids: list[Literal["C3.correctness", "G2.knowledge_integration"]] = Field(
+        default_factory=list, max_length=2
+    )
+    acknowledge_professional_uncertainty: bool = False
+
+
 class UserReview(Revision):
     version_id: str
     content_hash: str

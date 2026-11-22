@@ -4,7 +4,7 @@
 # 架构事实（自动生成）
 
 
-## 路由（208 条 = 路径 × 方法，19 组资源）
+## 路由（209 条 = 路径 × 方法，19 组资源）
 
 ### assessments（1 条）
 
@@ -210,7 +210,7 @@
 | GET | `/api/tutorials/{tutorial_id}/sections/{section_id}` |
 | POST | `/api/tutorials/{tutorial_id}/sections/{section_id}/regenerate` |
 
-### v2（68 条）
+### v2（69 条）
 
 | 方法 | 路径 |
 |---|---|
@@ -256,6 +256,7 @@
 | GET | `/api/v2/research/{run_id}` |
 | GET | `/api/v2/research/{run_id}/artifacts/{artifact_key}` |
 | GET | `/api/v2/research/{run_id}/rubric` |
+| POST | `/api/v2/runs/{run_id}/delivery-waivers` |
 | POST | `/api/v2/runs/{run_id}/pause` |
 | POST | `/api/v2/runs/{run_id}/resume` |
 | POST | `/api/v2/runs/{run_id}/unknown-quarantines` |

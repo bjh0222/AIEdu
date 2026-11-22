@@ -8,10 +8,28 @@ from uuid import uuid4
 
 from test_task_run_v2 import owner, post
 from test_task_run_v2_guards import queued
+from delivery_fixtures import install_delivery_certificate
 
 
-PASS_QUALITY = {"tqi_verdict": "pass", "quality_status": "passed", "calibration_status": "calibrated",
-                "blocking_reasons": []}
+def pass_quality(state):
+    return {
+        "tqi_verdict": "pass", "quality_status": "passed", "calibration_status": "calibrated",
+        "blocking_reasons": [], "findings": [],
+        "checks": [
+            {"item_id": item["item_id"], "result": "satisfied"}
+            for item in state["check_plan"]["check_items"]
+        ],
+    }
+
+
+def prepare_pass_state(run_id, units):
+    from app.v2.runtime import dump, job, load, write
+    with write() as db:
+        obj = job(db, run_id)
+        state = install_delivery_certificate(load(obj.state_json), units)
+        obj.state_json = dump(state)
+        obj.state_revision += 1
+    return pass_quality(state)
 
 
 def publish_pass(client, units):
@@ -19,7 +37,8 @@ def publish_pass(client, units):
     from app.v2.tasks import snapshot
     created, run = queued(client)
     lease = claim_root(run["run_id"], "worker")
-    version_id = publish(run["run_id"], "worker", lease["epoch"], units, PASS_QUALITY | {"_version_id": None}, "agent2-export")
+    quality = prepare_pass_state(run["run_id"], units)
+    version_id = publish(run["run_id"], "worker", lease["epoch"], units, quality | {"_version_id": None}, "agent2-export")
     snap = snapshot(created["task_id"])
     return created, snap
 
@@ -46,8 +65,8 @@ def test_final_export_merges_units_without_chapter_files(client):
     manifest = export_complete(client, snap)
     assert manifest["delivery_status"] == "final"
     assert manifest["quality_gate"]["passed"] is True
-    assert manifest["quality_gate"]["calibration_required"] is True
-    assert manifest["quality_gate"]["quality_status_required"] == "passed"
+    assert manifest["quality_gate"]["certificate_required_for_unwaived_claims"] is True
+    assert manifest["quality_gate"]["method"] == "delivery-decision.v1"
     assert [(f["file_id"], f["name"]) for f in manifest["files"]] == [("main", "main.md"), ("bundle", "bundle.zip")]
     body_bytes = client.get(f"/api/v2/export-sets/{manifest['bundle_id']}/files/main").content
     body = body_bytes.decode("utf-8")
@@ -95,7 +114,8 @@ def test_exercise_answers_keep_role_projection_but_not_chapter_files(client):
     body = render_unit_items(items, unit)
     unit["body"] = body
     unit["content_hash"] = sha(body)
-    version_id = publish(run["run_id"], "worker", lease["epoch"], [unit], PASS_QUALITY | {"_version_id": None}, "agent2-role")
+    quality = prepare_pass_state(run["run_id"], [unit])
+    version_id = publish(run["run_id"], "worker", lease["epoch"], [unit], quality | {"_version_id": None}, "agent2-role")
     snap = snapshot(created["task_id"])
     manifest = export_complete(client, snap, "agent2-role-complete")
     assert [f["file_id"] for f in manifest["files"]] == ["main", "answers", "bundle"]

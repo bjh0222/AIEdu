@@ -436,18 +436,22 @@ def generate_planned_unit(run_id, worker, epoch, state, planned, units, material
     parameters = {"thinking": getattr(profile, "llm_thinking", None), "reasoning_effort": getattr(profile, "llm_reasoning_effort", None),
                   "temperature": getattr(profile, "llm_temperature", None), "json_mode": getattr(profile, "llm_json_mode", True)}
     if profile is not None:
-        from .capacity import get_capacity, request_capacity
+        from .capacity import get_capacity, planned_output_tokens, request_capacity
         capacity = get_capacity(provider, model)
         # A full chapter stores both the questions and their complete
         # internal reasoning. The former 16k text cap truncated a valid
         # chemistry chapter; reserve 32k for tutorial/reading bodies and keep
         # 64k for item-bearing chapters, subject to sourced model capacity.
         output_reserve = 65536 if is_items else 32768
-        estimate = request_capacity(messages, capacity, min(output_reserve, capacity["max_output_tokens"]) if capacity else output_reserve)
-        profile.llm_max_tokens = estimate["reserved_output_tokens"]
-        limit_parameter = capacity.get("output_limit_parameter","max_tokens")
-        if limit_parameter not in {"max_tokens","max_completion_tokens"}:
-            raise DomainError("CAPACITY_PARAMETER_INVALID",422)
+        planned_output = planned_output_tokens(profile, output_reserve, capacity)
+        estimate = request_capacity(messages, capacity, planned_output["reserved_output_tokens"])
+        estimate.update({
+            key: value for key, value in planned_output.items()
+            if key not in {"reserved_output_tokens", "capacity_source"}
+        })
+        estimate["capacity_source"] = planned_output["capacity_source"]
+        profile.llm_max_tokens = planned_output["reserved_output_tokens"]
+        limit_parameter = planned_output["output_limit_parameter"]
         profile.llm_output_limit_parameter = limit_parameter
         parameters[limit_parameter] = profile.llm_max_tokens
     call_id = None
@@ -755,6 +759,30 @@ def run_research_before_planning(run_id, worker, epoch, provider_factory=None):
                 obj.state_json, obj.state_revision = dump(current), obj.state_revision+1
         return  # settled research is reused, never silently paid again.
     result = execute_research(run_id, worker, epoch, state, provider_factory=provider_factory)
+    if result.get("research_mode") == "local_materials_only":
+        with write() as db:
+            obj = job(db, run_id)
+            fence(obj, worker, epoch)
+            current = load(obj.state_json)
+            owner = goal(db, obj.goal_id)
+            context = deepcopy(current["context"])
+            context["research_degradation"] = deepcopy(result.get("degradation") or {})
+            current["context"] = context_of(context, owner.input_revision)
+            current["research_result"] = result
+            current["research_binding_frozen"] = True
+            current["research_degraded"] = True
+            current.setdefault("stages", {})["researching"] = "degraded"
+            current["check_plan"] = __import__(
+                "app.v2.quality", fromlist=["compile_plan"]
+            ).compile_plan(current["context"], current.get("plan", {}).get("network_policy"))
+            owner_state = load(owner.task_state_json)
+            owner_state.update(
+                context=current["context"],
+                confirmed_context_hash=current["context"]["context_hash"],
+            )
+            owner.task_state_json = dump(owner_state)
+            obj.state_json, obj.state_revision = dump(current), obj.state_revision + 1
+        return
     if not isinstance(result, dict) or not result.get("rubric") or not result.get("research_rubric_ref"):
         raise DomainError("RESEARCH_RESULT_INCOMPLETE", 422)
     with write() as db:

@@ -24,6 +24,18 @@ const draftManifest = {
   quality: { tqi_verdict: "blocked", quality_status: "needs_review", calibration_status: "not_calibrated" },
 };
 
+const finalManifest = {
+  ...draftManifest,
+  kind: "complete",
+  delivery_status: "final",
+  files: [
+    { file_id: "main", name: "main.md", sha256: "a".repeat(64), size: 1024, artifact_role: "document" },
+    { file_id: "bundle", name: "bundle.zip", sha256: "b".repeat(64), size: 4096 },
+  ],
+  delivery_calibration_status: "waiver_authorized",
+  quality: { tqi_verdict: "not_calibrated", quality_status: "needs_review", calibration_status: "not_calibrated" },
+};
+
 test("未通过质量门时拒绝 final，只提供明确草稿和合并主文档", async ({ page }, testInfo) => {
   const calls = await mockBackend(page, {
     versions: { [IDS.v2]: versionRead(IDS.v2, 2, SAMPLE, []) },
@@ -57,6 +69,82 @@ test("未通过质量门时拒绝 final，只提供明确草稿和合并主文�
   await expect(page.getByRole("dialog").locator("li", { hasText: "定积分" })).toHaveCount(0);
   expect(calls.filter((call) => call.method === "POST" && call.url.endsWith("/export-sets"))).toHaveLength(2);
   await page.screenshot({ path: testInfo.outputPath("draft-delivery.png"), fullPage: true });
+});
+
+test("软阻塞只显示用户可理解的专业项；确认后先写授权再单独导出", async ({ page }) => {
+  let completeAttempts = 0;
+  const writes: string[] = [];
+  const snapshot = runSnapshot({
+    delivery_decision: {
+      state: "waiver_required",
+      final_allowed: false,
+      hard_blockers: [],
+      soft_blockers: [
+        { item_id: "C3.correctness", result: "undecidable" },
+        { item_id: "G2.knowledge_integration", result: "undecidable" },
+      ],
+      soft_item_ids: ["C3.correctness", "G2.knowledge_integration"],
+      waiver_auto_enabled: true,
+      waiver_status: "not_present",
+      certificate_status: "calibrated",
+      delivery_calibration_status: "not_calibrated",
+    },
+  });
+  await mockBackend(page, {
+    snapshot: () => snapshot,
+    versions: { [IDS.v2]: versionRead(IDS.v2, 2, SAMPLE, []) },
+    onWrite: async (route: Route, path: string, method: string) => {
+      writes.push(path);
+      if (path.endsWith("/delivery-waivers")) {
+        const body = route.request().postDataJSON() as Record<string, unknown>;
+        expect(body.action).toBe("accept");
+        expect(body.soft_item_ids).toEqual(["C3.correctness", "G2.knowledge_integration"]);
+        await route.fulfill({ json: {
+          run_id: IDS.run,
+          action: "accept",
+          state_revision: 6,
+          waiver: { status: "active", waiver_hash: "c".repeat(64) },
+          delivery_decision: { state: "eligible", final_allowed: true, delivery_calibration_status: "waiver_authorized" },
+        } });
+        return true;
+      }
+      if (method === "POST" && path.startsWith("/artifacts/") && path.endsWith("/export-sets")) {
+        completeAttempts++;
+        if (completeAttempts === 1) {
+          await route.fulfill({ status: 409, json: {
+            code: "FINAL_WAIVER_CONFIRM_REQUIRED",
+            message: "FINAL_WAIVER_CONFIRM_REQUIRED",
+            retryable: false,
+            details: { delivery_decision: {
+              hard_blockers: [],
+              soft_item_ids: ["C3.correctness", "G2.knowledge_integration"],
+            } },
+          } });
+        } else {
+          await route.fulfill({ json: finalManifest });
+        }
+        return true;
+      }
+      return false;
+    },
+  });
+  await page.goto(`/tasks/${IDS.task}`);
+  await page.getByRole("button", { name: "下载" }).click();
+  await page.getByRole("button", { name: "生成下载包" }).click();
+  await expect(page.getByText("专业正确性：无法判定")).toBeVisible();
+  await expect(page.getByText("知识整合：仍需人工确认")).toBeVisible();
+  await expect(page.getByText("C3.correctness")).toHaveCount(0);
+  const accept = page.getByRole("button", { name: "放行并生成最终交付" });
+  await expect(accept).toBeDisabled();
+  await page.getByLabel("我理解上述专业限制，并要求按当前固定版本生成最终交付").check();
+  await accept.click();
+  await expect.poll(() => writes.filter((p) => p.endsWith("/delivery-waivers")).length).toBe(1);
+  await expect(page.getByText("全部章节（一份 Markdown）")).toBeVisible();
+  await expect(page.getByText("草稿交付。")).toHaveCount(0);
+  expect(completeAttempts).toBe(2);
+  expect(writes.findIndex((p) => p.endsWith("/delivery-waivers"))).toBeLessThan(
+    writes.lastIndexOf(writes.filter((p) => p.endsWith("/export-sets")).at(-1) ?? ""),
+  );
 });
 
 test("答案角色保留为一份参考答案投影，不变成章节文件", async ({ page }) => {

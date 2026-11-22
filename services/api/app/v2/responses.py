@@ -122,8 +122,11 @@ class RunSnapshot(Output):
     next_actions: list[str]
     delivery_state: Literal["not_started", "draft_ready", "quality_checking", "quality_blocked", "final_ready"]
     delivery_detail: str
+    delivery_decision: dict[str, Any]
     run_metrics: dict[str, Any]
     research_policy: dict[str, Any] = Field(default_factory=dict)
+    research_status: str | None = None
+    research_degradation: dict[str, Any] | None = None
     tutorial_rubric_refs: list[dict[str, Any]] = Field(default_factory=list)
     subject_understanding_ref: dict[str, Any] = Field(default_factory=dict)
     evaluation_framework_refs: list[dict[str, Any]] = Field(default_factory=list)

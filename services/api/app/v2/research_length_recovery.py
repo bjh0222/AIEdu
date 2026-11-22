@@ -78,7 +78,7 @@ def resume_partitions(run_id, state, data, system):
     from sqlalchemy import select
     from ..db import SessionLocal
     from ..models import GenerationJob
-    from .capacity import get_capacity, request_capacity
+    from .capacity import get_capacity, planned_output_tokens, request_capacity
     from .inference import request_messages
     from .model_roles import for_role
     from .runtime import load
@@ -104,7 +104,8 @@ def resume_partitions(run_id, state, data, system):
     profile = for_role("review")
     messages = request_messages(system, data)
     capacity = get_capacity(profile.llm_base_url, profile.llm_model)
-    limit_parameter = capacity.get("output_limit_parameter", "max_tokens")
+    current_plan = planned_output_tokens(profile, REVIEW_OUTPUT_TOKENS, capacity)
+    limit_parameter = current_plan["output_limit_parameter"]
     if limit_parameter not in {"max_tokens", "max_completion_tokens"}:
         raise DomainError("CAPACITY_PARAMETER_INVALID", 422)
     manifest = {"schema_version": "aiedu.prompt-manifest.v1", "context_hash": state["context"]["context_hash"],
@@ -112,10 +113,11 @@ def resume_partitions(run_id, state, data, system):
         "stage": "rubric_reviewing", "role": "review", "entries": [C_REVIEW_ENTRY]}
 
     def failed_at_budget(budget, payload):
+        planned = planned_output_tokens(profile, budget, capacity)
         estimate = request_capacity(
             request_messages(system, payload), capacity,
-            min(budget, capacity["max_output_tokens"]) if capacity else budget)
-        params = {limit_parameter: estimate["reserved_output_tokens"],
+            planned["reserved_output_tokens"])
+        params = {planned["output_limit_parameter"]: estimate["reserved_output_tokens"],
             "temperature": getattr(profile, "llm_temperature", None), "thinking": getattr(profile, "llm_thinking", None),
             "reasoning_effort": getattr(profile, "llm_reasoning_effort", None),
             "json_mode": getattr(profile, "llm_json_mode", True)}

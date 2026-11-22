@@ -73,6 +73,7 @@ def public_roles():
             profile = for_role(role)
             result[role] = {"configured": True, "model": profile.llm_model,
                             "model_family": getattr(profile, "llm_model_family", "unknown"),
+                            "output_limit_tokens": getattr(profile, "llm_output_limit_tokens", None),
                             "thinking": profile.llm_thinking, "reasoning_effort": profile.llm_reasoning_effort,
                             "scoped_role_profile": os.getenv("AIEDU_SCOPED_ROLE_PROFILE")}
         except DomainError as exc:

@@ -11,8 +11,9 @@ from ..db import SessionLocal
 from ..models import GenerationJob, GoalMaterial, LearningGoal, TutorialVersion
 from ..schemas import ChatRequest
 from ..v2 import exports, tasks
-from ..v2.contracts import (Confirmation, DomainError, ExportRequest, InputPatch, Pause, QuarantineUnknown, RepairRequest,
-                            Resume, StartRun, TaskInput, TaskStart, UserReview, digest, sha)
+from ..v2.contracts import (Confirmation, DeliveryWaiverRequest, DomainError, ExportRequest, InputPatch, Pause,
+                            QuarantineUnknown, RepairRequest, Resume, StartRun, TaskInput, TaskStart,
+                            UserReview, digest, sha)
 from ..v2.quality import POLICY, SCENES, compile_plan
 from ..v2.runtime import cas, dump, job, load, materialize, write
 from ..v2.security import action_key, create_session, owner
@@ -189,6 +190,11 @@ def resume(run_id: str, payload: Resume, background: BackgroundTasks, key=Depend
     result = tasks.resume(run_id, payload, key)
     background.add_task(execute_run, result["run_id"])
     return result
+
+
+@secured.post("/runs/{run_id}/delivery-waivers")
+def delivery_waiver(run_id: str, payload: DeliveryWaiverRequest, key=Depends(action_key)):
+    return tasks.delivery_waiver(run_id, payload, key)
 
 
 @secured.get("/artifacts/{artifact_id}/versions/{version_id}")

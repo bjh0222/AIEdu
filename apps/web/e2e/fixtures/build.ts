@@ -64,6 +64,11 @@ export function runSnapshot(over: Record<string, unknown> = {}) {
     calls: [{ call_id: "88888888-8888-4888-8888-888888888888", unit_id: IDS.unit, status: "settled", outcome: "success", attempt: 1, usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, usage_source: "not_applicable_demo" }, price: null, model_family: "demo", request_hash: "e".repeat(64), elapsed_seconds: 0.004 }],
     accounting_revision: "f".repeat(64), cost_final: true, next_actions: [], delivery_state: "not_started",
     delivery_detail: "固定草稿可读；这不表示质量已通过或可以最终交付。",
+    delivery_decision: {
+      state: "blocked", final_allowed: false, hard_blockers: [], soft_blockers: [],
+      soft_item_ids: [], waiver_auto_enabled: true, waiver_status: "not_present",
+      certificate_status: "not_present", delivery_calibration_status: "not_calibrated",
+    },
     run_metrics: {
       method_version: "run-accounting-summary.v1", calls: 1, calls_started_or_settled: 1,
       tokens_known: 0, token_unknown_calls: 0, price_known_calls: 0, price_missing_calls: 0,

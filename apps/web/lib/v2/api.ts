@@ -1,7 +1,7 @@
 // 针对每个 v2 端点的薄封装，类型来自后端生成的契约（lib/v2/contracts.generated.ts，勿手改）。
 import { act, get, getConditional } from "./client";
 import type {
-  Confirmation, ExportRequest, InputPatch, Pause, QuarantineUnknown, RepairRequest, Resume, RunSnapshot, DraftSnapshot, StartRun, TaskInput, TaskPage, TaskStart, UserReview, VersionPage,
+  Confirmation, DeliveryWaiverRequest, ExportRequest, InputPatch, Pause, QuarantineUnknown, RepairRequest, Resume, RunSnapshot, DraftSnapshot, StartRun, TaskInput, TaskPage, TaskStart, UserReview, VersionPage,
 } from "./contracts.generated";
 
 export type Snapshot = RunSnapshot | DraftSnapshot;
@@ -23,6 +23,7 @@ export type Capabilities = {
 
 export type StartResult = { run_id: string | null; task_id: string; snapshot_url: string; conflicts?: unknown[]; task_state?: string; input_revision?: number; context_hash?: string };
 export type PauseResult = { run_id: string; state: string; state_revision: number; version_id: string | null; checkpoint_hash: string; inflight_count: number; bundle_status: string; available_draft: boolean };
+export type DeliveryWaiverResult = { run_id: string; action: "accept" | "decline" | "revoke"; state_revision: number; waiver: Record<string, unknown> | null; delivery_decision: Record<string, unknown> };
 export type VersionUnit = { unit_id: string; artifact_role: string; artifact_roles?: string[]; body: string; content_hash: string; title?: string; items?: { ordinal: number; stem_markdown: string; score?: number; answer: { final: string; reasoning: string } }[] };
 export type VersionRead = { version_id: string; version: number; content_hash: string; quality_hash: string;
   export_binding?: { run_id: string; task_id: string; state_revision: number; version_id: string; content_hash: string };
@@ -54,6 +55,7 @@ export const api = {
   startRun: (taskId: string, body: StartRun, key: string) => act<StartResult>("POST", `/tasks/${taskId}/runs`, body, { kind: "start_run", taskId, expectedRevision: body.expected_revision, key }),
   pause: (taskId: string, runId: string, body: Pause, key: string) => act<PauseResult>("POST", `/runs/${runId}/pause`, body, { kind: "pause", taskId, expectedRevision: body.expected_revision, key }),
   quarantineUnknown: (taskId: string, runId: string, body: QuarantineUnknown, key: string) => act<{ run_id: string; state: string; state_revision: number; checkpoint_hash: string; call_ids: string[]; scheduled: false; provider_settlement: "unresolved" }>("POST", `/runs/${runId}/unknown-quarantines`, body, { kind: "quarantine_unknown", taskId, expectedRevision: body.expected_revision, key }),
+  deliveryWaiver: (taskId: string, runId: string, body: DeliveryWaiverRequest, key: string) => act<DeliveryWaiverResult>("POST", `/runs/${runId}/delivery-waivers`, body, { kind: "delivery_waiver", taskId, expectedRevision: body.expected_revision, key }),
   resume: (taskId: string, runId: string, body: Resume, key: string) => act<{ run_id: string; parent_run_id: string }>("POST", `/runs/${runId}/resume`, body, { kind: "resume", taskId, expectedRevision: body.expected_revision, key }),
   version: (artifactId: string, versionId: string) => get<VersionRead>(`/artifacts/${artifactId}/versions/${versionId}`),
   versions: (taskId: string, artifactId: string, before?: number) => get<VersionPage>(`/tasks/${taskId}/versions?artifact_id=${encodeURIComponent(artifactId)}${before ? `&before_version=${before}` : ""}`),

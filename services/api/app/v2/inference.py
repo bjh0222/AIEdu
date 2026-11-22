@@ -8,7 +8,7 @@ import httpx
 
 from ..config import settings
 from ..llm.provider import LLMError, OpenAICompatibleProvider, extract_json, parse_usage
-from .capacity import get_capacity, request_capacity
+from .capacity import get_capacity, planned_output_tokens, request_capacity
 from .contracts import DomainError, canonical, digest, request_hash
 from .runtime import authorize_call, mark_sent, settle
 
@@ -155,18 +155,22 @@ class AuditedProvider(OpenAICompatibleProvider):
 
 
 def invoke(run_id, worker, epoch, state, *, stage, unit_id, data, system, role="generation", profile=None,
-           key=None, entries=None, provider_factory=None, output_schema=None, output_tokens=8192):
+           key=None, entries=None, provider_factory=None, output_schema=None, output_tokens=None):
     from .model_roles import for_role
     if not settings.v2_allow_paid:
         raise DomainError("PAID_RUN_NOT_AUTHORIZED", 403)
     profile = profile or for_role(role)
     messages = request_messages(system, data, output_schema)
     capacity = get_capacity(profile.llm_base_url, profile.llm_model)
-    estimate = request_capacity(messages, capacity, min(output_tokens, capacity["max_output_tokens"]) if capacity else output_tokens)
-    limit_parameter = capacity.get("output_limit_parameter","max_tokens")
-    if limit_parameter not in {"max_tokens","max_completion_tokens"}:
-        raise DomainError("CAPACITY_PARAMETER_INVALID",422)
-    profile.llm_max_tokens = estimate["reserved_output_tokens"]
+    planned = planned_output_tokens(profile, output_tokens, capacity)
+    estimate = request_capacity(messages, capacity, planned["reserved_output_tokens"])
+    estimate.update({
+        key: value for key, value in planned.items()
+        if key not in {"reserved_output_tokens", "capacity_source"}
+    })
+    estimate["capacity_source"] = planned["capacity_source"]
+    limit_parameter = planned["output_limit_parameter"]
+    profile.llm_max_tokens = planned["reserved_output_tokens"]
     profile.llm_output_limit_parameter = limit_parameter
     params = {limit_parameter: profile.llm_max_tokens, "temperature": getattr(profile, "llm_temperature", None),
               "thinking": getattr(profile, "llm_thinking", None), "reasoning_effort": getattr(profile, "llm_reasoning_effort", None),

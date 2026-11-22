@@ -468,6 +468,58 @@
         "title": "Confirmation",
         "type": "object"
       },
+      "DeliveryWaiverRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledge_professional_uncertainty": {
+            "default": false,
+            "title": "Acknowledge Professional Uncertainty",
+            "type": "boolean"
+          },
+          "action": {
+            "enum": [
+              "accept",
+              "decline",
+              "revoke"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "checkpoint_hash": {
+            "title": "Checkpoint Hash",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "soft_item_ids": {
+            "items": {
+              "enum": [
+                "C3.correctness",
+                "G2.knowledge_integration"
+              ],
+              "type": "string"
+            },
+            "maxItems": 2,
+            "title": "Soft Item Ids",
+            "type": "array"
+          },
+          "version_id": {
+            "title": "Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "checkpoint_hash",
+          "version_id",
+          "action"
+        ],
+        "title": "DeliveryWaiverRequest",
+        "type": "object"
+      },
       "DiagnosticDimension": {
         "additionalProperties": true,
         "properties": {
@@ -3164,6 +3216,11 @@
             "title": "Cost Final",
             "type": "boolean"
           },
+          "delivery_decision": {
+            "additionalProperties": true,
+            "title": "Delivery Decision",
+            "type": "object"
+          },
           "delivery_detail": {
             "title": "Delivery Detail",
             "type": "string"
@@ -3209,10 +3266,33 @@
           "quality": {
             "$ref": "#/components/schemas/app__v2__responses__QualityReport"
           },
+          "research_degradation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Research Degradation"
+          },
           "research_policy": {
             "additionalProperties": true,
             "title": "Research Policy",
             "type": "object"
+          },
+          "research_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Research Status"
           },
           "root_job_id": {
             "title": "Root Job Id",
@@ -3321,6 +3401,7 @@
           "next_actions",
           "delivery_state",
           "delivery_detail",
+          "delivery_decision",
           "run_metrics"
         ],
         "title": "RunSnapshot",
@@ -7829,6 +7910,85 @@
         "summary": "Research Rubric",
         "tags": [
           "research.v2"
+        ]
+      }
+    },
+    "/api/v2/runs/{run_id}/delivery-waivers": {
+      "post": {
+        "operationId": "delivery_waiver_api_v2_runs__run_id__delivery_waivers_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Origin",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeliveryWaiverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "LocalOwner": []
+          }
+        ],
+        "summary": "Delivery Waiver",
+        "tags": [
+          "task-run.v2"
         ]
       }
     },

@@ -47,7 +47,7 @@ def exhausted_groups(run_id, state, unit_id, stage, system, profile, *, payload_
 
 def scheduled_output(run_id, state, unit_id, stage, system, profile, data, default):
     """Expand only the exact output-exhausted ancestral request on explicit resume."""
-    from .capacity import get_capacity
+    from .capacity import get_capacity, planned_output_tokens
     from .contracts import DomainError
     failures = exhausted_groups(run_id, state, unit_id, stage, system, profile, payload_field=None)
     previous = failures.get(digest(data))
@@ -56,7 +56,7 @@ def scheduled_output(run_id, state, unit_id, stage, system, profile, data, defau
     capacity = get_capacity(profile.llm_base_url, profile.llm_model)
     if not capacity:
         raise DomainError("CAPACITY_UNKNOWN", 422)
-    ceiling = capacity["max_output_tokens"]
+    ceiling = planned_output_tokens(profile, capacity["max_output_tokens"], capacity)["reserved_output_tokens"]
     if previous >= ceiling:
         raise DomainError("VERIFIER_OUTPUT_CAPACITY_EXHAUSTED", 422)
     return min(ceiling, max(default, previous * 2))
@@ -86,13 +86,13 @@ def split_exhausted_groups(groups, failures, ceiling):
 
 
 def scheduled_groups(run_id, state, unit_id, stage, system, profile, groups):
-    from .capacity import get_capacity
+    from .capacity import get_capacity, planned_output_tokens
     from .contracts import DomainError
     capacity = get_capacity(profile.llm_base_url, profile.llm_model)
     if not capacity:
         raise DomainError("CAPACITY_UNKNOWN", 422)
-    return split_exhausted_groups(groups, exhausted_groups(run_id, state, unit_id, stage, system, profile),
-                                 capacity["max_output_tokens"])
+    ceiling = planned_output_tokens(profile, capacity["max_output_tokens"], capacity)["reserved_output_tokens"]
+    return split_exhausted_groups(groups, exhausted_groups(run_id, state, unit_id, stage, system, profile), ceiling)
 
 
 class IsolatedChecklists(set):

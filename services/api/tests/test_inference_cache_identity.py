@@ -64,7 +64,7 @@ def test_legacy_json_order_reuse_is_bound_to_successful_ancestor(client, monkeyp
         job(db, run["run_id"]).status = "failed"
     before = snapshot(created["task_id"])
     if change == "unknown":
-        with pytest.raises(DomainError, match="UNKNOWN_CALL"):
+        with pytest.raises(DomainError, match="UNKNOWN_QUARANTINE_REQUIRED"):
             resume(run["run_id"], Resume(expected_revision=before["state_revision"],
                 checkpoint_hash=before["checkpoint_hash"]), str(uuid4()))
         assert len(dispatched) == 1

@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, field_validator
 from .config import BACKEND_ROOT, settings
 
 _lock = threading.RLock()
+DEFAULT_DELIVERY_POLICY = {"auto_waiver_enabled": True}
 
 
 class ModelProfile(BaseModel):
@@ -29,6 +30,7 @@ class ModelProfile(BaseModel):
     thinking: Literal["enabled", "disabled"] | None = None
     reasoning_effort: Literal["low", "high", "max"] | None = None
     model_family: str = "unknown"
+    output_limit_tokens: int | None = Field(default=None, ge=1)
 
     @field_validator("base_url")
     @classmethod
@@ -70,6 +72,7 @@ def read_config() -> dict:
             eval_cfg = config.setdefault("independent_eval", {})
             eval_cfg.setdefault("enabled", settings.independent_eval_enabled)
             eval_cfg.setdefault("api_key", "")
+            config.setdefault("delivery_policy", dict(DEFAULT_DELIVERY_POLICY))
             return config
         profiles = []
         if settings.llm_configured:
@@ -84,6 +87,7 @@ def read_config() -> dict:
                 "enabled": settings.independent_eval_enabled,
                 "api_key": "",
             },
+            "delivery_policy": dict(DEFAULT_DELIVERY_POLICY),
         }
 
 
@@ -128,6 +132,19 @@ def public_config() -> dict:
                 "",
             ),
         },
+        "delivery_policy": delivery_policy(config),
+    }
+
+
+def delivery_policy(config: dict | None = None) -> dict:
+    value = config if config is not None else read_config()
+    configured = value.get("delivery_policy") or {}
+    enabled = bool(configured.get("auto_waiver_enabled", True))
+    env_value = str(os.getenv("AIEDU_DELIVERY_WAIVER", "")).strip().lower()
+    env_disabled = env_value in {"0", "false", "no", "off"}
+    return {
+        "auto_waiver_enabled": False if env_disabled else enabled,
+        "source": "environment_disabled" if env_disabled else "config_default",
     }
 
 
@@ -156,6 +173,8 @@ def resolve_profile(profile: ModelProfile) -> dict:
     previous = next((p for p in read_config()["profiles"] if p["id"] == profile.id), None)
     if "read_timeout" not in profile.model_fields_set and previous:
         result["read_timeout"] = previous.get("read_timeout")
+    if "output_limit_tokens" not in profile.model_fields_set and previous:
+        result["output_limit_tokens"] = previous.get("output_limit_tokens")
     if profile.api_key is None:
         # Never forward a retained credential to a newly typed endpoint.
         result["api_key"] = previous.get("api_key", "") if previous and previous["base_url"] == profile.base_url else ""
@@ -221,6 +240,7 @@ def profile_settings(profile: dict):
     snapshot.llm_thinking = profile.get("thinking")
     snapshot.llm_reasoning_effort = profile.get("reasoning_effort")
     snapshot.llm_model_family = profile.get("model_family", "unknown")
+    snapshot.llm_output_limit_tokens = profile.get("output_limit_tokens")
     snapshot.allow_no_key = True  # Local endpoints may not require authentication.
     return snapshot
 

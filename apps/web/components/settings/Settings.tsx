@@ -8,9 +8,9 @@ import { useToast } from "@/components/ui/Toast";
 import ResourceActions from "@/components/library/ResourceActions";
 import ResourceManager from "@/components/library/ResourceManager";
 
-type Profile = { id: string; name: string; model: string; base_url: string; has_key: boolean; thinking?: string | null; reasoning_effort?: string | null; model_family?: string };
+type Profile = { id: string; name: string; model: string; base_url: string; has_key: boolean; thinking?: string | null; reasoning_effort?: string | null; model_family?: string; output_limit_tokens?: number | null };
 type ModelSettings = {
-  config: { active_id: string | null; user_profile: string; profiles: Profile[] };
+  config: { active_id: string | null; user_profile: string; profiles: Profile[]; delivery_policy?: { auto_waiver_enabled: boolean; source: string } };
   config_hash: string;
   roles: Record<string, { configured: boolean; model?: string; model_family?: string; reason?: string }>;
   role_assignments?: Record<string, string>;
@@ -27,7 +27,7 @@ export default function Settings() {
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [error, setError] = useState("");
   const [backendDown, setBackendDown] = useState(false);
-  const [form, setForm] = useState({ id: "", name: "", base_url: "", model: "", api_key: "", model_family: "unknown", thinking: "", reasoning_effort: "" });
+  const [form, setForm] = useState({ id: "", name: "", base_url: "", model: "", api_key: "", model_family: "unknown", thinking: "", reasoning_effort: "", output_limit_tokens: "" });
   const [assignments, setAssignments] = useState<Record<string, string>>({});
   const [chatRole, setChatRole] = useState("");
   const [background, setBackground] = useState("");
@@ -59,10 +59,12 @@ export default function Settings() {
     e.preventDefault();
     if (!models) return;
     try {
-      const value: Record<string, unknown> = { id: form.id.trim(), name: form.name.trim(), base_url: form.base_url.trim(), model: form.model.trim(), model_family: form.model_family.trim(), thinking: form.thinking || null, reasoning_effort: form.reasoning_effort || null };
+      const extraOutput = form.output_limit_tokens.trim() ? Number(form.output_limit_tokens) : null;
+      if (extraOutput !== null && (!Number.isSafeInteger(extraOutput) || extraOutput <= 0)) throw new Error("额外输出上限必须是正整数，或留空使用模型容量。");
+      const value: Record<string, unknown> = { id: form.id.trim(), name: form.name.trim(), base_url: form.base_url.trim(), model: form.model.trim(), model_family: form.model_family.trim(), thinking: form.thinking || null, reasoning_effort: form.reasoning_effort || null, output_limit_tokens: extraOutput };
       if (form.api_key) value.api_key = form.api_key;
       await writeConfig("profile", value, "模型配置已保存");
-      setForm({ id: "", name: "", base_url: "", model: "", api_key: "", model_family: "unknown", thinking: "", reasoning_effort: "" }); // 密钥保存后立即清空，永不回显
+      setForm({ id: "", name: "", base_url: "", model: "", api_key: "", model_family: "unknown", thinking: "", reasoning_effort: "", output_limit_tokens: "" }); // 密钥保存后立即清空，永不回显
     } catch (err) { setError(explain(err)); }
   }
 
@@ -149,6 +151,16 @@ export default function Settings() {
                   ))}
                 </ul>
                 <p className="hint" style={{ marginTop: 6 }}>同族模型可在隔离上下文中复核，但不具备跨模型族独立验证资格；不会自动替换你的选择。</p>
+                <label style={{ display: "flex", gap: 8, alignItems: "center", padding: "8px 0", borderTop: "1px solid var(--line)" }}>
+                  <input
+                    type="checkbox"
+                    checked={models.config.delivery_policy?.auto_waiver_enabled !== false}
+                    disabled={busy || Boolean(pending) || models.config.delivery_policy?.source === "environment_disabled"}
+                    onChange={(e) => void writeConfig("delivery_policy", { auto_waiver_enabled: e.target.checked }, e.target.checked ? "最终交付时会询问是否放行专业项" : "最终交付不会自动提示放行")}
+                  />
+                  签最终交付时提示专业项放行
+                </label>
+                <p className="hint">开启只表示允许在软阻塞时询问；只有你实际确认后才会生成授权记录。硬问题、结构、覆盖、材料和校准证书缺口永远不能放行。环境变量关闭时此开关只读。</p>
                 <form className="asset-editor" onSubmit={async (e) => { e.preventDefault(); await saveChatRole(chatRole); }}>
                   <div className="field">
                     <label htmlFor="role-chat">阅读页聊天</label>
@@ -171,7 +183,7 @@ export default function Settings() {
                   <ul>
                     {models.config.profiles.map((p) => (
                       <li key={p.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 0", borderBottom: "1px solid var(--line)", alignItems: "center", flexWrap: "wrap" }}>
-                        <span><b>{p.name}</b> <span className="muted">{p.model} · {p.has_key ? "已保存密钥" : "没有密钥"}</span></span>
+                        <span><b>{p.name}</b> <span className="muted">{p.model} · {p.has_key ? "已保存密钥" : "没有密钥"} · {p.output_limit_tokens ? `额外输出上限 ${p.output_limit_tokens}` : "无额外输出限制"}</span></span>
                         <div className="row-actions"><button className="btn btn-sm" disabled={busy || Boolean(pending)} aria-pressed={models.config.active_id === p.id} onClick={() => void select(p.id)}>{models.config.active_id === p.id ? "使用中" : "使用"}</button><ResourceActions kind="model-profiles" id={p.id} label={p.name} onChanged={() => { load(); setManagementRevision((v) => v + 1); }} /></div>
                       </li>
                     ))}
@@ -187,6 +199,11 @@ export default function Settings() {
                 <div className="field"><label htmlFor="mfamily">模型族（用于独立性检查）</label><input id="mfamily" value={form.model_family} onChange={(e) => setForm({ ...form, model_family: e.target.value })} /></div>
                 <div className="field"><label htmlFor="mthinking">思考模式</label><select id="mthinking" value={form.thinking} onChange={(e) => setForm({ ...form, thinking: e.target.value })}><option value="">模型默认</option><option value="enabled">启用</option><option value="disabled">关闭</option></select></div>
                 <div className="field"><label htmlFor="meffort">推理强度</label><select id="meffort" value={form.reasoning_effort} onChange={(e) => setForm({ ...form, reasoning_effort: e.target.value })}><option value="">模型默认</option>{["low", "high", "max"].map((v) => <option key={v}>{v}</option>)}</select></div>
+                <div className="field">
+                  <label htmlFor="moutput">额外输出上限（tokens）</label>
+                  <input id="moutput" type="number" min={1} step={1} value={form.output_limit_tokens} onChange={(e) => setForm({ ...form, output_limit_tokens: e.target.value })} placeholder="留空：无额外限制（仍受模型容量约束）" />
+                  <p className="hint">留空不会套用应用内置的 8k/16k/32k/64k 上限；系统按已登记模型容量派发。填写值不得超过登记容量，容量未知时拒绝调用。</p>
+                </div>
                 <div className="field">
                   <label htmlFor="mkey">密钥</label>
                   <input id="mkey" type="password" autoComplete="off" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder="留空则沿用已保存的密钥" />
