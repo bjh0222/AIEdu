@@ -59,6 +59,54 @@ def test_intent_does_not_override_explicit_values():
     assert result["runtime_target"] == ""
 
 
+@pytest.mark.parametrize("proposed_scene", ["tutorial", "knowledge_tutorial", "exercise"])
+def test_explicit_tutorial_artifact_rejects_practice_scene_inference(proposed_scene):
+    from app.v2.contracts import TaskInput
+    from app.v2.resolver import resolve_task
+
+    payload = TaskInput(
+        title="线代教程",
+        raw_input="请写一份两章线性代数入门教程，每章一个例题，不要额外习题集。",
+        domain_key="math_logic",
+        requested_artifacts=["tutorial"],
+    )
+    result = resolve_task(
+        payload.model_dump(),
+        payload.model_fields_set,
+        {"scene": proposed_scene},
+    )
+    assert result["spec_bindings"] == [{
+        "scene": "knowledge_tutorial",
+        "artifact_role": "tutorial",
+        "spec_id": None,
+        "snapshot": {},
+    }]
+    assert result["quality_profiles"][0]["profile_id"] == "math_logic.tutorial"
+
+
+def test_explicit_exercise_artifact_is_not_redirected_by_generic_tutorial_scene():
+    from app.v2.contracts import TaskInput
+    from app.v2.resolver import resolve_task
+
+    payload = TaskInput(
+        title="练习",
+        raw_input="生成一道行列式练习题并附答案。",
+        domain_key="math_logic",
+        requested_artifacts=["exercise", "answer"],
+    )
+    result = resolve_task(
+        payload.model_dump(),
+        payload.model_fields_set,
+        {"scene": "tutorial"},
+    )
+    assert result["spec_bindings"] == [{
+        "scene": "exercise",
+        "artifact_role": "exercise",
+        "spec_id": None,
+        "snapshot": {},
+    }]
+
+
 def test_all_21_profiles_have_distinct_tutorial_exercise_criteria():
     from app.v2.profiles import coverage_catalog
     profiles = coverage_catalog()

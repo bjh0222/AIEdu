@@ -10,6 +10,7 @@ from .contracts import DomainError, digest
 from .profiles import domain_profile
 
 SCENES = {"default_tutorial", "knowledge_tutorial", "practical_tutorial", "reading_guide", "exam_paper", "exercise", "exam"}
+SCENE_ALIASES = {"exam": "exam_paper", "tutorial": "knowledge_tutorial"}
 SPEC_FIELDS = ("name", "scene", "description", "applicable_tasks", "target_reader", "output_goal", "deliverables",
                "content_structure", "format_rules", "required_rules", "forbidden_rules", "suggested_rules",
                "flexible_rules", "reference_examples", "acceptance_criteria", "custom_markdown",
@@ -31,7 +32,21 @@ HINTS = {
 
 
 def canonical_scene(scene):
-    return "exam_paper" if scene == "exam" else scene
+    value = str(scene or "").strip().lower()
+    return SCENE_ALIASES.get(value, value)
+
+
+def _requested_scene_scope(artifacts):
+    """Scenes compatible with an explicitly requested artifact list."""
+    roles = set(artifacts or [])
+    allowed = set()
+    if "paper" in roles:
+        allowed.add("exam_paper")
+    if "exercise" in roles:
+        allowed.add("exercise")
+    if "tutorial" in roles:
+        allowed.update({"default_tutorial", "knowledge_tutorial", "practical_tutorial", "reading_guide"})
+    return allowed
 
 
 def resolve_task(value, explicit_fields=None, proposal=None):
@@ -80,8 +95,22 @@ def resolve_task(value, explicit_fields=None, proposal=None):
         if token in raw:
             scene = mode
             break
-    if proposal.get("scene") in SCENES:
-        scene = canonical_scene(proposal["scene"])
+    proposed_scene = canonical_scene(proposal.get("scene"))
+    if proposed_scene in SCENES:
+        scene = proposed_scene
+    if "requested_artifacts" in explicit:
+        allowed = _requested_scene_scope(result.get("requested_artifacts"))
+        if allowed and scene not in allowed:
+            if "reading_guide" in allowed and re.search(r"阅读|导读", raw):
+                scene = "reading_guide"
+            elif "practical_tutorial" in allowed and re.search(r"实践|操作", raw):
+                scene = "practical_tutorial"
+            elif "exercise" in allowed:
+                scene = "exercise"
+            elif "exam_paper" in allowed:
+                scene = "exam_paper"
+            else:
+                scene = "knowledge_tutorial"
     if "spec_bindings" not in explicit:
         role = "paper" if scene == "exam_paper" else ("exercise" if scene == "exercise" else "tutorial")
         result["spec_bindings"] = [{"scene": scene, "artifact_role": role, "spec_id": None, "snapshot": {}}]

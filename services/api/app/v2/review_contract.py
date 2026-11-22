@@ -19,8 +19,8 @@ from .quality_policy import context_domains, unit_domains
 
 EVIDENCE_VERSION = "server-evidence-catalog.v1"
 NORMALIZER_VERSION = "provider-contract-normalizer.v1"
-APPLICABILITY_VERSION = "zero-model-applicability.v1"
-PROTOCOL_VERSION = "quality-protocol-freeze.v6"
+APPLICABILITY_VERSION = "zero-model-applicability.v2"
+PROTOCOL_VERSION = "quality-protocol-freeze.v8"
 
 _RESULT_ALIASES = {
     "pass": "satisfied",
@@ -303,6 +303,16 @@ def _unit_question_forms(unit: dict) -> set[str]:
     return forms
 
 
+def _has_frozen_hard_constraints(context: dict) -> bool:
+    """Treat blank legacy strings and whitespace-only rows as absent constraints."""
+    value = context.get("hard_constraints")
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple)):
+        return any(isinstance(item, str) and bool(item.strip()) for item in value)
+    return False
+
+
 def applicability_decision(item: dict, unit: dict, context: dict) -> dict[str, Any]:
     """Zero-model unit x dimension x scene x question-form applicability."""
     scope = item.get("scope") or {}
@@ -332,6 +342,8 @@ def applicability_decision(item: dict, unit: dict, context: dict) -> dict[str, A
         execute, reason = False, "item_content_not_present"
     elif scoped_forms and not forms.intersection(scoped_forms):
         execute, reason = False, "question_form_not_in_scope"
+    elif scope.get("requires_nonempty_hard_constraints") is True and not _has_frozen_hard_constraints(context):
+        execute, reason = False, "no_frozen_hard_constraints"
     return {
         "method_version": APPLICABILITY_VERSION,
         "decision": "execute" if execute else "skip",
@@ -425,6 +437,8 @@ def review_protocol_manifest() -> dict[str, Any]:
             "capacity.py",
             "inference.py",
             "research_length_recovery.py",
+            "resolver.py",
+            "adaptive_format.py",
             "planning.py",
             "worker.py",
             "quality.py",

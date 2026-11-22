@@ -256,10 +256,18 @@ def invoke(run_id, worker, epoch, state, *, stage, unit_id, data, system, role="
         output, latency, usage = provider.complete_json(messages[0]["content"], messages[1]["content"])
     except LLMError as exc:
         outcome = getattr(exc, "outcome", "unknown")
+        failure_code = getattr(exc, "code", "PROVIDER_FAILURE_UNCLASSIFIED")
+        failure_diagnostics = getattr(exc, "diagnostics", None)
         settle(call_id, outcome, getattr(exc, "usage", None), getattr(exc, "provider_request_id", None),
-            failure_code=getattr(exc,"code","PROVIDER_FAILURE_UNCLASSIFIED"),
-            failure_diagnostics=getattr(exc,"diagnostics",None), raw_result=getattr(exc,"raw_result",None))
-        raise DomainError("UNKNOWN_CALL" if outcome == "unknown" else "PROVIDER_CALL_FAILED", 502) from None
+            failure_code=failure_code, failure_diagnostics=failure_diagnostics,
+            raw_result=getattr(exc, "raw_result", None))
+        raise DomainError(
+            "UNKNOWN_CALL" if outcome == "unknown" else "PROVIDER_CALL_FAILED",
+            502,
+            call_id=call_id,
+            failure_code=failure_code,
+            failure_diagnostics=failure_diagnostics,
+        ) from None
     receipt = settle(call_id, "success", usage, getattr(provider, "provider_request_id", None), raw_result=output)
     if receipt["status"] != "settled":
         raise DomainError("FENCED")

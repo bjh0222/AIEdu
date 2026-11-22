@@ -291,10 +291,24 @@ def review_state(domain="math_logic"):
 def test_C_gets_one_bound_request_per_quality_target_blueprint_link_and_misconception():
     from app.v2.criterion_review import requests_for_unit
     state, unit, _ = review_state()
-    requests, _ = requests_for_unit(state, unit)
     rule_id = state["context"]["quality_profiles"][0]["rules"][0]["rule_id"]
-    quality = [r for r in requests if r.get("a_quality_refs")]
-    assert quality and all(r["criterion"]["check_id"] == rule_id for r in quality)
+    # An A target can outlive a matching generic row during adaptive assembly.
+    # Its persisted hashes are server-verified; C receives only the semantic
+    # target clause, never a metadata-only "binding" clause.
+    state["check_plan"]["check_items"] = [
+        item for item in state["check_plan"]["check_items"]
+        if item["item_id"] != rule_id
+    ]
+    requests, _ = requests_for_unit(state, unit)
+    added_quality = [
+        r for r in requests if r["check_id"].startswith("A.quality.")
+    ]
+    assert added_quality and all(
+        r["a_quality_refs"]
+        and r["a_quality_refs"][0]["rule_id"] == rule_id
+        and set(r["criterion"]["clauses"]) == {"target"}
+        for r in added_quality
+    )
     assert any(r["check_id"].startswith("A.blueprint.") for r in requests)
     assert any(r["check_id"].startswith("A.knowledge.") for r in requests)
     assert any(r["check_id"].startswith("A.misconception.") for r in requests)

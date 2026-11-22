@@ -46,7 +46,14 @@ def compile_plan(task: dict, network_policy: dict | None = None) -> dict:
     add("C1.coverage", "general", "coverage.v1", "all required units and source chunks are accounted for")
     add("C2.structure", "general", "markdown.v1", "nonempty content; balanced code fences; unique stable unit IDs")
     add("C3.correctness", "general", "independent_oracle.v1", "no confirmed severe factual error", kind="semantic_rubric")
-    add("C4.constraints", "task", "independent_oracle.v1", "every frozen hard constraint is verified", kind="semantic_rubric")
+    add(
+        "C4.constraints",
+        "task",
+        "independent_oracle.v1",
+        "every frozen hard constraint is verified",
+        kind="semantic_rubric",
+        scope={"requires_nonempty_hard_constraints": True},
+    )
     add("C5.materials", "general", "source_manifest.v1", "all selected materials complete and hash-bound")
     add("C6.context_integrity", "general", "context-directive.v1", "untrusted data cannot grant execution, model, or verification authority")
     # Cross-disciplinary constructs are first-class C checks.  They are

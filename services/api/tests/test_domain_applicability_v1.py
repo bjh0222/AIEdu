@@ -1,4 +1,6 @@
 """Deterministic domain applicability and not-applicable consumer contracts."""
+from copy import deepcopy
+
 from app.v2.assessment_binding import (
     consume,
     criterion_check_results,
@@ -30,6 +32,40 @@ def math_unit(*, items=True):
     }
 
 
+def tutorial_task(hard_constraints=None):
+    return {
+        "raw_input": "生成一份跨学科教程",
+        "domain_key": "history_culture",
+        "branch": "",
+        "runtime_target": "",
+        "material_ids": [],
+        "subject_bindings": [{"domain_key": "history_culture"}],
+        "requested_artifacts": ["tutorial"],
+        "spec_bindings": [
+            {
+                "scene": "knowledge_tutorial",
+                "artifact_role": "tutorial",
+                "snapshot": {},
+            }
+        ],
+        "hard_constraints": list(hard_constraints or []),
+        "task_intent": {"conflicts": []},
+    }
+
+
+def tutorial_unit():
+    body = "正文以可核验的史料说明制度变化。"
+    return {
+        "unit_id": "tutorial-unit",
+        "title": "制度变化",
+        "artifact_role": "tutorial",
+        "body": body,
+        "content_hash": sha(body),
+        "subject_bindings": [{"domain_key": "history_culture"}],
+        "items": [],
+    }
+
+
 def test_legacy_math_domain_key_still_executes_math_specific_checks():
     task = {
         "domain_key": "math_data",
@@ -48,6 +84,125 @@ def test_legacy_math_domain_key_still_executes_math_specific_checks():
     assert decision["scope"]["domains"] == ["math_logic"]
     assert decision["canonical_domain_keys"] == ["math_logic"]
     assert decision["applicability_reason"] == "applicable"
+
+
+def test_c4_applicability_is_frozen_from_actual_hard_constraints():
+    empty_task = tutorial_task()
+    empty_plan = compile_plan(empty_task)
+    c4 = next(
+        item for item in empty_plan["check_items"]
+        if item["item_id"] == "C4.constraints"
+    )
+    assert c4["scope"]["requires_nonempty_hard_constraints"] is True
+    skipped = applicability_decision(c4, tutorial_unit(), empty_task)
+    assert skipped["decision"] == "skip"
+    assert skipped["reason"] == "no_frozen_hard_constraints"
+
+    constrained_task = tutorial_task(["必须引用原始材料"])
+    executed = applicability_decision(c4, tutorial_unit(), constrained_task)
+    assert executed["decision"] == "execute"
+    assert executed["reason"] == "applicable"
+
+    # Historical frozen plans had no such scope. Re-evaluating them must not
+    # retrofit the new gate after the plan hash was already accepted.
+    legacy = deepcopy(c4)
+    legacy["scope"].pop("requires_nonempty_hard_constraints")
+    assert applicability_decision(legacy, tutorial_unit(), empty_task)["decision"] == "execute"
+
+
+def test_empty_hard_constraints_skip_c4_before_any_model_request(monkeypatch):
+    from app.v2.criterion_review import evaluate_criteria, requests_for_unit
+
+    task = tutorial_task()
+    plan = compile_plan(task)
+    c4 = next(
+        item for item in plan["check_items"]
+        if item["item_id"] == "C4.constraints"
+    )
+    plan["check_items"] = [c4]
+    unit = tutorial_unit()
+    state = {
+        "context": task,
+        "plan": {"units": [unit]},
+        "check_plan": plan,
+        "execution_policy": {"criterion_assessment": True},
+    }
+
+    assert not any(
+        request["check_id"] == "C4.constraints"
+        for request in requests_for_unit(state, unit)[0]
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("C4 must not be dispatched without hard constraints")
+
+    monkeypatch.setattr(
+        "app.v2.generation_tools.generation_with_sources", forbidden
+    )
+    report = evaluate_criteria("run", "worker", 0, state, [unit], "version")
+    assert report["status"] == "completed"
+    assert report["result"] == "not_applicable"
+    assert report["coverage"]["expected"] == 0
+    row = next(
+        item for item in report["quality_preflight"]["rows"]
+        if item["check_id"] == "C4.constraints"
+    )
+    assert row["decision"] == "skip"
+    assert row["reason"] == "no_frozen_hard_constraints"
+
+
+def test_nonempty_hard_constraints_execute_c4_with_isolated_review(monkeypatch):
+    from app.v2.criterion_review import evaluate_criteria
+
+    task = tutorial_task(["必须引用原始材料"])
+    plan = compile_plan(task)
+    c4 = next(
+        item for item in plan["check_items"]
+        if item["item_id"] == "C4.constraints"
+    )
+    plan["check_items"] = [c4]
+    unit = tutorial_unit()
+    state = {
+        "context": task,
+        "plan": {"units": [unit]},
+        "check_plan": plan,
+        "execution_policy": {"criterion_assessment": True},
+    }
+    calls = []
+
+    def generate(*args, **kwargs):
+        calls.append(kwargs)
+        request = kwargs["data"]["requests"][0]
+        assert request["check_id"] == "C4.constraints"
+        assert kwargs["data"]["task"]["hard_constraints"] == ["必须引用原始材料"]
+        return {
+            "assessments": [{
+                "request_id": request["request_id"],
+                "rating": None,
+                "clauses": [{
+                    "clause_id": "requirement",
+                    "result": "satisfied",
+                    "reason": "正文说明了来源与制度变化的对应关系。",
+                    "evidence": [{
+                        "field": "unit:body",
+                        "quote": unit["body"],
+                    }],
+                }],
+            }]
+        }, {"call_id": "isolated-review"}, {}
+
+    monkeypatch.setattr(
+        "app.v2.generation_tools.generation_with_sources", generate
+    )
+    report = evaluate_criteria("run", "worker", 0, state, [unit], "version")
+    assert len(calls) == 1
+    assert calls[0]["stage"] == "criterion_assessing"
+    assert calls[0]["role"] == "review"
+    assert report["status"] == "completed"
+    assert report["result"] == "satisfied"
+    assert report["criteria"][0]["authority"] == (
+        "isolated_ai_observation_not_professional_certification"
+    )
 
 
 def test_unit_domain_scope_wins_over_other_cross_disciplinary_context_domains():

@@ -6,6 +6,7 @@ actual per-item rubric score (not a count of reasons). B's difficulty proposals,
 generation trace, model identity and prior judgments are never sent to C.
 """
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from statistics import median
 from threading import Event, Lock
 
@@ -153,9 +154,12 @@ def requests_for_unit(state, unit):
             "source_ref": "frozen:A-teaching-arrangement:v6",
             "version": "aiedu.criterion-assessment.v1", "check_id": identity}
         contract["criterion_hash"] = digest(contract)
-        requests.append({"request_id": digest([identity, None]), "check_id": identity,
+        request = {"request_id": digest([identity, None]), "check_id": identity,
             "item_id": None, "ordinal": None, "criterion": contract,
-            "a_target": row})
+            "a_target": row}
+        if prefix == "quality":
+            request["a_quality_refs"] = [deepcopy(row)]
+        requests.append(request)
 
     for ref in quality_refs:
         key = (ref["profile_id"], ref["rule_id"], ref["criterion_hash"])
@@ -163,8 +167,7 @@ def requests_for_unit(state, unit):
             continue
         add_a_row("quality", ref,
             f"Quality target {ref['profile_id']} / {ref['rule_id']}",
-            {"target": ref["criterion"],
-             "binding": f"{ref['profile_hash']}:{ref['criterion_hash']}"},
+                {"target": ref["criterion"]},
             ref.get("pass_condition")
             or "Independent evidence must support every applicable clause or the result remains undecidable.")
     for link in unit_targets.get("knowledge_chain", []):

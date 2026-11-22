@@ -87,8 +87,11 @@ def test_explicit_resume_recovers_failed_parse_without_changing_ledger_or_redisp
                 {"validation_reason": "JSON_PARSE_FAILED", "finish_reason": "stop", "content_characters": 12},
                 {"provider_content": '{"ok":true}}'})
     args = dict(stage="understanding", unit_id="A", data={"input": "same"}, system="JSON", provider_factory=lambda _: Provider())
-    with pytest.raises(DomainError, match="PROVIDER_CALL_FAILED"):
+    with pytest.raises(DomainError, match="PROVIDER_CALL_FAILED") as caught:
         inference.invoke(rid, "source-fixture", epoch, state, **args)
+    assert caught.value.details["failure_code"] == "PROVIDER_OUTPUT_INVALID_OR_TRUNCATED"
+    assert caught.value.details["failure_diagnostics"]["validation_reason"] == "JSON_PARSE_FAILED"
+    assert caught.value.details["call_id"]
     child_run, child_id = uuid4().hex, uuid4().hex
     with write() as db:
         old = job(db, rid)

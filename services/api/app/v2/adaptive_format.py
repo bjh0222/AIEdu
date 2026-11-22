@@ -69,9 +69,16 @@ def validated_design(value, context):
     raw = context.get("raw_input", "") + "\n" + "\n".join(context.get("hard_constraints", []))
     if any(not quote or quote not in raw for quote in design["request_quotes"]):
         raise DomainError("OUTPUT_DESIGN_REQUEST_UNBOUND", 422)
-    item_task = bool(set(context.get("requested_artifacts", [])) & {"exercise", "paper"})
+    artifacts = set(context.get("requested_artifacts", []))
+    item_task = bool(artifacts & {"exercise", "paper"})
     if item_task and design["question_form"] == "not_applicable":
         raise DomainError("TASK_QUESTION_FORM_REQUIRED", 422)
+    tutorial_only = "tutorial" in artifacts and not item_task
+    item_only = item_task and "tutorial" not in artifacts
+    if tutorial_only and design["mode"] in {"method_practice", "chapter_practice", "exam"}:
+        raise DomainError("OUTPUT_DESIGN_ARTIFACT_MODE_CONFLICT", 422)
+    if item_only and design["mode"] in {"tutorial", "reading"}:
+        raise DomainError("OUTPUT_DESIGN_ARTIFACT_MODE_CONFLICT", 422)
     # A may not silently turn an explicit harder task into a routine worksheet.
     # Nonroutine demand must be present for an explicitly challenging item task.
     # There is deliberately no universal "three steps = difficult" cutoff:

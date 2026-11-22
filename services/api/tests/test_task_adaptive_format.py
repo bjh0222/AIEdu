@@ -113,6 +113,21 @@ def test_non_item_history_tutorial_does_not_gain_a_hard_math_target():
     assert validated_design(value, ctx)["difficulty_target"] is None
 
 
+def test_explicit_tutorial_artifact_cannot_use_practice_output_design():
+    ctx = context() | {
+        "raw_input": "请写一份入门教程，不要额外习题集",
+        "requested_artifacts": ["tutorial"],
+    }
+    value = design(
+        mode="chapter_practice",
+        difficulty_target=None,
+        quantity_per_group=None,
+        request_quotes=["不要额外习题集"],
+    )
+    with pytest.raises(DomainError, match="OUTPUT_DESIGN_ARTIFACT_MODE_CONFLICT"):
+        validated_design(value, ctx)
+
+
 def test_no_universal_step_count_can_replace_actual_challenge_evidence():
     value = design()
     value["difficulty_target"]["minimum_dependency_depth"] = 2
