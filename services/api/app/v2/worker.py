@@ -663,12 +663,21 @@ def resolve_run_intent(run_id, worker, epoch, provider_factory=None):
     adaptive = state.get("execution_policy", {}).get("task_adaptive_format", False)
     if adaptive and teaching.get("status") != "schema_validated":
         raise DomainError("TEACHING_ARRANGEMENT_REQUIRED", 422)
+    quality_target_rebinding = []
     with SessionLocal() as db:
         obj = job(db, run_id)
         fence(obj, worker, epoch)
         current = load(obj.state_json)
         owner = goal(db, obj.goal_id)
         context = context_of(bind_specs(db, resolve_task(current["context"], proposal=result)), owner.input_revision)
+        from .planning import rebind_quality_target_refs
+        rebound_content, quality_target_rebinding = rebind_quality_target_refs(
+            teaching.get("content") or {}, current["context"], context
+        )
+        if quality_target_rebinding:
+            teaching["content"] = rebound_content
+            teaching["hash"] = digest(rebound_content)
+            audit["quality_target_rebinding"] = quality_target_rebinding
         chunks = []
         for mid in context["material_ids"]:
             material = db.get(GoalMaterial, mid)
@@ -715,6 +724,8 @@ def resolve_run_intent(run_id, worker, epoch, provider_factory=None):
         owner = goal(db, obj.goal_id)
         plan["planning_skill"] = {k: planning_skill[k] for k in ("skill_id", "version", "hash")}
         plan["planning_experience_selection"] = experience
+        if quality_target_rebinding:
+            plan["quality_target_rebinding"] = quality_target_rebinding
         if network_trace:
             plan["planning_network_research"] = {**network_trace, "arrangement_hash": teaching.get("hash")}
         plan.pop("plan_hash", None)

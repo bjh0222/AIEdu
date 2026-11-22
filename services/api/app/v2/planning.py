@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, ValidationError, ConfigDict
 from .check_criteria import rule_criterion
 from .contracts import DomainError, sha, digest
 from .adaptive_format import OutputDesign
+from ..learning.disciplines import canonical_domain_key
 
 
 class QualityTargetRef(BaseModel):
@@ -174,6 +175,62 @@ def _frozen_quality_refs(content, context, *, required):
                           missing_rules=list(set(actual) - seen),
                           extra_rules=list(seen - set(actual)))
     return rows
+
+
+def rebind_quality_target_refs(content, source_context, target_context):
+    """Rebind A refs when A's own scene proposal changes the frozen domain profile.
+
+    The proposed refs must first match the pre-A profile exactly. The target
+    profile must contain exactly one semantically equivalent rule in the same
+    canonical domain. Otherwise the original refs remain and later validation
+    fails closed.
+    """
+    from copy import deepcopy
+    proposed = content.get("quality_target_refs", [])
+    source_index, target_index = _quality_rule_index(source_context), _quality_rule_index(target_context)
+    source_keys = {
+        (ref.get("profile_id"), ref.get("profile_version"), ref.get("profile_hash"),
+         ref.get("rule_id"), ref.get("rule_version"), ref.get("criterion_hash"))
+        for ref in proposed
+    }
+    if not proposed or not source_keys <= set(source_index):
+        return content, []
+    updated = deepcopy(content)
+    rebindings = []
+    target_rows = list(target_index.values())
+    for ref in updated["quality_target_refs"]:
+        source_key = (
+            ref["profile_id"], ref["profile_version"], ref["profile_hash"],
+            ref["rule_id"], ref["rule_version"], ref["criterion_hash"],
+        )
+        source = source_index[source_key]
+        candidates = [
+            row for row in target_rows
+            if canonical_domain_key(row.get("domain_key")) == canonical_domain_key(source.get("domain_key"))
+            and str(row.get("rule_id", "")).rsplit(".", 1)[-1]
+                == str(source.get("rule_id", "")).rsplit(".", 1)[-1]
+            and row.get("criterion") and source.get("criterion")
+        ]
+        if len(candidates) != 1:
+            continue
+        target = candidates[0]
+        replacement = {
+            "profile_id": target["profile_id"],
+            "profile_version": target["profile_version"],
+            "profile_hash": target["profile_hash"],
+            "rule_id": target["rule_id"],
+            "rule_version": target["rule_version"],
+            "criterion_hash": target["criterion_hash"],
+        }
+        if replacement == ref:
+            continue
+        rebindings.append({
+            "from": deepcopy(ref),
+            "to": deepcopy(replacement),
+            "reason": "A_scene_proposal_resolved_equivalent_frozen_quality_profile",
+        })
+        ref.update(replacement)
+    return updated, rebindings
 
 
 def _allowed_evidence_refs(context, details):

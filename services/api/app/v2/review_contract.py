@@ -20,7 +20,7 @@ from .quality_policy import context_domains, unit_domains
 EVIDENCE_VERSION = "server-evidence-catalog.v1"
 NORMALIZER_VERSION = "provider-contract-normalizer.v1"
 APPLICABILITY_VERSION = "zero-model-applicability.v1"
-PROTOCOL_VERSION = "quality-protocol-freeze.v5"
+PROTOCOL_VERSION = "quality-protocol-freeze.v6"
 
 _RESULT_ALIASES = {
     "pass": "satisfied",
@@ -425,6 +425,7 @@ def review_protocol_manifest() -> dict[str, Any]:
             "capacity.py",
             "inference.py",
             "research_length_recovery.py",
+            "planning.py",
             "worker.py",
             "quality.py",
             "quality_policy.py",

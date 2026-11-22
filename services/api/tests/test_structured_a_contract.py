@@ -141,6 +141,31 @@ def test_quality_refs_require_exact_profile_rule_hashes_and_complete_coverage():
         frozen(ctx, no_display)
 
 
+def test_a_scene_change_rebinds_only_matching_refs_to_one_equivalent_target_rule():
+    from app.v2.planning import rebind_quality_target_refs
+    from app.v2.profiles import domain_profile
+
+    source = context()
+    content = arrangement(source)
+    target = deepcopy(source)
+    target["quality_profiles"] = [domain_profile("math_logic", "knowledge_tutorial")]
+    rebound, changes = rebind_quality_target_refs(content, source, target)
+    assert len(changes) == 1
+    assert rebound["quality_target_refs"] == quality_refs(target["quality_profiles"])
+
+    ambiguous = deepcopy(target)
+    duplicate = deepcopy(ambiguous["quality_profiles"][0])
+    duplicate["profile_id"] = "duplicate-profile"
+    ambiguous["quality_profiles"].append(duplicate)
+    unchanged, changes = rebind_quality_target_refs(content, source, ambiguous)
+    assert changes == [] and unchanged == content
+
+    forged = deepcopy(content)
+    forged["quality_target_refs"][0]["criterion_hash"] = "0" * 64
+    unchanged, changes = rebind_quality_target_refs(forged, source, target)
+    assert changes == [] and unchanged == forged
+
+
 @pytest.mark.parametrize("fault,code", [
     ("missing", "QUESTION_BLUEPRINT_REQUIRED"),
     ("sum", "QUESTION_BLUEPRINT_QUANTITY_MISMATCH"),
