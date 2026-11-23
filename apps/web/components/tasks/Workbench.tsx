@@ -101,7 +101,7 @@ export default function Workbench({ taskId }: { taskId: string }) {
     }
   }
 
-  async function resume() {
+  async function resume(acknowledgeProtocolUpgrade = false) {
     if (!run) return;
     setResumeBusy(true);
     setActionError("");
@@ -111,13 +111,30 @@ export default function Workbench({ taskId }: { taskId: string }) {
         action: "retry_as_new_attempt" as const,
         acknowledge_possible_duplicate_cost: true,
       }));
-      const r = await api.resume(taskId, run.run_id, { expected_revision: run.state_revision, checkpoint_hash: run.checkpoint_hash, unknown_resolutions }, newKey());
-      toast("已创建续跑");
+      const r = await api.resume(taskId, run.run_id, {
+        expected_revision: run.state_revision,
+        checkpoint_hash: run.checkpoint_hash,
+        unknown_resolutions,
+        ...(acknowledgeProtocolUpgrade ? { quality_protocol_upgrade: true } : {}),
+      }, newKey());
+      toast(acknowledgeProtocolUpgrade ? "已创建续跑（已显式采用新质量协议）" : "已创建续跑");
       setUnknownCalls(null);
       setPendingRetryCalls([]);
       followRun(r.run_id); // 旧 run 保持 paused；轮询切到新 run
     } catch (e) {
-      if (e instanceof ApiError && (e.code === "UNKNOWN_CALL" || e.code === "UNKNOWN_QUARANTINE_REQUIRED")) {
+      if (e instanceof ApiError && e.code === "QUALITY_PROTOCOL_UPGRADE_REQUIRED") {
+        const frozen = String(e.details.frozen_manifest_hash ?? "");
+        const current = String(e.details.current_manifest_hash ?? "");
+        const ok = window.confirm(
+          `服务端质量协议已更新（${frozen.slice(0, 12)}… → ${current.slice(0, 12)}…）。` +
+          "继续将显式采用新协议，并在续跑状态中记录升级事实；旧调用与结果保留，不会重放。是否继续？",
+        );
+        if (ok) {
+          setResumeBusy(false);
+          return void resume(true);
+        }
+        setActionError("已取消：未采用新质量协议，续跑未创建。");
+      } else if (e instanceof ApiError && (e.code === "UNKNOWN_CALL" || e.code === "UNKNOWN_QUARANTINE_REQUIRED")) {
         setUnknownCalls(run.calls.filter((c) => c.status === "unknown" || c.status === "sent") as UnknownCall[]);
       } else setActionError(explain(e));
     } finally {

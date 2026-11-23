@@ -358,14 +358,14 @@ def quarantine_unknown(run_id, payload, key):
             if call.request_hash != entry.request_hash:
                 raise DomainError("CALL_REQUEST_MISMATCH")
             # A worker can terminate after marking a provider request sent but
-            # before it can persist the provider receipt.  A failed run is a
-            # stopped execution boundary, so the explicit user-authorized
-            # quarantine may convert that exact receipt-less sent attempt to
-            # unknown.  Paused/active runs remain strict: they must first
-            # receive a provider receipt or be stopped by the worker lease
-            # reaper.  This does not infer failure, usage, price, or provider
-            # settlement.
-            if call.status == "sent" and obj.status == "failed":
+            # before it can persist the provider receipt.  A failed or
+            # interrupted run is a stopped execution boundary, so the explicit
+            # user-authorized quarantine may convert that exact receipt-less
+            # sent attempt to unknown.  Paused/active runs remain strict: they
+            # must first receive a provider receipt or be stopped by the
+            # worker lease reaper.  This does not infer failure, usage, price,
+            # or provider settlement.
+            if call.status == "sent" and obj.status in {"failed", "interrupted"}:
                 if not receiptless_sent(call):
                     raise DomainError("CALL_SENT_RECEIPT_PRESENT")
                 call.outcome = "unknown"
@@ -446,6 +446,21 @@ def resume(run_id, payload, key):
         allowed = old.status in {"paused", "interrupted", "failed"} or (old.status == "completed" and (payload.recheck_completed or payload.replan))
         if not allowed or digest(state["plan"]) != payload.checkpoint_hash:
             raise DomainError("CHECKPOINT_STALE")
+        from .review_contract import review_protocol_manifest
+        frozen_protocol = state.get("quality_protocol")
+        current_protocol = review_protocol_manifest()
+        protocol_upgrade = None
+        if frozen_protocol is not None and frozen_protocol != current_protocol:
+            if not payload.quality_protocol_upgrade:
+                raise DomainError("QUALITY_PROTOCOL_UPGRADE_REQUIRED", 409,
+                                  frozen_manifest_hash=frozen_protocol.get("manifest_hash"),
+                                  current_manifest_hash=current_protocol.get("manifest_hash"))
+            protocol_upgrade = {"method_version": "explicit-quality-protocol-upgrade.v1",
+                "previous_manifest_hash": frozen_protocol.get("manifest_hash"),
+                "previous_method_version": frozen_protocol.get("method_version"),
+                "current_manifest_hash": current_protocol.get("manifest_hash"),
+                "current_method_version": current_protocol.get("method_version"),
+                "request_hash": body, "source": "explicit_resume_acknowledgment"}
         if payload.recheck_completed and state.get("card_source"):
             raise DomainError("RECHECK_REQUIRES_GENERATION_RUN", 422)
         if payload.recheck_completed and old.status != "completed":
@@ -513,6 +528,9 @@ def resume(run_id, payload, key):
             new_state.setdefault("transport_retry_permissions", {}).update(grants)
         new_state["recovered_candidates"] = recovered
         new_state["stop_reason"] = None
+        if protocol_upgrade is not None:
+            new_state["quality_protocol"] = current_protocol
+            new_state["quality_protocol_upgrade"] = protocol_upgrade
         if payload.replan:
             if payload.enable_research:
                 # Explicit policy amendment on the same task ancestry. Never

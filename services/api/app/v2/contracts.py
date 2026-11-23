@@ -157,6 +157,7 @@ class Resume(Revision):
     replan: bool = False
     acknowledge_new_generation: bool = False
     enable_research: bool = False
+    quality_protocol_upgrade: bool = False
 
 
 class ExportRequest(Revision):

@@ -244,6 +244,53 @@ def invoke(run_id, worker, epoch, state, *, stage, unit_id, data, system, role="
                         "request_hash": req, "raw_result_blob_hash": prior.result_blob_hash,
                         "usage": load(prior.usage_json) if prior.usage_json else None, "model_family": prior.model_family,
                         "new_provider_dispatch": False}
+        # One bounded output-budget escalation ONLY for an exact, settled
+        # ancestral length failure. Never rewrites the failed receipt; every
+        # other call keeps its identical request identity and cache.
+        if stage in {"checking", "checking_perturbation", "blind_solving"} and root.parent_job_id:
+            for prior in failed:
+                receipt = load(prior.receipt_json)
+                diagnostic = receipt.get("failure_diagnostics", {}) or {}
+                if (receipt.get("failure_code") == "PROVIDER_OUTPUT_INVALID_OR_TRUNCATED"
+                        and diagnostic.get("finish_reason") == "length"
+                        and diagnostic.get("validation_reason") == "OUTPUT_LENGTH_LIMIT"
+                        and diagnostic.get("content_characters") == 0):
+                    escalated = planned_output_tokens(
+                        profile, max(planned["reserved_output_tokens"] * 2, 65536), capacity)
+                    estimate = request_capacity(messages, capacity, escalated["reserved_output_tokens"])
+                    estimate.update({k: value for k, value in escalated.items()
+                        if k not in {"reserved_output_tokens", "capacity_source"}})
+                    estimate["capacity_source"] = escalated["capacity_source"]
+                    profile.llm_max_tokens = escalated["reserved_output_tokens"]
+                    profile.llm_output_limit_parameter = escalated["output_limit_parameter"]
+                    params = {escalated["output_limit_parameter"]: profile.llm_max_tokens,
+                              "temperature": getattr(profile, "llm_temperature", None),
+                              "thinking": getattr(profile, "llm_thinking", None),
+                              "reasoning_effort": getattr(profile, "llm_reasoning_effort", None),
+                              "json_mode": getattr(profile, "llm_json_mode", True)}
+                    manifest = {**manifest, "output_length_recovery": {
+                        "method_version": "checker-output-length-recovery.v1",
+                        "recovered_from_call_id": prior.call_id,
+                        "previous_reserved_output_tokens": planned["reserved_output_tokens"],
+                        "reserved_output_tokens": escalated["reserved_output_tokens"]}}
+                    planned = escalated
+                    req = request_hash(manifest, messages, profile.llm_base_url, profile.llm_model,
+                                       params, output_schema or {})
+                    esc_cached = db.query(CallDispatch).filter(
+                        CallDispatch.root_job_id.in_(select(chain.c.id)),
+                        CallDispatch.unit_id == unit_id, CallDispatch.provider == profile.llm_base_url,
+                        CallDispatch.model == profile.llm_model,
+                        CallDispatch.model_family == getattr(profile, "llm_model_family", "unknown"),
+                        CallDispatch.input_hash == state["context"]["context_hash"],
+                        CallDispatch.status == "settled", CallDispatch.outcome == "success",
+                        CallDispatch.request_hash == req).first()
+                    if esc_cached and esc_cached.result_blob_hash:
+                        return load(BlobStore().get(esc_cached.result_blob_hash).decode()), {
+                            "call_id": esc_cached.call_id, "cache": "identical_ancestral_request",
+                            "latency_ms": 0, "usage": load(esc_cached.usage_json) if esc_cached.usage_json else None,
+                            "model_family": esc_cached.model_family, "request_hash": esc_cached.request_hash,
+                            "requested_request_hash": req, "identity_normalization": None}
+                    break
     call_id = authorize_call(run_id, unit_id, req, state["context"]["context_hash"], epoch, worker,
         key or f"{run_id}:{stage}:{digest([unit_id, req])[:40]}", profile.llm_base_url, profile.llm_model,
         getattr(profile, "llm_model_family", "unknown"), manifest=manifest,

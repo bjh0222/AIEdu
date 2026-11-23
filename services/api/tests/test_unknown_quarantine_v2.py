@@ -250,3 +250,33 @@ def test_quarantine_api_requires_owner_and_csrf(client):
         headers={"Origin": "http://127.0.0.1:3001"}).status_code == 401
     owner(client)
     assert client.post(f"/api/v2/runs/{run_id}/unknown-quarantines", json=payload).status_code == 403
+
+
+def test_interrupted_run_can_explicitly_isolate_receiptless_sent_attempt(client):
+    """A killed worker leaves an interrupted run; its receipt-less sent attempt needs the same exit."""
+    from app.v2.contracts import QuarantineUnknown
+    from app.v2.runtime import job, load, write
+    from app.v2.storage import CallDispatch
+    from app.v2.tasks import quarantine_unknown
+
+    _, run_id, payload = unknown_run(client)
+    call_id = payload["calls"][0]["call_id"]
+    with write() as db:
+        obj = job(db, run_id)
+        obj.status = "interrupted"
+        obj.cancel_epoch += 1
+        call = db.get(CallDispatch, call_id)
+        call.status, call.outcome, call.receipt_json, call.usage_json = "sent", "", "{}", None
+        call.price_json = None
+        call.provider_request_id = None
+        call.result_blob_hash = None
+        call.finished_at = 0
+        call.epoch = obj.cancel_epoch - 1
+
+    result = quarantine_unknown(run_id, QuarantineUnknown(**payload), "interrupted-sent-isolate")
+    assert result["scheduled"] is False and result["provider_settlement"] == "unresolved"
+    with write() as db:
+        call = db.get(CallDispatch, call_id)
+        assert call.status == "quarantined" and call.outcome == "unknown"
+        receipt = load(call.receipt_json)
+        assert receipt["failure_code"] == "PROVIDER_TRANSPORT_UNKNOWN"

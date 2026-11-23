@@ -209,3 +209,44 @@ def test_capacity_unknown_and_explicit_registry():
     with pytest.raises(DomainError, match="CALL_CAPACITY_EXCEEDED"):
         request_capacity([{"content": "x"*20}], {"max_output_tokens": 10, "context_tokens": 20,
              "safety_margin_tokens": 2, "estimate_method": "test", "source_uri_or_config": "fixture"})
+
+
+def test_quality_protocol_upgrade_requires_explicit_acknowledgment(client):
+    """Resume refuses a stale frozen protocol unless the user explicitly adopts the new one."""
+    from app.v2.contracts import DomainError, Pause, Resume
+    from app.v2.review_contract import review_protocol_manifest
+    from app.v2.runtime import dump, job, load, write
+    from app.v2.tasks import pause, resume, snapshot
+    created, run = queued(client)
+    stale = copy.deepcopy(load(job_db_state(run["run_id"]))["quality_protocol"])
+    stale["components"]["applicability"]["version"] = "zero-model-applicability.v0"
+    previous_hash = stale["manifest_hash"]
+    with write() as db:
+        obj = job(db, run["run_id"])
+        state = load(obj.state_json)
+        state["quality_protocol"] = stale
+        obj.state_json = dump(state)
+        obj.state_revision += 1
+    snap = snapshot(created["task_id"])
+    paused = pause(run["run_id"], Pause(expected_revision=snap["state_revision"]), "pause")
+    dto = Resume(expected_revision=paused["state_revision"], checkpoint_hash=paused["checkpoint_hash"])
+    with pytest.raises(DomainError, match="QUALITY_PROTOCOL_UPGRADE_REQUIRED") as exc:
+        resume(run["run_id"], dto, "upgrade-no-ack")
+    assert exc.value.details["frozen_manifest_hash"] == previous_hash
+    assert exc.value.details["current_manifest_hash"] == review_protocol_manifest()["manifest_hash"]
+    result = resume(run["run_id"], Resume(**{**dto.model_dump(), "quality_protocol_upgrade": True}), "upgrade-ack")
+    child = job_db_state(result["run_id"])
+    upgraded = load(child)["quality_protocol"]
+    assert upgraded == review_protocol_manifest()
+    record = load(child)["quality_protocol_upgrade"]
+    assert record["previous_manifest_hash"] == previous_hash
+    assert record["current_manifest_hash"] == upgraded["manifest_hash"]
+    assert record["method_version"] == "explicit-quality-protocol-upgrade.v1"
+    assert load(job_db_state(run["run_id"]))["quality_protocol"]["manifest_hash"] == previous_hash
+
+
+def job_db_state(run_id: str) -> str:
+    from app.db import SessionLocal
+    from app.models import GenerationJob
+    with SessionLocal() as db:
+        return db.query(GenerationJob).filter_by(run_id=run_id).one().state_json

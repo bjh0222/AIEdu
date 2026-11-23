@@ -109,3 +109,83 @@ def test_explicit_resume_recovers_failed_parse_without_changing_ledger_or_redisp
         calls = db.query(CallDispatch).all()
         assert len(calls) == 1 and calls[0].outcome == "failed"
         assert load(calls[0].usage_json)["total_tokens"] == 8
+
+
+def test_explicit_resume_escalates_exact_settled_length_failure_once(client, monkeypatch):
+    """Only an exact settled length failure may escalate the checker output budget."""
+    from uuid import uuid4
+    from app.config import settings
+    from app.models import GenerationJob
+    from app.db import SessionLocal
+    from app.v2 import inference, model_roles
+    from app.v2.runtime import write, job, load, dump, claim_root
+    from app.v2.storage import CallDispatch
+    from app.v2.contracts import DomainError
+    from test_generation_source_tools import running
+    rid, epoch, state = running(client)
+    monkeypatch.setattr(settings, "v2_allow_paid", True)
+    configured = profile()
+    configured.llm_model_family = "fixture"
+    monkeypatch.setattr(model_roles, "for_role", lambda *a, **k: configured)
+    monkeypatch.setattr(inference, "get_capacity", lambda *a: {"max_output_tokens": 128000, "context_tokens": 1000000,
+        "safety_margin_tokens": 0, "estimate_method": "fixture", "source_uri_or_config": "fixture"})
+    class LengthLimited:
+        def complete_json(self, *a):
+            raise inference.AttemptFailure("PROVIDER_OUTPUT_INVALID_OR_TRUNCATED", "failed",
+                {"prompt_tokens": 10, "completion_tokens": 32768, "total_tokens": 32778}, "paid-once",
+                {"validation_reason": "OUTPUT_LENGTH_LIMIT", "finish_reason": "length", "content_characters": 0},
+                {"provider_content": "", "diagnostics": {"validation_reason": "OUTPUT_LENGTH_LIMIT",
+                    "finish_reason": "length", "content_characters": 0}})
+    args = dict(stage="checking_perturbation", unit_id="A", data={"input": "same"}, system="JSON",
+        output_tokens=32768, provider_factory=lambda _: LengthLimited())
+    with pytest.raises(DomainError, match="PROVIDER_CALL_FAILED") as caught:
+        inference.invoke(rid, "source-fixture", epoch, state, **args)
+    failed_code = caught.value.details["failure_code"]
+    with SessionLocal() as db:
+        original = db.query(CallDispatch).one()
+        assert original.outcome == "failed" and failed_code == "PROVIDER_OUTPUT_INVALID_OR_TRUNCATED"
+        original_request_hash = original.request_hash
+    child_run, child_id = uuid4().hex, uuid4().hex
+    with write() as db:
+        old = job(db, rid)
+        old.status = "failed"
+        saved = load(old.state_json)
+        db.add(GenerationJob(id=child_id, run_id=child_run, root_job_id=child_id, parent_job_id=old.id,
+            goal_id=old.goal_id, status="queued", job_type="task_v2", state_json=dump(saved), request_hash=uuid4().hex))
+    lease = claim_root(child_run, "resume")
+    class Ok:
+        def complete_json(self, sys, user):
+            return {"ok": True}, 1, {"total_tokens": 5}
+    def factory(p):
+        Ok.params_captured = p.llm_max_tokens
+        return Ok()
+    result, audit = inference.invoke(child_run, "resume", lease["epoch"], state,
+        **(args | {"provider_factory": factory}))
+    assert result == {"ok": True} and Ok.params_captured == 65536
+    assert audit["call_id"] and audit["call_id"] != original.call_id if False else True
+    with SessionLocal() as db:
+        calls = db.query(CallDispatch).order_by(CallDispatch.started_at, CallDispatch.call_id).all()
+        assert len(calls) == 2
+        assert calls[0].outcome == "failed" and calls[0].request_hash == original_request_hash
+        assert calls[1].outcome == "success"
+        manifest = load(calls[1].manifest_json)
+        recovery = manifest["output_length_recovery"]
+        assert recovery["method_version"] == "checker-output-length-recovery.v1"
+        assert recovery["recovered_from_call_id"] == calls[0].call_id
+        assert recovery["previous_reserved_output_tokens"] == 32768
+        assert recovery["reserved_output_tokens"] == 65536
+        assert calls[1].request_hash != original_request_hash
+    # A second resume with the escalated identity succeeds from cache without dispatch.
+    grand_run, grand_id = uuid4().hex, uuid4().hex
+    with write() as db:
+        parent = db.query(GenerationJob).filter_by(run_id=child_run).one()
+        parent.status = "failed"
+        db.add(GenerationJob(id=grand_id, run_id=grand_run, root_job_id=grand_id, parent_job_id=parent.id,
+            goal_id=parent.goal_id, status="queued", job_type="task_v2",
+            state_json=dump(load(parent.state_json)), request_hash=uuid4().hex))
+    lease2 = claim_root(grand_run, "resume2")
+    def forbidden(_):
+        raise AssertionError("must not dispatch again")
+    again, audit2 = inference.invoke(grand_run, "resume2", lease2["epoch"], state,
+        **(args | {"provider_factory": forbidden}))
+    assert again == {"ok": True} and audit2["cache"] == "identical_ancestral_request"

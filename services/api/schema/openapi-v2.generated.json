@@ -2962,6 +2962,11 @@
             "title": "Expected Revision",
             "type": "integer"
           },
+          "quality_protocol_upgrade": {
+            "default": false,
+            "title": "Quality Protocol Upgrade",
+            "type": "boolean"
+          },
           "recheck_completed": {
             "default": false,
             "title": "Recheck Completed",
