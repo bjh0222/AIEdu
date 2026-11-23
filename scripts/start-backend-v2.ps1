@@ -1,4 +1,4 @@
-param(
+﻿param(
     [int]$Port = 8010,
     [string]$Python = "$env:LOCALAPPDATA\AI Edu 2.0\venv\Scripts\python.exe",
     [switch]$AllowPaid,
@@ -27,7 +27,9 @@ if ($env:DATABASE_URL -and $env:DATABASE_URL.Replace('\','/').Contains('/dsh/ai-
 }
 Push-Location -LiteralPath $ApiRoot
 try {
-    & $Python -m uvicorn app.main:app --host 127.0.0.1 --port $Port
+    # 后端只绑 127.0.0.1，唯一合法上游是本机 Next 代理；不信任 X-Forwarded-*，
+    # 否则经 Tailscale Serve 访问时 uvicorn 会把 client 视为原始设备 IP，破坏本机会话边界。
+    & $Python -m uvicorn app.main:app --host 127.0.0.1 --port $Port --no-proxy-headers
     if ($LASTEXITCODE -ne 0) { throw "Backend exited with code $LASTEXITCODE" }
 } finally {
     Pop-Location
