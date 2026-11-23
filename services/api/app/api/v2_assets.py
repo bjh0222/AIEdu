@@ -239,6 +239,37 @@ def configure_models(payload:ConfigWrite,key=Depends(action_key)):
         return {"applied_revision":config["v2_revision"],"applied":True}
 
 
+class DiscoverRequest(Contract):
+    base_url:str
+    api_key:str|None=None
+    profile_id:str|None=None
+
+
+@router.post("/model-settings/discover")
+def discover_models(payload:DiscoverRequest):
+    """供应商模型列表探测：显式地址+密钥，或复用同地址已保存配置的密钥。
+
+    只读网络探测：不写入配置、不产生动作回执、不做任何生成调用。
+    """
+    from .. import model_settings as store
+    from ..llm.provider import LLMError
+    from .model_settings import provider_for
+    base_url = payload.base_url.strip().rstrip("/")
+    if not base_url.startswith(("http://","https://")):
+        raise DomainError("MODEL_PROFILE_INVALID",422)
+    api_key = (payload.api_key or "").strip()
+    if not api_key and payload.profile_id:
+        saved = next((p for p in store.read_config()["profiles"] if p["id"] == payload.profile_id),None)
+        if saved is None or saved.get("base_url","").rstrip("/") != base_url:
+            raise DomainError("MODEL_PROFILE_NOT_FOUND",404)
+        api_key = saved.get("api_key") or ""
+    profile = store.ModelProfile(id="aiedu-discover",name="discover",base_url=base_url,model="",api_key=api_key or None)
+    try:
+        return {"models":provider_for(profile).list_models()}
+    except LLMError as exc:
+        raise DomainError("MODEL_DISCOVERY_FAILED",502,reason=str(exc)) from None
+
+
 @router.get("/knowledge/assets/{kind}")
 def assets(kind:str,limit:int=50,offset:int=0):
     from ..services.proposition_knowledge import question_dict,evaluation_dict,batch_dict

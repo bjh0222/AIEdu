@@ -54,6 +54,9 @@ export default function Reader({ taskId }: { taskId: string }) {
   const [answersOpen, setAnswersOpen] = useState(false);
   const [drawer, setDrawer] = useState<"toc" | "tech" | null>(null);
   const [chatOpen, setChatOpen] = useState(true);
+  // 2026-11-23 平板适配：视口分层（desktop≥1280 / tablet-land 1024-1279 / tablet-port 768-1023 / phone<768）与目录侧栏开合。
+  const tier = useViewportTier();
+  const [rulerOpen, setRulerOpen] = useState<boolean | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   // 2026-11-22 轮3：文内位置树与 AI 聊天为 VSCode 式 resizable sidebar。
   const [rulerWidth, startRulerResize] = usePanelWidth("aiedu.reader.rulerWidth.v1", 240, 160, 480, 1);
@@ -61,6 +64,27 @@ export default function Reader({ taskId }: { taskId: string }) {
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [pins, setPins] = useState<PinState[]>([]);
   const sheetRef = useRef<HTMLDivElement>(null);
+
+  // 目录侧栏开合：未设置时按视口默认（桌面展开、平板折叠），设置后按持久化值。
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      let v = matchMedia("(min-width: 1280px)").matches;
+      try {
+        const stored = localStorage.getItem(RULER_OPEN_KEY);
+        if (stored === "1") v = true; else if (stored === "0") v = false;
+      } catch { /* 无 localStorage 时按视口默认 */ }
+      setRulerOpen(v);
+    });
+    return () => cancelAnimationFrame(id);
+  }, []);
+  const rulerShown = rulerOpen ?? true;
+  const toggleRuler = useCallback(() => {
+    setRulerOpen((open) => {
+      const next = !(open ?? true);
+      try { localStorage.setItem(RULER_OPEN_KEY, next ? "1" : "0"); } catch { /* 忽略持久化失败 */ }
+      return next;
+    });
+  }, []);
 
   const artifactId = run?.artifact_id ?? null;
 
@@ -183,6 +207,14 @@ export default function Reader({ taskId }: { taskId: string }) {
   const stale = pins.filter((p) => !p.ok);
   const title = (run.resolved_task as { title?: string } | undefined)?.title ?? "阅读";
 
+  // 平板/桌面列宽：桌面用可持久化宽度，平板用固定窄列；竖屏不提供停靠目录（改用抽屉）。
+  const rulerDocked = !focus && rulerShown && (tier === "desktop" || tier === "tablet-land");
+  const rulerDockedWidth = tier === "desktop" ? rulerWidth : 200;
+  const chatWidthEffective = tier === "tablet-land" ? 300 : tier === "tablet-port" ? 280 : chatWidth;
+  const gridColumns = focus || tier === "phone"
+    ? "minmax(0, 1fr)"
+    : `${rulerDocked ? `${rulerDockedWidth}px ` : ""}minmax(0, 1fr)${chatOpen ? ` ${chatWidthEffective}px` : ""}`;
+
   const ruler = (
     <nav aria-label="目录">
       <h2>文内位置</h2>
@@ -228,6 +260,11 @@ export default function Reader({ taskId }: { taskId: string }) {
           <span aria-current="page">阅读</span>
         </nav>
         <div className="reader-tools" role="group" aria-label="阅读设置">
+          {tier !== "phone" && (
+            <button className="btn btn-sm" aria-pressed={tier === "tablet-port" ? drawer === "toc" : rulerShown}
+              title={tier === "tablet-port" ? "打开目录" : rulerShown ? "折叠目录" : "展开目录"}
+              onClick={() => { if (tier === "tablet-port") setDrawer(drawer === "toc" ? null : "toc"); else toggleRuler(); }}>目录</button>
+          )}
           <button className="btn btn-sm" onClick={() => setPrefs({ ...prefs, size: Math.max(14, prefs.size - 1) })} aria-label="减小字号">A−</button>
           <button className="btn btn-sm" onClick={() => setPrefs({ ...prefs, size: Math.min(22, prefs.size + 1) })} aria-label="增大字号">A+</button>
           <button className="btn btn-sm" aria-pressed={focus} onClick={() => setFocus(!focus)}>{focus ? "退出专注" : "专注"}</button>
@@ -250,11 +287,13 @@ export default function Reader({ taskId }: { taskId: string }) {
         {knowledgeOpen && read && <LearningTools key={read.version_id} taskId={taskId} read={read} onNavigate={(id) => { setUnitId(id); setAnswersOpen(false); }} />}
         {knowledgeOpen && read && <SynthesisPanel key={`${read.version_id}:${read.quality_hash}`} taskId={taskId} run={run} read={read} onNavigate={(id) => { setUnitId(id); setAnswersOpen(false); }} />}
       </details>
-      <div className={`reader-grid${focus ? " focus" : ""}`} style={{ gridTemplateColumns: focus ? "minmax(0, 1fr)" : `${rulerWidth}px minmax(0, 1fr)${chatOpen ? ` ${chatWidth}px` : ""}` }}>
-        <aside className="ruler" aria-label="目录与章节" style={{ width: rulerWidth }}>
-          {ruler}
-          <ResizeHandle side="right" label="拖拽调整文内位置面板宽度" onPointerDown={startRulerResize} />
-        </aside>
+      <div className={`reader-grid${focus ? " focus" : ""}`} style={{ gridTemplateColumns: gridColumns }}>
+        {rulerDocked && (
+          <aside className="ruler" aria-label="目录与章节" style={{ width: rulerDockedWidth }}>
+            {ruler}
+            {tier === "desktop" && <ResizeHandle side="right" label="拖拽调整文内位置面板宽度" onPointerDown={startRulerResize} />}
+          </aside>
+        )}
 
         <article className={`sheet-wrap${serif ? " serif" : ""}`}>
           {loadingVersion && !read ? (
@@ -290,7 +329,7 @@ export default function Reader({ taskId }: { taskId: string }) {
         </article>
 
         {chatOpen && !focus && (
-          <div className="chat-cell" style={{ width: chatWidth }}>
+          <div className="chat-cell" style={{ width: chatWidthEffective }}>
             <ReaderChat taskId={taskId} read={read} currentUnitId={unit?.unit_id ?? null} open={chatOpen} onOpenChange={setChatOpen} width={chatWidth} />
             <ResizeHandle side="left" label="拖拽调整 AI 聊天面板宽度" onPointerDown={startChatResize} />
           </div>
@@ -319,6 +358,27 @@ export default function Reader({ taskId }: { taskId: string }) {
   );
 }
 
+
+// 2026-11-23 平板适配：视口分层与目录侧栏开合持久化。
+type ViewportTier = "desktop" | "tablet-land" | "tablet-port" | "phone";
+const RULER_OPEN_KEY = "aiedu.reader.rulerOpen.v1";
+
+function useViewportTier(): ViewportTier {
+  const [tier, setTier] = useState<ViewportTier>("desktop");
+  useEffect(() => {
+    const queries: Array<[ViewportTier, MediaQueryList]> = [
+      ["desktop", matchMedia("(min-width: 1280px)")],
+      ["tablet-land", matchMedia("(min-width: 1024px) and (max-width: 1279px)")],
+      ["tablet-port", matchMedia("(min-width: 768px) and (max-width: 1023px)")],
+      ["phone", matchMedia("(max-width: 767px)")],
+    ];
+    const update = () => setTier(queries.find(([, m]) => m.matches)?.[0] ?? "desktop");
+    update();
+    queries.forEach(([, m]) => m.addEventListener("change", update));
+    return () => queries.forEach(([, m]) => m.removeEventListener("change", update));
+  }, []);
+  return tier;
+}
 
 // VSCode 式 resizable sidebar：面板边缘拖拽调宽，min/max 限界，宽度持久到 localStorage。
 function usePanelWidth(key: string, initial: number, min: number, max: number, grow: 1 | -1): [number, (e: React.PointerEvent<HTMLDivElement>) => void] {

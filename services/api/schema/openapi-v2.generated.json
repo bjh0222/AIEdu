@@ -893,6 +893,42 @@
         "title": "Dimension",
         "type": "object"
       },
+      "DiscoverRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "base_url": {
+            "title": "Base Url",
+            "type": "string"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          }
+        },
+        "required": [
+          "base_url"
+        ],
+        "title": "DiscoverRequest",
+        "type": "object"
+      },
       "DraftSnapshot": {
         "additionalProperties": true,
         "properties": {
@@ -7601,6 +7637,77 @@
           }
         ],
         "summary": "Configure Models",
+        "tags": [
+          "assets.v2"
+        ]
+      }
+    },
+    "/api/v2/model-settings/discover": {
+      "post": {
+        "description": "供应商模型列表探测：显式地址+密钥，或复用同地址已保存配置的密钥。\n\n只读网络探测：不写入配置、不产生动作回执、不做任何生成调用。",
+        "operationId": "discover_models_api_v2_model_settings_discover_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Origin",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscoverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "LocalOwner": []
+          }
+        ],
+        "summary": "Discover Models",
         "tags": [
           "assets.v2"
         ]

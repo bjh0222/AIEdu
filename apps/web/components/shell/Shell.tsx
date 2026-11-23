@@ -19,7 +19,8 @@ const NAV_OPEN_KEY = "aiedu.nav.open.v1";
 const navListeners = new Set<() => void>();
 function subscribeNav(listener: () => void) { navListeners.add(listener); return () => { navListeners.delete(listener); }; }
 function navClientSnapshot(): boolean {
-  try { return localStorage.getItem(NAV_OPEN_KEY) !== "0"; } catch { return true; }
+  // 2026-11-23 平板适配：默认折叠（平板与网页端同步），用户显式展开后按持久化值生效。
+  try { return localStorage.getItem(NAV_OPEN_KEY) === "1"; } catch { return false; }
 }
 function navServerSnapshot(): boolean { return true; }
 

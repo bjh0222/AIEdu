@@ -155,6 +155,13 @@ export async function get<T>(path: string, opts: Pick<ReqOptions, "signal" | "he
   return (await res.json()) as T;
 }
 
+/** 只读探测类 POST（如供应商模型列表）：不走动作回执，失败如实报错，不进入“结果未知”流程。 */
+export async function post<T>(path: string, body: unknown, opts: Pick<ReqOptions, "signal" | "headers"> = {}): Promise<T> {
+  const res = await send("POST", path, { ...opts, body });
+  if (!res.ok) throw await toApiError(res);
+  return (await res.json()) as T;
+}
+
 /** 带 ETag 的只读轮询：304 返回 null，调用方保留已显示内容。 */
 export async function getConditional<T>(path: string, etag: string | null, signal?: AbortSignal): Promise<{ data: T | null; etag: string | null }> {
   const res = await send("GET", path, { etag: etag ?? undefined, signal });
@@ -262,6 +269,8 @@ const ERRORS: Record<string, string> = {
   SPEC_NOT_FOUND: "找不到这份规范。",
   MODEL_CONFIG_STALE: "模型配置已被修改。请重新读取后再保存。",
   MODEL_PROFILE_INVALID: "模型配置格式不正确。",
+  MODEL_DISCOVERY_FAILED: "无法获取模型列表。请检查接口地址与密钥，以及供应商是否支持 /v1/models 接口。",
+  MODEL_PROFILE_NOT_FOUND: "没有找到对应地址的已保存配置，无法复用其密钥。",
   MODEL_ROLE_INVALID: "角色分配无效。",
   INVALID_CURSOR: "列表位置已失效，请刷新。",
   INVALID_PAGINATION: "分页参数无效。",
