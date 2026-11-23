@@ -23,7 +23,7 @@ def validate_origin(request, required=True):
     if origin:
         parsed = urlsplit(origin)
         if (origin not in settings.cors_origin_list or parsed.scheme not in {"http", "https"}
-                or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+                or parsed.hostname not in settings.v2_allowed_origin_hosts
                 or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment):
             raise DomainError("ORIGIN_DENIED", 403)
 

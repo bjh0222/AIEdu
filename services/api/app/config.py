@@ -76,7 +76,15 @@ class Settings:
         self.enable_legacy_api = os.getenv("AIEDU_ENABLE_LEGACY_API", "0") == "1"
         self.v2_blob_dir = _resolve_path(os.getenv("AIEDU_BLOB_DIR", str(private_root / "blobs")))
         self.v2_export_dir = _resolve_path(os.getenv("AIEDU_EXPORT_DIR", str(private_root / "exports")))
-        self.v2_allowed_hosts = {"127.0.0.1", "localhost", "testserver"}
+        # 默认仅本机；经 Tailscale Serve 等方式访问时，用环境变量显式放行
+        # （逗号分隔），例如 AIEDU_V2_ALLOWED_HOSTS=laptop-xxx.ts.net 与
+        # AIEDU_V2_ALLOWED_ORIGIN_HOSTS=laptop-xxx.ts.net，并同步 CORS_ORIGINS。
+        self.v2_allowed_hosts = {"127.0.0.1", "localhost", "testserver"} | {
+            h.strip().lower() for h in os.getenv("AIEDU_V2_ALLOWED_HOSTS", "").split(",") if h.strip()
+        }
+        self.v2_allowed_origin_hosts = {"127.0.0.1", "localhost", "::1"} | {
+            h.strip().lower() for h in os.getenv("AIEDU_V2_ALLOWED_ORIGIN_HOSTS", "").split(",") if h.strip()
+        }
         # 用户上传的参考资料 / 例题来源：文件落在 MATERIALS_DIR，元数据落库
         self.materials_dir = _resolve_path(os.getenv("MATERIALS_DIR", str(private_root / "materials")).strip())
         # 删除学习目标前的 JSON 备份目录（不可逆操作的兜底）
