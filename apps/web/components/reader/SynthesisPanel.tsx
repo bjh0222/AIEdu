@@ -5,7 +5,7 @@ import { api, isRun, type VersionRead } from "@/lib/v2/api";
 import { clearPending, explain, getReceipt, newKey, pendingActions, UnknownOutcomeError } from "@/lib/v2/client";
 import type { RunSnapshot, SynthesisAccepted } from "@/lib/v2/contracts.generated";
 import { matchesSource, rememberSynthesisRun, synthesis, trackedSynthesisRun, type SynthesisRead } from "@/lib/v2/synthesis-api";
-import { runBadge } from "@/lib/v2/status";
+import { reasonText, runBadge } from "@/lib/v2/status";
 import Prose from "./Prose";
 
 const OBSERVATION: Record<string, string> = { satisfied: "有支持证据", violated: "存在问题", undecidable: "待补证", not_applicable: "不适用" };
@@ -159,7 +159,7 @@ export default function SynthesisPanel({ taskId, run, read, onNavigate }: {
     {!current && <p className="banner banner-warn">来源已有更新。这里的整合只适用于原固定版本，不能带入新版本交付。</p>}
     {value?.status === "candidate" && !result && <p className="err" role="alert">整合与正文或质量版本不匹配，已停止展示；请重新读取。</p>}
     {value?.status === "not_generated" && <p className="hint">这个版本尚未完成跨章整合。章节目录与逐章知识卡不代表已分析跨章关系。</p>}
-    {accepted && <p role="status">{operation ? `整合运行：${runBadge(operation.state).label}${operation.stop_reason ? `；${operation.stop_reason}` : ""}` : "整合请求已接受，执行状态待查询。"}</p>}
+    {accepted && <p role="status">{operation ? `整合运行：${runBadge(operation.state).label}${operation.stop_reason ? `；${reasonText(operation.stop_reason)}` : ""}` : "整合请求已接受，执行状态待查询。"}</p>}
     <div className="knowledge-map-tools">
       <button className="btn btn-sm" disabled={busy || !trackingReady || !value || !current || active || Boolean(pending) || Boolean(trackingIssue) || value.status === "candidate" && !result} onClick={() => void start()}>生成或更新整合（付费）</button>
       <button className="btn btn-sm" disabled={busy} onClick={() => void refresh()}>刷新整合结果</button>
