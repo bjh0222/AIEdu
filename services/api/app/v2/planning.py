@@ -51,6 +51,24 @@ class QuestionBlueprint(BaseModel):
     difficulty_basis: dict = Field(default_factory=dict)
 
 
+class IntegrationSection(BaseModel):
+    """A-planned synthesis that B must write after its source units exist."""
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1)
+    kind: Literal["cross_chapter_synthesis", "part_summary", "whole_tutorial_summary"]
+    covers_titles: list[str] = Field(min_length=1)
+    required_content: list[str] = Field(min_length=1)
+    rationale: str = Field(min_length=12)
+
+
+class IntegrationPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    required: bool
+    decision_basis: str = Field(min_length=12)
+    whole_tutorial_summary: bool = False
+    sections: list[IntegrationSection] = Field(default_factory=list)
+
+
 class ArrangementUnit(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: str = Field(min_length=1)
@@ -80,11 +98,12 @@ class TeachingArrangement(BaseModel):
     unresolved_conflicts: list[str]
     generation_prompt: str = Field(min_length=1)
     output_design: OutputDesign | None = None
+    integration_plan: IntegrationPlan | None = None
 
 
 def skill():
     text = Path(__file__).with_name("planning_skill.md").read_text(encoding="utf-8")
-    return {"skill_id": "teaching-arrangement", "version": 6, "hash": sha(text), "instructions": text}
+    return {"skill_id": "teaching-arrangement", "version": 7, "hash": sha(text), "instructions": text}
 
 
 A_SOURCE_INSTRUCTION = """
@@ -330,12 +349,16 @@ def review_requirements(state, unit):
     content = arrangement.get("content") or {}
     planned = next((u for u in plan.get("units", []) if u.get("unit_id") == unit.get("unit_id")), {})
     quality_contracts = _frozen_quality_refs(content, context, required=False)
+    unit_targets = planned.get("teaching_arrangement", {})
+    if planned.get("integration_section"):
+        unit_targets = {**unit_targets, "integration_section": planned["integration_section"]}
     result = {"method_version": "frozen-A-review-requirements.v2", "plan_hash": plan.get("plan_hash"),
         "context_hash": context.get("context_hash"), "arrangement_hash": arrangement.get("hash"),
         "task": {k: context.get(k) for k in ("raw_input", "hard_constraints", "domain_key", "branch", "generation_scope", "output_design")},
         "global_targets": {k: content.get(k) for k in ("goals", "learner_prerequisites", "scope",
             "quality_targets", "quality_target_refs")},
-        "unit_targets": planned.get("teaching_arrangement", {}),
+        "unit_targets": unit_targets,
+        "integration_plan": plan.get("integration_plan"),
         "scope": "single_planned_unit" if planned else "no_frozen_unit_arrangement",
         "planned_unit_titles": [u.get("title") for u in plan.get("units", [])]}
     from .understanding_assets import composition_refs
@@ -356,8 +379,9 @@ def arrangement(output):
         return {"status": "legacy_output_missing_arrangement", "content": None}
     try:
         validated = TeachingArrangement.model_validate(value).model_dump()
-    except ValidationError:
-        raise DomainError("TEACHING_ARRANGEMENT_INVALID", 422) from None
+    except ValidationError as exc:
+        raise DomainError("TEACHING_ARRANGEMENT_INVALID", 422,
+                          validation_errors=exc.errors(include_input=False, include_url=False)) from None
     titles = [u["title"] for u in validated["units"]]
     if len(titles) != len(set(titles)):
         raise DomainError("TEACHING_ARRANGEMENT_DUPLICATE_UNIT", 422)

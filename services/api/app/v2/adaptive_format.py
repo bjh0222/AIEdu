@@ -179,11 +179,19 @@ def apply_design(context, plan, arrangement, chunks):
         for unit in ready:
             complete.add(unit["unit_id"])
             pending.remove(unit)
+    integration = _validated_integration_plan(content, design, descriptions, roles, by_title)
+    if integration:
+        for section in integration["sections"]:
+            by_title[section["title"]]["integration_section"] = deepcopy(section)
     if design["mode"] == "reading":
         chapters = {u["title"] for u in units if u["artifact_role"] == "chapter"}
         for unit, description in zip(units, descriptions):
-            if unit["artifact_role"] == "book_level" and (not chapters or
-                    not chapters <= set(description.get("depends_on_titles", []))):
+            legacy_whole_book = (
+                unit["artifact_role"] == "book_level"
+                and not unit.get("integration_section")
+                and (not chapters or not chapters <= set(description.get("depends_on_titles", [])))
+            )
+            if legacy_whole_book:
                 raise DomainError("READING_DIGEST_DEPENDENCIES_REQUIRED", 422)
             if unit["artifact_role"] == "chapter" and not unit["summary_heading"]:
                 raise DomainError("READING_SUMMARY_HEADING_REQUIRED", 422)
@@ -194,7 +202,72 @@ def apply_design(context, plan, arrangement, chunks):
     result = deepcopy(plan)
     result["units"] = units
     result["output_design"] = design
+    if integration:
+        result["integration_plan"] = deepcopy(integration)
     return result
+
+
+def _validated_integration_plan(content, design, descriptions, roles, by_title):
+    """A decides whether/how B integrates; every synthesis section is a planned unit."""
+    from copy import deepcopy
+
+    plan = content.get("integration_plan")
+    substantive = [d for d in descriptions if d.get("artifact_role") != "book_level"]
+    tutorial_like = "tutorial" in roles and design.get("mode") in {"tutorial", "reading", "custom"}
+    if plan is None:
+        if tutorial_like and len(substantive) >= 2:
+            raise DomainError("INTEGRATION_PLAN_REQUIRED", 422,
+                              substantive_unit_count=len(substantive))
+        return None
+    titles = [d["title"] for d in descriptions]
+    description_by_title = {d["title"]: d for d in descriptions}
+    if plan["required"] != bool(plan["sections"]):
+        raise DomainError("INTEGRATION_PLAN_REQUIRED_FLAG_MISMATCH", 422)
+    declared, covered = set(), set()
+    for section in plan["sections"]:
+        title = section["title"]
+        unit = by_title.get(title)
+        description = description_by_title.get(title)
+        if unit is None:
+            raise DomainError("INTEGRATION_UNIT_MISSING", 422, title=title)
+        if title in declared:
+            raise DomainError("INTEGRATION_SECTION_DUPLICATE", 422, title=title)
+        if unit.get("artifact_role") != "book_level" or description.get("artifact_role") != "book_level":
+            raise DomainError("INTEGRATION_UNIT_ROLE_INVALID", 422, title=title)
+        covers = section["covers_titles"]
+        if len(covers) != len(set(covers)):
+            raise DomainError("INTEGRATION_COVERAGE_DUPLICATE", 422, title=title)
+        if title in covers or any(value not in by_title for value in covers):
+            raise DomainError("INTEGRATION_COVERAGE_UNBOUND", 422, title=title,
+                              covers_titles=covers)
+        if set(description.get("depends_on_titles", [])) != set(covers):
+            raise DomainError("INTEGRATION_DEPENDENCY_MISMATCH", 422, title=title,
+                              depends_on_titles=description.get("depends_on_titles", []),
+                              covers_titles=covers)
+        if titles.index(title) <= max(titles.index(value) for value in covers):
+            raise DomainError("INTEGRATION_PLACEMENT_INVALID", 422, title=title,
+                              covers_titles=covers)
+        if section["kind"] == "cross_chapter_synthesis" and len(covers) < 2:
+            raise DomainError("INTEGRATION_CROSS_CHAPTER_TOO_SMALL", 422, title=title)
+        declared.add(title)
+        covered.update(covers)
+    undeclared = [d["title"] for d in descriptions
+                  if d.get("artifact_role") == "book_level" and d["title"] not in declared]
+    if undeclared:
+        raise DomainError("INTEGRATION_UNIT_UNDECLARED", 422, titles=undeclared)
+    summaries = [s for s in plan["sections"] if s["kind"] == "whole_tutorial_summary"]
+    substantive_titles = [d["title"] for d in substantive]
+    if plan["whole_tutorial_summary"]:
+        if len(summaries) != 1:
+            raise DomainError("INTEGRATION_WHOLE_SUMMARY_REQUIRED", 422)
+        if set(summaries[0]["covers_titles"]) != set(substantive_titles):
+            raise DomainError("INTEGRATION_WHOLE_SUMMARY_COVERAGE", 422,
+                              covers_titles=summaries[0]["covers_titles"],
+                              substantive_titles=substantive_titles)
+    elif summaries:
+        raise DomainError("INTEGRATION_WHOLE_SUMMARY_UNDECLARED", 422,
+                          titles=[s["title"] for s in summaries])
+    return deepcopy(plan)
 
 
 def item_schema(unit):

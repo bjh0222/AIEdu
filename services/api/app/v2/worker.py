@@ -370,6 +370,12 @@ def generate_planned_unit(run_id, worker, epoch, state, planned, units, material
                 {"role": "user", "content": dump({"context": local_context, "unit": planned, "upstream": upstream, "material_chunks": material_chunks,
                                                           "knowledge_guidance":knowledge_text,
                                                           "teaching_arrangement":state["plan"].get("teaching_arrangement")})}]
+    integration_section = planned.get("integration_section")
+    if integration_section:
+        messages[0]["content"] += integration_generation_instruction(planned)
+        payload = load(messages[1]["content"])
+        payload["integration_plan"] = state["plan"].get("integration_plan")
+        messages[1]["content"] = dump(payload)
     from .planning import source_evidence
     planning_sources = source_evidence(state)
     if planning_sources:
@@ -618,6 +624,23 @@ def load_failed_call_content(run_id, *, call_id):
                 call.result_blob_hash)
 
 
+def integration_generation_instruction(planned):
+    """B must consume A's synthesis section as a bounded post-generation task."""
+    section = planned.get("integration_section")
+    if not section:
+        return ""
+    return (
+        " This unit is an A-planned integration section, not a new chapter. "
+        f"kind={section['kind']}; covers_titles={section['covers_titles']}; "
+        f"required_content={section['required_content']}; rationale={section['rationale']}. "
+        "Synthesize only from the actual generated upstream content supplied in this request. "
+        "Establish cross-unit relations, decisions, contrasts and conditions that the covered units do not "
+        "already state by themselves; do not repeat their lessons or introduce unrelated new topics. "
+        "For a whole-tutorial summary, summarize the actual tutorial's structure and conclusions rather than "
+        "inventing an external curriculum. Preserve A's placement and scope."
+    )
+
+
 def resolve_run_intent(run_id, worker, epoch, provider_factory=None):
     with SessionLocal() as db:
         state = load(job(db, run_id).state_json)
@@ -628,7 +651,7 @@ def resolve_run_intent(run_id, worker, epoch, provider_factory=None):
     from ..learning.disciplines import SUBJECTS
     from .tasks import context_of, goal
     from .planning import (skill, arrangement, apply_arrangement, planning_context,
-                           TeachingArrangement, A_SOURCE_INSTRUCTION)
+                           TeachingArrangement, IntegrationPlan, A_SOURCE_INSTRUCTION)
     from .adaptive_format import POLICY_PROMPT, apply_design
     planning_skill = skill()
     from .understanding_assets import manifest_entries as understanding_manifest_entries
@@ -674,7 +697,7 @@ def resolve_run_intent(run_id, worker, epoch, provider_factory=None):
             "existing_layout": [{k: u.get(k) for k in ("unit_key", "title", "artifact_role", "depends_on", "material_chunk_ids")} for u in state["plan"]["units"]],
             "catalog": [{"key": k, "name": n} for k,n,_ in SUBJECTS],
             "scenes": ["default_tutorial", "knowledge_tutorial", "practical_tutorial", "reading_guide", "exercise", "exam_paper"]},
-        system="Infer a task intent from the complete natural-language request. Return JSON {domain_key,branch,scene,generation_scope:focused|system,outline:[{title}],conflicts:[],teaching_arrangement:...}. Match the supplied teaching_arrangement_json_schema, INCLUDING output_design. Use the planning_skill to decide organization, actual method/topic groups, substantive question forms, per-category quantity and quantitative prior difficulty targets before freezing. Each unit artifact_role is one canonical primary role; answer is a projection, never a composite role value. Express cross-unit dependencies using exact depends_on_titles. Explicitly consume imported profile/rubric identities when supplied: copy every bound profile/rule identity and criterion hash exactly into quality_target_refs. For every item-bearing unit, provide a question_blueprint whose positive quantities sum exactly to unit.quantity and whose forms match output_design; bind misconception groups and knowledge-chain evidence to actual frozen nodes/sources. Exactly two scope levels: focused for a topic with necessary prerequisites, system for a full module; focused does not mean one fixed template section. Preserve explicitly selected domain, scope and source assets, not inapplicable template defaults. Only real mutually incompatible user requirements are conflicts. Questions and answers are planned together. Do not generate learner content or runtime authority." + POLICY_PROMPT,
+        system="Infer a task intent from the complete natural-language request. Return JSON {domain_key,branch,scene,generation_scope:focused|system,outline:[{title}],conflicts:[],teaching_arrangement:...}. Match the supplied teaching_arrangement_json_schema, INCLUDING output_design and integration_plan. Use the planning_skill to decide organization, actual method/topic groups, substantive question forms, per-category quantity and quantitative prior difficulty targets before freezing. Decide task-specifically which generated units need cross-chapter synthesis, which need a part summary, and whether a whole-tutorial summary is actually required; do not add a summary merely because a template mentions one. Represent every integration section as one book_level unit whose title equals the section title, whose depends_on_titles equal covers_titles, and which is ordered after all units it synthesizes. Each integration section must state the concrete required_content B must establish from the actual generated upstream content. Each unit artifact_role is one canonical primary role; answer is a projection, never a composite role value. Express cross-unit dependencies using exact depends_on_titles. Explicitly consume imported profile/rubric identities when supplied: copy every bound profile/rule identity and criterion hash exactly into quality_target_refs. For every item-bearing unit, provide a question_blueprint whose positive quantities sum exactly to unit.quantity and whose forms match output_design; bind misconception groups and knowledge-chain evidence to actual frozen nodes/sources. Exactly two scope levels: focused for a topic with necessary prerequisites, system for a full module; focused does not mean one fixed template section. Preserve explicitly selected domain, scope and source assets, not inapplicable template defaults. Only real mutually incompatible user requirements are conflicts. Questions and answers are planned together. Do not generate learner content or runtime authority." + POLICY_PROMPT,
         entries=spec_entries(state["context"], "planning") + [
             {"source_id": planning_skill["skill_id"], "version": planning_skill["version"],
              "sha256": planning_skill["hash"], "consumer": "A"}] + understanding_entries
@@ -757,6 +780,47 @@ def resolve_run_intent(run_id, worker, epoch, provider_factory=None):
     adaptive = state.get("execution_policy", {}).get("task_adaptive_format", False)
     if adaptive and teaching.get("status") != "schema_validated":
         raise DomainError("TEACHING_ARRANGEMENT_REQUIRED", 422)
+    if adaptive and teaching.get("status") == "schema_validated":
+        # A is the only author of the integration decision. If a model omits
+        # the optional object on a multi-unit tutorial, make one bounded,
+        # separately billed request for that decision only; never synthesize a
+        # boilerplate summary in the wrapper.
+        content = teaching["content"]
+        design = content.get("output_design") or {}
+        substantive = [u for u in content["units"] if u.get("artifact_role") != "book_level"]
+        if ("tutorial" in state["context"].get("requested_artifacts", [])
+                and design.get("mode") in {"tutorial", "reading", "custom"}
+                and len(substantive) >= 2 and content.get("integration_plan") is None):
+            corrected, correction_audit = invoke(
+                run_id, worker, epoch, state,
+                stage="integration_plan_correcting", unit_id="task-intent",
+                role="understanding", provider_factory=provider_factory,
+                data={"original_arrangement": content,
+                      "planning_skill": planning_skill,
+                      "integration_plan_schema": IntegrationPlan.model_json_schema(),
+                      "method_version": "A-integration-plan-correction.v1"},
+                system=(
+                    "Return JSON {integration_plan:...} matching integration_plan_schema. "
+                    "This is a bounded correction of a missing semantic planning field, not a rewrite. "
+                    "Preserve the original unit titles, artifact roles and depends_on_titles exactly. "
+                    "Decide from the complete task and actual planned units whether cross-chapter synthesis, "
+                    "part summaries or a whole-tutorial summary are genuinely required. If none is warranted, "
+                    "return required:false and sections:[]. Every section must map to an existing book_level "
+                    "unit title whose depends_on_titles exactly equal covers_titles. Do not add learner content, "
+                    "invent units, weaken requirements or apply a fixed summary template."
+                ),
+                output_schema={"integration_plan": IntegrationPlan.model_json_schema()},
+                output_tokens=8192,
+                entries=intent_request["entries"],
+            )
+            plan_value = corrected.get("integration_plan") if isinstance(corrected, dict) else None
+            try:
+                validated = IntegrationPlan.model_validate(plan_value).model_dump()
+            except Exception:
+                raise DomainError("INTEGRATION_PLAN_CORRECTION_INVALID", 422) from None
+            content["integration_plan"] = validated
+            teaching["hash"] = digest(content)
+            audit["integration_plan_correction"] = correction_audit
     quality_target_rebinding = []
     with SessionLocal() as db:
         obj = job(db, run_id)

@@ -167,6 +167,14 @@ Decision:
   fulltext insufficiency freezes an explicit `local_materials_only` degradation
   with attempted indexes, failures and citation boundaries, then continues with
   selected local materials. Query/schema/privacy contract errors still fail.
+- A owns the task-specific integration decision. `integration_plan` records
+  whether cross-chapter synthesis, part summaries or a whole-tutorial summary
+  are warranted, with each section bound to exactly one `book_level` unit whose
+  `depends_on_titles` equal its `covers_titles` and whose position follows the
+  covered units. B writes each section from the actual generated upstream
+  content after the parallel chapter pass; the wrapper never invents a summary
+  or applies a template heading. A missing plan on a multi-unit tutorial gets at
+  most one explicit A correction request, not a wrapper-generated substitute.
 - Model output limits use the registered model capacity. A profile
   `output_limit_tokens` may only reduce that capacity; null means no additional
   application cap. Per-call budget hints are planning metadata and never become

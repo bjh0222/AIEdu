@@ -6,6 +6,16 @@ import pytest
 from app.v2.contracts import DomainError, digest, sha
 
 
+def test_planning_skill_requires_task_specific_integration_plan():
+    from app.v2.planning import skill
+
+    value = skill()
+    assert value["version"] == 7
+    assert "integration_plan" in value["instructions"]
+    assert "whole_tutorial_summary" in value["instructions"]
+    assert "not a template field to copy" in value["instructions"]
+
+
 def profile(domain="math_logic"):
     from app.v2.profiles import domain_profile
     return domain_profile(domain, "exercise")

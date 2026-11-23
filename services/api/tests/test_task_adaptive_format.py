@@ -152,6 +152,121 @@ def test_reading_adapts_headings_but_keeps_all_chapter_digest_dependencies():
         apply_design(ctx, {}, value, [{"source_id": "s", "chunk_id": "s:0"}])
 
 
+def tutorial_design():
+    return design(mode="tutorial", question_form="not_applicable", difficulty_target=None,
+                  quantity_per_group=None, request_quotes=["最后比较三种方法并总结全书"])
+
+
+def tutorial_evaluation(content=None, titles=("方法甲", "方法乙", "方法丙")):
+    chapters = [{"title": title, "concepts": [title], "question_types": [], "difficulty_basis": {},
+                 "quantity": None, "material_mapping": [], "acceptance_criteria": [f"{title}讲清楚"],
+                 "artifact_role": "chapter"} for title in titles]
+    sections = [
+        {"title": "方法比较", "kind": "cross_chapter_synthesis", "covers_titles": list(titles),
+         "required_content": ["比较三种方法的适用条件、选择依据和边界"],
+         "rationale": "用户要求在同一教程中比较三种方法的适用差异"},
+        {"title": "全书总结", "kind": "whole_tutorial_summary", "covers_titles": list(titles),
+         "required_content": ["归纳三种方法的选择规则并给出全书结论"],
+         "rationale": "用户明确要求最后给出覆盖全书的总结"},
+    ]
+    units = chapters + [
+        {"title": "方法比较", "concepts": list(titles), "question_types": [], "difficulty_basis": {},
+         "quantity": None, "material_mapping": [], "acceptance_criteria": ["比较结论可指导选择"],
+         "artifact_role": "book_level", "depends_on_titles": list(titles)},
+        {"title": "全书总结", "concepts": list(titles), "question_types": [], "difficulty_basis": {},
+         "quantity": None, "material_mapping": [], "acceptance_criteria": ["总结覆盖全部方法"],
+         "artifact_role": "book_level", "depends_on_titles": list(titles)},
+    ]
+    if content:
+        content(units, sections)
+    return arrangement({"teaching_arrangement": {
+        "goals": ["比较三种方法"], "learner_prerequisites": [], "scope": "system",
+        "quality_targets": ["三种方法可区分"], "unresolved_conflicts": [],
+        "generation_prompt": "按 A 的集成计划生成", "output_design": tutorial_design(),
+        "units": units,
+        "integration_plan": {"required": True, "decision_basis": "用户原话要求比较三种方法与总结全书",
+                             "whole_tutorial_summary": True, "sections": sections},
+    }})
+
+
+def test_A_plans_cross_chapter_synthesis_and_whole_summary_as_B_units():
+    ctx = context() | {"raw_input": "写三种方法的教程，最后比较三种方法并总结全书",
+                       "requested_artifacts": ["tutorial"]}
+    value = tutorial_evaluation()
+    built = apply_design(ctx, {"units": []}, value, [])
+    assert [u["title"] for u in built["units"]] == ["方法甲", "方法乙", "方法丙", "方法比较", "全书总结"]
+    assert [u["artifact_role"] for u in built["units"][-2:]] == ["book_level", "book_level"]
+    assert [u["depends_on"] for u in built["units"][-2:]] == [
+        [built["units"][0]["unit_id"], built["units"][1]["unit_id"], built["units"][2]["unit_id"]],
+        [built["units"][0]["unit_id"], built["units"][1]["unit_id"], built["units"][2]["unit_id"]],
+    ]
+    assert built["units"][3]["integration_section"]["kind"] == "cross_chapter_synthesis"
+    assert built["units"][4]["integration_section"]["kind"] == "whole_tutorial_summary"
+    assert built["integration_plan"]["whole_tutorial_summary"] is True
+    strict = apply_arrangement(built, value, require_complete=True)
+    assert strict["units"][3]["teaching_arrangement"]["artifact_role"] == "book_level"
+
+
+def test_integration_plan_is_required_for_multi_unit_tutorial():
+    ctx = context() | {"raw_input": "写三种方法的教程，最后比较三种方法并总结全书",
+                       "requested_artifacts": ["tutorial"]}
+    value = tutorial_evaluation()
+    value["content"].pop("integration_plan")
+    with pytest.raises(DomainError, match="INTEGRATION_PLAN_REQUIRED"):
+        apply_design(ctx, {"units": []}, value, [])
+
+
+@pytest.mark.parametrize("fault,code", [
+    ("missing_unit", "INTEGRATION_UNIT_MISSING"),
+    ("wrong_role", "INTEGRATION_UNIT_ROLE_INVALID"),
+    ("wrong_dependency", "INTEGRATION_DEPENDENCY_MISMATCH"),
+    ("wrong_placement", "INTEGRATION_PLACEMENT_INVALID"),
+    ("whole_coverage", "INTEGRATION_WHOLE_SUMMARY_COVERAGE"),
+    ("undeclared_unit", "INTEGRATION_UNIT_UNDECLARED"),
+])
+def test_integration_plan_cannot_hide_or_misplace_A_synthesis(fault, code):
+    ctx = context() | {"raw_input": "写三种方法的教程，最后比较三种方法并总结全书",
+                       "requested_artifacts": ["tutorial"]}
+
+    def corrupt(units, sections):
+        if fault == "missing_unit":
+            sections[0]["title"] = "不存在的综合"
+        if fault == "wrong_role":
+            units[3]["artifact_role"] = "chapter"
+        if fault == "wrong_dependency":
+            units[3]["depends_on_titles"] = ["方法甲"]
+        if fault == "wrong_placement":
+            units.insert(0, units.pop(3))
+        if fault == "whole_coverage":
+            sections[1]["covers_titles"] = ["方法甲", "方法乙"]
+            units[4]["depends_on_titles"] = ["方法甲", "方法乙"]
+        if fault == "undeclared_unit":
+            units.append({"title": "额外全书层", "concepts": [], "question_types": [], "difficulty_basis": {},
+                          "quantity": None, "material_mapping": [], "acceptance_criteria": ["x"],
+                          "artifact_role": "book_level", "depends_on_titles": ["方法甲"]})
+
+    value = tutorial_evaluation(corrupt)
+    with pytest.raises(DomainError, match=code):
+        apply_design(ctx, {"units": []}, value, [])
+
+
+def test_B_receives_A_integration_scope_and_actual_upstream_contract():
+    from app.v2.worker import integration_generation_instruction
+
+    assert integration_generation_instruction({}) == ""
+    text = integration_generation_instruction({"integration_section": {
+        "title": "方法比较",
+        "kind": "cross_chapter_synthesis",
+        "covers_titles": ["方法甲", "方法乙"],
+        "required_content": ["比较适用条件与选择依据"],
+        "rationale": "用户要求比较两种方法",
+    }})
+    assert "A-planned integration section" in text
+    assert "covers_titles=['方法甲', '方法乙']" in text
+    assert "actual generated upstream content" in text
+    assert "do not repeat their lessons" in text
+
+
 def test_explicit_replan_is_same_task_new_plan_no_content_replay_and_parent_immutable(client):
     from test_task_run_v2 import task_run
     from app.db import SessionLocal
