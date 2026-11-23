@@ -238,8 +238,12 @@ export default function Workbench({ taskId }: { taskId: string }) {
   // 失败/结果不明的原因只取本次运行；祖先 run 的旧失败（例如上一轮的 8k 截断）
   // 不能拿来解释本轮的停止原因。
   const currentCalls = run.calls.filter((c) => c.current_run !== false);
-  const failedCall = currentCalls.find((c) => c.status === "settled" && c.outcome === "failed" && c.failure_code);
-  const unknownCall = currentCalls.find((c) => c.status === "unknown" || c.outcome === "unknown");
+  // 中间合同纠正失败可能已被后续成功覆盖；停止横幅应显示最后一次失败/不明调用，
+  // 而不是最早一次失败。
+  const failedCalls = currentCalls.filter((c) => c.status === "settled" && c.outcome === "failed" && c.failure_code);
+  const unknownCurrentCalls = currentCalls.filter((c) => c.status === "unknown" || c.outcome === "unknown");
+  const failedCall = failedCalls[failedCalls.length - 1];
+  const unknownCall = unknownCurrentCalls[unknownCurrentCalls.length - 1];
   const failureDetail = failedCall ? callFailureText(failedCall) : unknownCall ? callFailureText(unknownCall) : "";
   const pausing = pauseUi === "requesting" && run.state !== "paused";
   const missing = missingRoles(run);

@@ -432,4 +432,53 @@ test.describe("运行中与失败原因的可读性", () => {
     await expect(banner).toContainText("继续生成");
     await expect(banner).not.toContainText("PROVIDER_OUTPUT_INVALID_OR_TRUNCATED");
   });
+
+  test("停止横幅显示最后一次失败而非已被纠正的中间失败", async ({ page }) => {
+    await mockBackend(page, {
+      snapshot: () => runSnapshot({
+        state: "failed",
+        demo: false,
+        version_id: null,
+        cost_final: false,
+        stop_reason: "PROVIDER_CALL_FAILED",
+        next_actions: ["resume"],
+        calls: [
+          {
+            call_id: "99999999-9999-4999-8999-999999999990",
+            unit_id: "task-intent",
+            status: "settled",
+            outcome: "failed",
+            attempt: 1,
+            usage: null,
+            price: null,
+            model_family: "deepseek",
+            model: "deepseek-flash",
+            request_hash: "a".repeat(64),
+            current_run: true,
+            failure_code: "PROVIDER_OUTPUT_INVALID_OR_TRUNCATED",
+            failure_diagnostics: { finish_reason: "stop", validation_reason: "JSON_PARSE_FAILED" },
+          },
+          {
+            call_id: "99999999-9999-4999-8999-999999999991",
+            unit_id: "rubric-contract",
+            status: "settled",
+            outcome: "failed",
+            attempt: 1,
+            usage: null,
+            price: null,
+            model_family: "deepseek",
+            model: "deepseek-flash",
+            request_hash: "b".repeat(64),
+            current_run: true,
+            failure_code: "PROVIDER_HTTP_400",
+            failure_diagnostics: { http_status: 400, provider_error_excerpt: "invalid request" },
+          },
+        ],
+      }),
+    });
+    await page.goto(`/tasks/${IDS.task}`);
+    const banner = page.getByRole("status").filter({ hasText: "本次运行已停止" });
+    await expect(banner).toContainText("拒绝了这次请求");
+    await expect(banner).not.toContainText("不是有效 JSON");
+  });
 });
