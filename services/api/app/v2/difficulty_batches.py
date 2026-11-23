@@ -15,7 +15,7 @@ def matching_attempts(calls, data, schema, system, profile, output_tokens):
     from .capacity import get_capacity, planned_output_tokens, request_capacity
     from .inference import request_messages
 
-    messages = request_messages(system, data, schema)
+    messages = request_messages(system, data, schema, ensure_json_literal=True)
     capacity = get_capacity(profile.llm_base_url, profile.llm_model)
     reserve = planned_output_tokens(profile, output_tokens, capacity)["reserved_output_tokens"]
     estimate = request_capacity(messages, capacity, reserve)

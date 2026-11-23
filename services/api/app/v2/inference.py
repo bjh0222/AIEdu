@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 import httpx
@@ -20,7 +21,7 @@ class AttemptFailure(LLMError):
         self.diagnostics, self.raw_result = diagnostics, raw_result
 
 
-def request_messages(system, data, output_schema=None):
+def request_messages(system, data, output_schema=None, *, ensure_json_literal=False):
     """The parser's response contract must reach the actual model messages.
 
     output_schema was previously hash/receipt metadata only. In JSON-object
@@ -28,6 +29,12 @@ def request_messages(system, data, output_schema=None):
     system message without nesting it among the task's data. A user-data
     envelope led real responses to echo that envelope instead of its value.
     """
+    if ensure_json_literal and not re.search(r"json", system, re.I):
+        # Some OpenAI-compatible providers reject response_format=json_object
+        # unless the prompt itself contains the literal word JSON. Keep the
+        # instruction in the hashed message so cache identity and the wire
+        # request stay identical.
+        system += "\nReturn only valid JSON."
     if output_schema:
         if not isinstance(data, dict):
             raise DomainError("RESPONSE_CONTRACT_ENVELOPE_CONFLICT", 422)
@@ -114,7 +121,18 @@ class AuditedProvider(OpenAICompatibleProvider):
         request_id = response.headers.get("x-request-id")
         # An explicit rejection is known to have failed; no automatic retry is issued.
         if response.status_code >= 300:
-            raise AttemptFailure(f"PROVIDER_HTTP_{response.status_code}", "failed", provider_request_id=request_id)
+            try:
+                body = response.text[:2000]
+            except Exception:
+                body = ""
+            key = getattr(self, "api_key", "") or ""
+            if key:
+                body = body.replace(key, "[REDACTED]")
+            raise AttemptFailure(
+                f"PROVIDER_HTTP_{response.status_code}", "failed", provider_request_id=request_id,
+                diagnostics={"http_status": response.status_code,
+                             "provider_error_excerpt": body or "empty response body"},
+            )
         try:
             data = response.json()
         except ValueError:
@@ -160,7 +178,8 @@ def invoke(run_id, worker, epoch, state, *, stage, unit_id, data, system, role="
     if not settings.v2_allow_paid:
         raise DomainError("PAID_RUN_NOT_AUTHORIZED", 403)
     profile = profile or for_role(role)
-    messages = request_messages(system, data, output_schema)
+    messages = request_messages(system, data, output_schema,
+                                ensure_json_literal=bool(getattr(profile, "llm_json_mode", True)))
     capacity = get_capacity(profile.llm_base_url, profile.llm_model)
     planned = planned_output_tokens(profile, output_tokens, capacity)
     estimate = request_capacity(messages, capacity, planned["reserved_output_tokens"])

@@ -127,7 +127,7 @@ def resume_partitions(run_id, state, data, system):
             for c in calls):
         return [data]
     profile = for_role("review")
-    messages = request_messages(system, data)
+    messages = request_messages(system, data, ensure_json_literal=True)
     capacity = get_capacity(profile.llm_base_url, profile.llm_model)
     current_plan = planned_output_tokens(profile, REVIEW_OUTPUT_TOKENS, capacity)
     limit_parameter = current_plan["output_limit_parameter"]
@@ -140,14 +140,14 @@ def resume_partitions(run_id, state, data, system):
     def failed_at_budget(budget, payload):
         planned = planned_output_tokens(profile, budget, capacity)
         estimate = request_capacity(
-            request_messages(system, payload), capacity,
+            request_messages(system, payload, ensure_json_literal=True), capacity,
             planned["reserved_output_tokens"])
         params = {planned["output_limit_parameter"]: estimate["reserved_output_tokens"],
             "temperature": getattr(profile, "llm_temperature", None), "thinking": getattr(profile, "llm_thinking", None),
             "reasoning_effort": getattr(profile, "llm_reasoning_effort", None),
             "json_mode": getattr(profile, "llm_json_mode", True)}
         return matching_length_failure(
-            calls, manifest, request_messages(system, payload), profile, params)
+            calls, manifest, request_messages(system, payload, ensure_json_literal=True), profile, params)
 
     # The current request already uses the model ceiling (or the user override).
     # Identity normalization lets a failure recorded under any smaller legacy

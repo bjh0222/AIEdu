@@ -20,13 +20,16 @@ def test_bounded_capacity_unknown_and_duplicate_calls(client):
     one = authorize_call(*args)
     assert authorize_call(*args) == one
     two = authorize_call(rid, "unit-b", "request-b", snap["context_hash"], lease["epoch"], "capacity-fixture", "key-b")
+    three = authorize_call(rid, "unit-c", "request-c", snap["context_hash"], lease["epoch"], "capacity-fixture", "key-c")
+    four = authorize_call(rid, "unit-d", "request-d", snap["context_hash"], lease["epoch"], "capacity-fixture", "key-d")
+    five = authorize_call(rid, "unit-e", "request-e", snap["context_hash"], lease["epoch"], "capacity-fixture", "key-e")
     with pytest.raises(DomainError, match="PROVIDER_BACKPRESSURE"):
-        authorize_call(rid, "unit-c", "request-c", snap["context_hash"], lease["epoch"], "capacity-fixture", "key-c")
+        authorize_call(rid, "unit-f", "request-f", snap["context_hash"], lease["epoch"], "capacity-fixture", "key-f")
     mark_sent(one, "capacity-fixture", lease["epoch"])
     settle(one, "unknown", {"total_tokens": 3})
     settle(two, "success", {"total_tokens": 2})
     with pytest.raises(DomainError, match="PROVIDER_BACKPRESSURE"):
-        authorize_call(rid, "unit-c", "request-c", snap["context_hash"], lease["epoch"], "capacity-fixture", "key-c")
+        authorize_call(rid, "unit-f", "request-f", snap["context_hash"], lease["epoch"], "capacity-fixture", "key-f")
 
 
 def test_parallel_checker_preserves_all_items_and_blind_inputs(client, monkeypatch):

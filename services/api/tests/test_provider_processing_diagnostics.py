@@ -1,4 +1,5 @@
 """Provider failures retain distinguishable, non-sensitive processing evidence."""
+import re
 from types import SimpleNamespace
 import httpx
 import pytest
@@ -14,6 +15,15 @@ def test_complete_prefix_never_salvages_truncation_or_drops_another_value():
     assert complete_object_prefix('{"a":{"b":1}}}') == {"a": {"b": 1}}
     for invalid in ('{"a":', '{"a":1', '{"a":1}{"b":2}', '{"a":1} prose', '```json\n{"a":1}\n```'):
         assert complete_object_prefix(invalid) is None
+
+
+def test_json_mode_prompt_always_contains_literal_json():
+    from app.v2.inference import request_messages
+
+    messages = request_messages("Return {dimensions:[]}.", {"x": 1}, ensure_json_literal=True)
+    assert re.search(r"\bJSON\b", messages[0]["content"])
+    already = request_messages("Return valid JSON {x:1}.", {"x": 1}, ensure_json_literal=True)
+    assert "Return only valid JSON." not in already[0]["content"]
 
 
 @pytest.mark.parametrize("reason,text,validation", [("length", '{"a":1}', "OUTPUT_LENGTH_LIMIT"),
