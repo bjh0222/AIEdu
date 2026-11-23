@@ -218,7 +218,8 @@ def start_run(task_id, payload, key, automatic=False, envelope=None):
                   "budget": {"calls": None, "tokens": None, "amount": None, "seconds": None}}
         from .review_contract import review_protocol_manifest
         frozen["quality_protocol"] = review_protocol_manifest()
-        concurrency = max(1, min(4, int(os.getenv("AIEDU_V2_CONCURRENCY", "2"))))
+        from ..model_settings import configured_concurrency
+        concurrency = configured_concurrency()
         # Defaults belong to new configured runs, not to historical frozen runs.
         # Explicit opt-out/demo retain their contracts. A new root is unlimited;
         # resuming an old root still requires its explicit budget amendment.

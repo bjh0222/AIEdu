@@ -175,6 +175,12 @@ Decision:
   content after the parallel chapter pass; the wrapper never invents a summary
   or applies a template heading. A missing plan on a multi-unit tutorial gets at
   most one explicit A correction request, not a wrapper-generated substitute.
+- Provider and check concurrency is a global, user-configurable setting bounded
+  to 1-5 (default 5), persisted through the model-settings CAS and exposed in the
+  settings UI. Independent unit checks, L4 findings and independent research
+  scope reviews may run in parallel up to that bound. Dependency edges,
+  perturbation pairing, reducers and evidence binding remain ordered; no
+  parallel worker retries an existing unknown or ignores a failure.
 - Model output limits use the registered model capacity. A profile
   `output_limit_tokens` may only reduce that capacity; null means no additional
   application cap. Per-call budget hints are planning metadata and never become

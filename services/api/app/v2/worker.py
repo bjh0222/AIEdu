@@ -194,7 +194,7 @@ def execute_run(run_id: str, provider_factory=None):
                     raise DomainError("MATERIAL_INCOMPLETE")
                 materials.append(load(material.manifest_json))
         completed = {u["unit_id"] for u in units}
-        generation_concurrency = max(1, min(4, state.get("execution_policy", {}).get("generation_concurrency", 1)))
+        generation_concurrency = max(1, min(5, state.get("execution_policy", {}).get("generation_concurrency", 1)))
         from .model_roles import role_config,for_role
         profile = (for_role("generation") if role_config()[1].get("generation") else runtime_settings()) if state["mode"] == "configured" else None
         candidates, generation_errors = {}, {}

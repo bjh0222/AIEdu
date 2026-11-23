@@ -340,7 +340,7 @@ def evaluate_criteria(run_id, worker, epoch, state, units, version_id, provider_
                 stopped.set()
             raise
 
-    concurrency = max(1, min(4, state.get("execution_policy", {}).get("check_concurrency", 1)))
+    concurrency = max(1, min(5, state.get("execution_policy", {}).get("check_concurrency", 1)))
     with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="criterion-review") as pool:
         results = []
         # Submit one bounded wave at a time. A failed or unknown wave may

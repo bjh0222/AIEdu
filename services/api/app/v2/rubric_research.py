@@ -7,6 +7,7 @@ The project 0/1/2 anchors are operationalizations, never a calibrated scale.
 from __future__ import annotations
 
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -631,6 +632,7 @@ def review_rubric_scope(run_id, worker, epoch, state, scope, dimensions, claims,
     """
     from .adaptive_format import POLICY_PROMPT
     task = research_scope_task(state)
+    workers = max(1, min(5, state.get("execution_policy", {}).get("check_concurrency", 1)))
     reviews, audits, accepted = [], [], {}
     for attempt in range(3):
         # Accepted dimensions stay byte-identical. Their original, bound C
@@ -639,7 +641,10 @@ def review_rubric_scope(run_id, worker, epoch, state, scope, dimensions, claims,
         reused = [deepcopy(accepted[digest(d)]) for d in dimensions if digest(d) in accepted]
         pending = [d for d in dimensions if digest(d) not in accepted]
         rows, batch_audits, batches = list(reused), [], []
-        for stage, data, reserve in _scope_requests(state, scope, attempt, pending, claims, task):
+        requests = _scope_requests(state, scope, attempt, pending, claims, task)
+
+        def review_request(request):
+            stage, data, reserve = request
             batch = data["dimensions"]
             review, audit = _call(run_id, worker, epoch, state,
             stage, data,
@@ -661,6 +666,15 @@ def review_rubric_scope(run_id, worker, epoch, state, scope, dimensions, claims,
             "Usable means task-scope engineering suitability only, not professional calibration, certification or factual truth."
                 + POLICY_PROMPT + SCOPE_OPERATIONAL_POLICY + C_SCOPE_SKILL_PROMPT,
             provider_factory, reserve, role="review")
+            return request, review, audit
+
+        if workers > 1 and len(requests) > 1:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="v2-scope-review") as pool:
+                reviewed = list(pool.map(review_request, requests))
+        else:
+            reviewed = [review_request(request) for request in requests]
+        for (stage, data, reserve), review, audit in reviewed:
+            batch = data["dimensions"]
             decisions, evidence_audits = bind_scope_decisions(run_id, worker, epoch, state,
                 stage, data, review, provider_factory)
             rows.extend(decisions)

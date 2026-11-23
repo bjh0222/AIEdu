@@ -223,6 +223,11 @@ def configure_models(payload:ConfigWrite,key=Depends(action_key)):
                 if roles[k] is None:
                     merged.pop(k, None)
             config["model_roles"] = merged
+        elif payload.action == "concurrency":
+            value = payload.value.get("max_concurrency")
+            if type(value) is not int or not 1 <= value <= 5:
+                raise DomainError("CONCURRENCY_INVALID", 422)
+            config["max_concurrency"] = value
         elif payload.action == "delivery_policy":
             if set(payload.value) - {"auto_waiver_enabled"}:
                 raise DomainError("MODEL_CONFIG_ACTION_INVALID", 422)

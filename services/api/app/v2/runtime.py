@@ -257,7 +257,7 @@ def authorize_call(run_id, unit_id, request_hash, input_hash, epoch, worker, key
                 state["budget_started_at"] = started
             if time.time() - started >= budget["seconds"]:
                 raise DomainError("TIME_BUDGET_EXHAUSTED")
-        capacity = max(1, min(4, state.get("execution_policy", {}).get("provider_concurrency", 1)))
+        capacity = max(1, min(5, state.get("execution_policy", {}).get("provider_concurrency", 1)))
         occupied = active_provider_work(db)
         if (any(c.status == "unknown" or c.root_job_id != obj.id for c in occupied)
                 or len(occupied) >= capacity):

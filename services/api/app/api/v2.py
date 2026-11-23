@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response, Uplo
 
 from ..config import settings
 from ..db import SessionLocal
+from ..model_settings import configured_concurrency
 from ..models import GenerationJob, GoalMaterial, LearningGoal, TutorialVersion
 from ..schemas import ChatRequest
 from ..v2 import exports, tasks
@@ -46,7 +47,7 @@ def capabilities(domain_key: str = "general", scene: str = "knowledge_tutorial",
                             "spec_bindings": [{"scene": scene, "artifact_role": "tutorial"}]})
     return {"schema_version": "aiedu.task-run.v2", "scenes": sorted(SCENES), "obsidian_delivery": False,
               "paid_calls_enabled": settings.v2_allow_paid, "active_root_limit": 1,
-              "provider_concurrency": max(1, min(4, int(__import__("os").getenv("AIEDU_V2_CONCURRENCY", "2")))),
+              "provider_concurrency": configured_concurrency(),
             "repair_policy": POLICY, "calibration_status": "not_calibrated", "ps51_sandbox": "not_run",
             "model_roles": ["generation", "blind_solver", "review", "secondary_review", "benchmark_panel", "benchmark_refiner", "chat"],
             "verifiers": {"markdown.v1": "available", "coverage.v1": "available", "ps51_sandbox.v1": "unsupported",

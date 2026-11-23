@@ -1,5 +1,7 @@
 """Research taxonomies cannot become every task's curriculum by model fiat."""
 from copy import deepcopy
+import threading
+import time
 
 import pytest
 
@@ -41,6 +43,32 @@ def test_C_reviews_task_scope_and_complete_rubric_before_product_consumption(mon
     assert calls[0][0][5]["task_contract"]["raw_input"] == "methods, three difficult questions each"
     assert records[0]["professional_certification"] == "not_calibrated"
     assert audits[0]["call_id"] == "c"
+
+
+def test_scope_reviews_use_configured_parallelism(monkeypatch):
+    dims, claims = dimensions()
+    dims = [dict(deepcopy(dims[0]), dimension_id=f"d{i}", source_refs=[f"claim:{i}"]) for i in range(4)]
+    claims = [{"claim_id": f"claim:{i}", "claim": f"evidence {i}"} for i in range(4)]
+    monkeypatch.setattr(research, "_persisted_scope_input", lambda *a: False)
+    monkeypatch.setattr(research, "_quarantined_scope_input", lambda *a: None)
+    lock = threading.Lock()
+    active = {"now": 0, "max": 0}
+    def call(*args, **kwargs):
+        with lock:
+            active["now"] += 1
+            active["max"] = max(active["max"], active["now"])
+        time.sleep(0.1)
+        with lock:
+            active["now"] -= 1
+        data = args[5]
+        return {"decisions": [decision(d) for d in data["dimensions"]]}, {"call_id": "c"}
+    monkeypatch.setattr(research, "_call", call)
+    state = {"context": {"raw_input": "methods", "domain_key": "math_logic"},
+             "execution_policy": {"check_concurrency": 3}}
+    approved, records, audits = research.review_rubric_scope(
+        "run", "worker", 0, state, "knowledge", dims, claims)
+    assert len(approved) == 4 and len(records) == 1
+    assert active["max"] >= 2
 
 
 def test_C_revision_is_consumed_and_rechecked_not_merely_relabelled(monkeypatch):

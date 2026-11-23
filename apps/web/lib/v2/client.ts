@@ -268,6 +268,7 @@ const ERRORS: Record<string, string> = {
   SPEC_VERSION_STALE: "这份规范已被修改。请重新读取后再保存。",
   SPEC_NOT_FOUND: "找不到这份规范。",
   MODEL_CONFIG_STALE: "模型配置已被修改。请重新读取后再保存。",
+  CONCURRENCY_INVALID: "最多并发数必须是 1 到 5 的整数。",
   MODEL_PROFILE_INVALID: "模型配置格式不正确。",
   MODEL_DISCOVERY_FAILED: "无法获取模型列表。请检查接口地址与密钥，以及供应商是否支持 /v1/models 接口。",
   MODEL_PROFILE_NOT_FOUND: "没有找到对应地址的已保存配置，无法复用其密钥。",

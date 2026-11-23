@@ -357,7 +357,7 @@ def _evaluate_core(run_id, worker, epoch, state, units, version_id, provider_fac
         state.get("check_plan", {}).get("check_items", []), units,
         state.get("context", {}))
     baseline["quality_preflight"] = preflight
-    concurrency = max(1, min(4, state.get("execution_policy", {}).get("check_concurrency", 1)))
+    concurrency = max(1, min(5, state.get("execution_policy", {}).get("check_concurrency", 1)))
     checks = {c["item_id"]: c for c in baseline["checks"]}
     findings = baseline["findings"]
     traces, rejected_candidates, item_observations = [], [], []
@@ -598,22 +598,17 @@ def l4_review(run_id, worker, epoch, state, units, findings, version_id, provide
     A third independent family is needed for unsupported L2 candidates. Deterministic
     findings can be reviewed by the configured cross-generation review family.
     """
-    records = []
-    for f in findings:
-        if f["status"] not in {"confirmed", "unsupported"}:
-            continue
+    def review_one(f):
         if f.get("context_conflict"):
-            records.append({"finding_id":f["finding_id"],"status":"abstained",
-                "reason":"SOURCE_DIRECTIVE_IS_DATA_NOT_AUTHORITY; general injection detection is not certified"})
-            continue
+            return f, {"finding_id":f["finding_id"],"status":"abstained",
+                "reason":"SOURCE_DIRECTIVE_IS_DATA_NOT_AUTHORITY; general injection detection is not certified"}
         excluded = [for_role("generation").llm_model_family]
         if f.get("model_family"):
             excluded.append(f["model_family"])
         try:
             profile = for_role("secondary_review" if f.get("model_family") else "review", independent_of=excluded)
         except DomainError as exc:
-            records.append({"finding_id": f["finding_id"], "status": "abstained", "reason": exc.code})
-            continue
+            return f, {"finding_id": f["finding_id"], "status": "abstained", "reason": exc.code}
         unit = next(u for u in units if u["unit_id"] == f["location"]["unit_id"])
         output, audit = invoke(run_id, worker, epoch, state, stage="selective_review", unit_id=unit["unit_id"],
             profile=profile, provider_factory=provider_factory, output_tokens=16384,
@@ -624,6 +619,17 @@ def l4_review(run_id, worker, epoch, state, units, findings, version_id, provide
         if decision not in {"supported", "disagreed", "undecidable"}:
             decision = "undecidable"
         record = {"finding_id":f["finding_id"], "status":decision, **audit, "authority":"reference_review_only"}
+        return f, record
+
+    eligible = [f for f in findings if f["status"] in {"confirmed", "unsupported"}]
+    concurrency = max(1, min(5, state.get("execution_policy", {}).get("check_concurrency", 1)))
+    if concurrency > 1 and len(eligible) > 1:
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="v2-L4") as pool:
+            reviewed = list(pool.map(review_one, eligible))
+    else:
+        reviewed = [review_one(f) for f in eligible]
+    records = []
+    for f, record in reviewed:
         f["review_evidence"].append(record)
         records.append(record)
     return {"status":"completed" if records and all(r["status"] != "abstained" for r in records) else "abstained_or_not_required",

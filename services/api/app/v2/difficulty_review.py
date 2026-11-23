@@ -236,7 +236,7 @@ def evaluate_difficulty(run_id, worker, epoch, state, units, version_id, provide
                 stopped.set()
             raise
 
-    concurrency = max(1, min(4, state.get("execution_policy", {}).get("check_concurrency", 1)))
+    concurrency = max(1, min(5, state.get("execution_policy", {}).get("check_concurrency", 1)))
     with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="difficulty-review") as pool:
         results = []
         for start in range(0, len(requests), concurrency):

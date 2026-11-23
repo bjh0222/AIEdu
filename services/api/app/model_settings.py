@@ -15,6 +15,7 @@ from .config import BACKEND_ROOT, settings
 
 _lock = threading.RLock()
 DEFAULT_DELIVERY_POLICY = {"auto_waiver_enabled": True}
+DEFAULT_MAX_CONCURRENCY = 5
 
 
 class ModelProfile(BaseModel):
@@ -73,6 +74,7 @@ def read_config() -> dict:
             eval_cfg.setdefault("enabled", settings.independent_eval_enabled)
             eval_cfg.setdefault("api_key", "")
             config.setdefault("delivery_policy", dict(DEFAULT_DELIVERY_POLICY))
+            config.setdefault("max_concurrency", DEFAULT_MAX_CONCURRENCY)
             return config
         profiles = []
         if settings.llm_configured:
@@ -88,6 +90,7 @@ def read_config() -> dict:
                 "api_key": "",
             },
             "delivery_policy": dict(DEFAULT_DELIVERY_POLICY),
+            "max_concurrency": DEFAULT_MAX_CONCURRENCY,
         }
 
 
@@ -133,6 +136,7 @@ def public_config() -> dict:
             ),
         },
         "delivery_policy": delivery_policy(config),
+        "max_concurrency": configured_concurrency(config),
     }
 
 
@@ -146,6 +150,17 @@ def delivery_policy(config: dict | None = None) -> dict:
         "auto_waiver_enabled": False if env_disabled else enabled,
         "source": "environment_disabled" if env_disabled else "config_default",
     }
+
+
+def configured_concurrency(config: dict | None = None) -> int:
+    """User-facing provider/check concurrency, bounded to the supported 1-5."""
+    value = (config if config is not None else read_config()).get(
+        "max_concurrency", DEFAULT_MAX_CONCURRENCY)
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        value = DEFAULT_MAX_CONCURRENCY
+    return max(1, min(5, value))
 
 
 def save_independent_eval(enabled: bool, api_key: str | None = None) -> dict:

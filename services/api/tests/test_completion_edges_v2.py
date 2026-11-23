@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from types import SimpleNamespace
 
 import anyio
@@ -127,6 +129,62 @@ def test_delivery_waiver_policy_defaults_on_and_uses_real_cas_action_with_env_ov
         "auto_waiver_enabled": False,
         "source": "environment_disabled",
     }
+
+
+def test_max_concurrency_defaults_five_and_persists_with_cas(client):
+    from app.model_settings import configured_concurrency
+
+    headers = owner(client)
+    current = client.get("/api/v2/model-settings").json()
+    assert current["config"]["max_concurrency"] == 5
+    assert configured_concurrency() == 5
+    body = {
+        "expected_config_hash": current["config_hash"],
+        "action": "concurrency",
+        "value": {"max_concurrency": 3},
+    }
+    saved = client.put(
+        "/api/v2/model-settings", json=body,
+        headers=headers | {"Idempotency-Key": "max-concurrency-three"},
+    )
+    assert saved.status_code == 200, saved.text
+    assert client.get("/api/v2/model-settings").json()["config"]["max_concurrency"] == 3
+    assert configured_concurrency() == 3
+    current = client.get("/api/v2/model-settings").json()
+    invalid = client.put(
+        "/api/v2/model-settings",
+        json={"expected_config_hash": current["config_hash"], "action": "concurrency",
+              "value": {"max_concurrency": 6}},
+        headers=headers | {"Idempotency-Key": "max-concurrency-six"},
+    )
+    assert invalid.status_code == 422
+
+
+def test_l4_reviews_independent_findings_in_parallel_and_preserves_order(monkeypatch):
+    from app.v2 import checker
+
+    findings = [{"finding_id": f"f{i}", "status": "confirmed", "claim": f"claim {i}",
+                 "normalized_claim_hash": str(i) * 64,
+                 "location": {"unit_id": "u", "start_byte": 0, "end_byte": 1},
+                 "review_evidence": []} for i in range(3)]
+    units = [{"unit_id": "u", "body": "abc"}]
+    state = {"context": {"raw_input": "fixture"}, "execution_policy": {"check_concurrency": 3}}
+    lock = threading.Lock()
+    active = {"now": 0, "max": 0}
+    monkeypatch.setattr(checker, "for_role", lambda *a, **k: SimpleNamespace(llm_model_family="deepseek"))
+    def invoke(*args, **kwargs):
+        with lock:
+            active["now"] += 1
+            active["max"] = max(active["max"], active["now"])
+        time.sleep(0.15)
+        with lock:
+            active["now"] -= 1
+        return {"result": "supported"}, {"call_id": kwargs["key"]}
+    monkeypatch.setattr(checker, "invoke", invoke)
+    result = checker.l4_review("r", "w", 0, state, units, findings, "v")
+    assert active["max"] >= 2
+    assert [row["finding_id"] for row in result["risk_reviews"]] == ["f0", "f1", "f2"]
+    assert all(row["review_evidence"][0]["status"] == "supported" for row in findings)
 
 
 def test_missing_semantic_panel_abstains_before_any_paid_call(monkeypatch):

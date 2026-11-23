@@ -9,7 +9,7 @@ import ResourceManager from "@/components/library/ResourceManager";
 
 type Profile = { id: string; name: string; model: string; base_url: string; has_key: boolean; thinking?: string | null; reasoning_effort?: string | null; model_family?: string; output_limit_tokens?: number | null };
 type ModelSettings = {
-  config: { active_id: string | null; user_profile: string; profiles: Profile[]; delivery_policy?: { auto_waiver_enabled: boolean; source: string } };
+  config: { active_id: string | null; user_profile: string; profiles: Profile[]; max_concurrency?: number; delivery_policy?: { auto_waiver_enabled: boolean; source: string } };
   config_hash: string;
   roles: Record<string, { configured: boolean; model?: string; model_family?: string; reason?: string }>;
   role_assignments?: Record<string, string>;
@@ -39,12 +39,13 @@ export default function Settings() {
   const [assignments, setAssignments] = useState<Record<string, string>>({});
   const [chatRole, setChatRole] = useState("");
   const [background, setBackground] = useState("");
+  const [maxConcurrency, setMaxConcurrency] = useState(5);
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const [managementRevision, setManagementRevision] = useState(0);
 
   const load = () => {
-    get<ModelSettings>("/model-settings").then((m) => { const all = m.role_assignments ?? {}; setAssignments(Object.fromEntries(Object.entries(all).filter(([role]) => role !== "chat"))); setChatRole(all.chat ?? ""); setModels(m); setBackground(m.config.user_profile ?? ""); setBackendDown(false); }).catch((e) => { setBackendDown(true); setError(explain(e)); });
+    get<ModelSettings>("/model-settings").then((m) => { const all = m.role_assignments ?? {}; setAssignments(Object.fromEntries(Object.entries(all).filter(([role]) => role !== "chat"))); setChatRole(all.chat ?? ""); setModels(m); setBackground(m.config.user_profile ?? ""); setMaxConcurrency(m.config.max_concurrency ?? 5); setBackendDown(false); }).catch((e) => { setBackendDown(true); setError(explain(e)); });
   };
   useEffect(() => {
     const t = setTimeout(() => { setPrefs(readPrefs()); load(); }, 0);
@@ -102,6 +103,15 @@ export default function Settings() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "聊天模型保存失败。");
     } finally { setBusy(false); }
+  }
+
+  async function saveConcurrency() {
+    const value = Number(maxConcurrency);
+    if (!Number.isSafeInteger(value) || value < 1 || value > 5) {
+      setError("最多并发数必须是 1 到 5 的整数。");
+      return;
+    }
+    await writeConfig("concurrency", { max_concurrency: value }, "并发设置已保存");
   }
 
   async function select(id: string | null) {
@@ -223,6 +233,14 @@ export default function Settings() {
                   </div>
                   <p className="hint">只修改聊天角色，保留所选配置的完整模型参数；不显示或更改密钥。</p>
                   <button className="btn btn-sm" disabled={busy || Boolean(pending)}>保存聊天模型</button>
+                </form>
+                <form onSubmit={(e) => { e.preventDefault(); void saveConcurrency(); }} style={{ marginTop: 12, borderTop: "1px solid var(--line)", paddingTop: 12, display: "grid", gap: 8 }}>
+                  <div className="field">
+                    <label htmlFor="max-concurrency">最多并发数（1–5）</label>
+                    <input id="max-concurrency" type="number" min={1} max={5} step={1} value={maxConcurrency} onChange={(e) => setMaxConcurrency(Number(e.target.value))} />
+                  </div>
+                  <p className="hint">同时用于章节生成和可并行的独立质检。数值越高越快，但会同时占用更多模型接口额度；默认 5。</p>
+                  <div><button className="btn btn-sm" disabled={busy || Boolean(pending)}>保存并发设置</button></div>
                 </form>
               </div>
             </>
