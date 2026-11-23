@@ -438,19 +438,19 @@ def generate_planned_unit(run_id, worker, epoch, state, planned, units, material
     if profile is not None:
         from .capacity import get_capacity, planned_output_tokens, request_capacity
         capacity = get_capacity(provider, model)
-        # A full chapter stores both the questions and their complete
-        # internal reasoning. The former 16k text cap truncated a valid
-        # chemistry chapter; reserve 32k for tutorial/reading bodies and keep
-        # 64k for item-bearing chapters, subject to sourced model capacity.
-        output_reserve = 65536 if is_items else 32768
-        planned_output = planned_output_tokens(profile, output_reserve, capacity)
+        # The dispatch allowance is the model's sourced maximum (or the user's
+        # explicit profile override). AI Edu does not impose its own chapter
+        # ceiling; a full chapter may legitimately need more than 32k/64k.
+        planned_output = planned_output_tokens(profile, None, capacity)
         estimate = request_capacity(messages, capacity, planned_output["reserved_output_tokens"])
+        reserved_output_tokens = estimate["reserved_output_tokens"]
         estimate.update({
             key: value for key, value in planned_output.items()
             if key not in {"reserved_output_tokens", "capacity_source"}
         })
+        estimate["reserved_output_tokens"] = reserved_output_tokens
         estimate["capacity_source"] = planned_output["capacity_source"]
-        profile.llm_max_tokens = planned_output["reserved_output_tokens"]
+        profile.llm_max_tokens = reserved_output_tokens
         limit_parameter = planned_output["output_limit_parameter"]
         profile.llm_output_limit_parameter = limit_parameter
         parameters[limit_parameter] = profile.llm_max_tokens
@@ -486,7 +486,7 @@ def generate_planned_unit(run_id, worker, epoch, state, planned, units, material
             output, generation_audit, network_trace = generation_with_sources(run_id, worker, epoch, state,
                 stage="generating", unit_id=planned["unit_id"], data=load(messages[1]["content"]),
                 system=messages[0]["content"], profile=profile, provider_factory=provider_factory,
-                output_schema=output_schema, output_tokens=65536 if is_items else 32768,
+                output_schema=output_schema, output_tokens=None,
                 entries=manifest["entries"])
             call_id, usage = generation_audit["call_id"], generation_audit.get("usage")
             if is_items:

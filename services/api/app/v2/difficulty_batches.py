@@ -26,13 +26,27 @@ def matching_attempts(calls, data, schema, system, profile, output_tokens):
         "reasoning_effort": getattr(profile, "llm_reasoning_effort", None),
         "json_mode": getattr(profile, "llm_json_mode", True)}
     matched = []
+    provider, model = profile.llm_base_url, profile.llm_model
     for call in calls:
-        if (call["provider"] != profile.llm_base_url or call["model"] != profile.llm_model
+        if (call["provider"] != provider or call["model"] != model
                 or call["model_family"] != getattr(profile, "llm_model_family", "unknown")):
             continue
         manifest = call["manifest"]
-        expected = request_hash(manifest, messages, profile.llm_base_url, profile.llm_model, params, schema)
+        expected = request_hash(manifest, messages, provider, model, params, schema)
         if expected == call["request_hash"]:
+            matched.append(call)
+            continue
+        # A successful legacy attempt made under a smaller internal output cap is
+        # still the same logical review. Reuse it when raising the ceiling is the
+        # only difference; never accept a mismatched or tampered stored hash.
+        saved = call.get("parameters")
+        if not isinstance(saved, dict) or not saved:
+            continue
+        if request_hash(manifest, messages, provider, model, saved, schema) != call["request_hash"]:
+            continue
+        normalized = {k: v for k, v in saved.items() if k not in {"max_tokens", "max_completion_tokens"}}
+        normalized.update({k: v for k, v in params.items() if k in {"max_tokens", "max_completion_tokens"}})
+        if normalized != saved and request_hash(manifest, messages, provider, model, normalized, schema) == expected:
             matched.append(call)
     return matched
 
@@ -82,7 +96,8 @@ def resume_batches(run_id, state, unit_id, data, schema, system):
                     or manifest.get("plan_hash") != state["plan"]["plan_hash"]):
                 continue
             calls.append({k: getattr(row, k) for k in ("call_id", "request_hash", "provider", "model",
-                "model_family", "status", "outcome")} | {"manifest": manifest})
+                "model_family", "status", "outcome")} | {"manifest": manifest,
+                "parameters": (load(row.request_json) or {}).get("parameters", {}) if row.request_json else {}})
     profile = for_role("review")
     legacy = matching_attempts(calls, data, schema, system, profile, 16384) if calls else []
     minimum = {}

@@ -196,7 +196,7 @@ def evidence_bundle(trace):
 
 def generation_with_sources(run_id, worker, epoch, state, *, stage, unit_id, data, system,
                             role="generation", profile=None, provider_factory=None,
-                            output_schema=None, output_tokens=16384, entries=None,
+                            output_schema=None, output_tokens=None, entries=None,
                             transport=None, key=None):
     from .runtime import load
     network_enabled = state.get("execution_policy", {}).get("network_enabled", True)

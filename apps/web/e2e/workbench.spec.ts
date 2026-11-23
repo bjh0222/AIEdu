@@ -316,3 +316,67 @@ test.describe("兼容与降级", () => {
     }
   });
 });
+
+
+test.describe("运行中与失败原因的可读性", () => {
+  test("运行中的 sent 调用只是进行中，不显示“结果不明”或隔离按钮", async ({ page }) => {
+    await mockBackend(page, {
+      snapshot: () => runSnapshot({
+        state: "running",
+        demo: false,
+        version_id: null,
+        cost_final: false,
+        next_actions: ["pause"],
+        stop_reason: null,
+        calls: [{
+          call_id: "99999999-9999-4999-8999-999999999998",
+          unit_id: IDS.unit,
+          status: "sent",
+          outcome: "",
+          attempt: 1,
+          usage: null,
+          price: null,
+          model_family: "glm",
+          request_hash: "f".repeat(64),
+          stage: "research_scope_review_knowledge_0_part_0",
+        }],
+      }),
+    });
+    await page.goto(`/tasks/${IDS.task}`);
+    await expect(page.getByRole("heading", { name: /调用结果不明/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "隔离并准备重做" })).toHaveCount(0);
+    await expect(page.getByText("研究量规中", { exact: false }).first()).toBeVisible();
+  });
+
+  test("输出被截断的失败运行显示普通中文原因，不暴露原始错误码", async ({ page }) => {
+    await mockBackend(page, {
+      snapshot: () => runSnapshot({
+        state: "failed",
+        demo: false,
+        version_id: null,
+        cost_final: false,
+        stop_reason: "PROVIDER_CALL_FAILED",
+        next_actions: ["resume"],
+        calls: [{
+          call_id: "99999999-9999-4999-8999-999999999997",
+          unit_id: IDS.unit,
+          status: "settled",
+          outcome: "failed",
+          attempt: 1,
+          usage: { prompt_tokens: 2942, completion_tokens: 8192, total_tokens: 11134, usage_source: "provider" },
+          price: null,
+          model_family: "glm",
+          model: "glm-5.3-flash",
+          request_hash: "e".repeat(64),
+          failure_code: "PROVIDER_OUTPUT_INVALID_OR_TRUNCATED",
+          failure_diagnostics: { finish_reason: "length", validation_reason: "OUTPUT_LENGTH_LIMIT", content_characters: 0 },
+        }],
+      }),
+    });
+    await page.goto(`/tasks/${IDS.task}`);
+    const banner = page.getByRole("status").filter({ hasText: "本次运行已停止" });
+    await expect(banner).toContainText("输出达到长度上限");
+    await expect(banner).toContainText("继续生成");
+    await expect(banner).not.toContainText("PROVIDER_OUTPUT_INVALID_OR_TRUNCATED");
+  });
+});

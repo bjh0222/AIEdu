@@ -9,12 +9,12 @@ test("费用按币种累加，不把第一条价格当总价、不把缺价当�
     { status: "settled", price: { amount: 0.2, currency: "CNY" } },
     { status: "late", price: { total: 1, currency: "USD" } },
   ], false)).toBe("CNY 0.3；USD 1");
-  expect(callCostsText([{ status: "settled", price: { amount: 5 } }], false)).toContain("待核实");
+  expect(callCostsText([{ status: "settled", price: { amount: 5 } }], false)).toContain("暂时无法计算");
   expect(callCostsText([
     { status: "settled", price: { amount: 0, currency: "CNY" } },
     { status: "quarantined", price: null },
     { status: "not_sent", price: null },
-  ], false)).toBe("已知 CNY 0；1 次金额待核实");
+  ], false)).toBe("已知 CNY 0；另有 1 次暂未计价");
   expect(callCostsText([], true)).toBe("不适用（演示）");
 });
 

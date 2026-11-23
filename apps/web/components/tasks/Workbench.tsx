@@ -6,7 +6,7 @@ import { api, isRun } from "@/lib/v2/api";
 import type { RunSnapshot, CallSnapshot } from "@/lib/v2/contracts.generated";
 import { ApiError, UnknownOutcomeError, clearPending, explain, getReceipt, newKey, pendingActions } from "@/lib/v2/client";
 import { useSnapshot } from "@/lib/v2/use-snapshot";
-import { STAGE_LABEL, STAGE_ORDER, activeRunStage, callCostsText, deliveryBadge, limitText, reasonText, runBadge, seconds, stageText } from "@/lib/v2/status";
+import { STAGE_LABEL, STAGE_ORDER, activeRunStage, callCostsText, callFailureText, deliveryBadge, limitText, reasonText, runBadge, seconds, stageText } from "@/lib/v2/status";
 import { BadgeView } from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
 import ExportDialog from "./ExportDialog";
@@ -46,7 +46,8 @@ export default function Workbench({ taskId }: { taskId: string }) {
   }, [taskId]);
 
   const run = snapshot && isRun(snapshot) ? snapshot : null;
-  const detectedUnknownCalls = (run?.calls.filter((call) => call.status === "unknown" || call.status === "sent") ?? []) as UnknownCall[];
+  // 「结果不明」只指 unknown；sent 是仍在途，不能在运行中当作未知结果要求用户隔离。
+  const detectedUnknownCalls = (run?.calls.filter((call) => call.status === "unknown") ?? []) as UnknownCall[];
   const visibleUnknownCalls = unknownCalls ?? detectedUnknownCalls;
   const task = snapshot ? (snapshot as { task?: { title?: string; raw_input?: string } }).task ?? run?.resolved_task as { title?: string; raw_input?: string } | undefined : undefined;
   const title = (run?.resolved_task as { title?: string } | undefined)?.title ?? task?.title ?? "任务";
@@ -79,7 +80,7 @@ export default function Workbench({ taskId }: { taskId: string }) {
         setActionError("暂停未确认：没有收到服务端响应。可以先“查询回执”，不要直接重复提交。");
       } else {
         setPauseUi("unconfirmed");
-        setActionError(`暂停未确认。${explain(e)}`);
+        setActionError(explain(e));
         setPauseKey(null);
       }
     }
@@ -135,7 +136,7 @@ export default function Workbench({ taskId }: { taskId: string }) {
         }
         setActionError("已取消：未采用新质量协议，续跑未创建。");
       } else if (e instanceof ApiError && (e.code === "UNKNOWN_CALL" || e.code === "UNKNOWN_QUARANTINE_REQUIRED")) {
-        setUnknownCalls(run.calls.filter((c) => c.status === "unknown" || c.status === "sent") as UnknownCall[]);
+        setUnknownCalls(run.calls.filter((c) => c.status === "unknown") as UnknownCall[]);
       } else setActionError(explain(e));
     } finally {
       setResumeBusy(false);
@@ -144,6 +145,10 @@ export default function Workbench({ taskId }: { taskId: string }) {
 
   async function quarantine(call: UnknownCall, retry: boolean) {
     if (!run || !ack) return;
+    if (!["paused", "interrupted", "failed"].includes(run.state)) {
+      setActionError("这次运行还在进行中，不能隔离调用。请先点“暂停并保留已有内容”，等页面显示已暂停后再试。");
+      return;
+    }
     setQuarantineBusy(call.call_id);
     setActionError("");
     const key = newKey();
@@ -173,7 +178,7 @@ export default function Workbench({ taskId }: { taskId: string }) {
       } else if (e instanceof UnknownOutcomeError) {
         setActionError("隔离请求未确认：没有收到服务端响应。可以先查询回执，不要直接重复提交。");
       } else {
-        setActionError(`隔离未完成。${explain(e)}`);
+        setActionError(explain(e));
         setQuarantineKey(null);
       }
     } finally {
@@ -229,6 +234,9 @@ export default function Workbench({ taskId }: { taskId: string }) {
   const canPause = run.next_actions.includes("pause");
   const canResume = run.next_actions.includes("resume");
   const hasDraft = Boolean(run.version_id);
+  const runStopped = ["paused", "interrupted", "failed"].includes(run.state);
+  const failedCall = run.calls.find((c) => c.status === "settled" && c.outcome === "failed" && c.failure_code);
+  const failureDetail = failedCall ? callFailureText(failedCall) : "";
   const pausing = pauseUi === "requesting" && run.state !== "paused";
   const missing = missingRoles(run);
   const inflight = run.calls.filter((c) => c.status === "sent" || c.status === "authorized").length;
@@ -281,8 +289,14 @@ export default function Workbench({ taskId }: { taskId: string }) {
       {run.state === "completed" && run.stop_reason && <p className="hint" style={{ marginBottom: 12 }}>结束原因：{run.stop_reason === "demo_complete" ? "演示运行完成" : reasonText(run.stop_reason)}。运行结束不代表质量通过。</p>}
       {(run.state === "failed" || run.state === "interrupted") && run.stop_reason && (
         <div className="banner banner-warn" role="status" style={{ marginBottom: 12 }}>
-          <div><b>本次运行已停止。</b> {reasonText(run.stop_reason)}。已保存的内容会保留，但不能据此认定质检已通过。</div>
-          {run.stop_reason === "CHECKLIST_TRANSPORT_SINGLETON_UNRESOLVED" && <Link className="btn btn-sm" href="/settings">检查模型配置</Link>}
+          <div>
+            <div><b>本次运行已停止。</b> {reasonText(run.stop_reason)}。已保存的内容会保留，但不能据此认定质检已通过。</div>
+            {failureDetail && <p className="hint" style={{ marginTop: 6 }}>{failureDetail}</p>}
+            {["PROVIDER_CALL_FAILED", "PROVIDER_OUTPUT_INVALID_OR_TRUNCATED", "OUTPUT_CAPACITY_EXHAUSTED"].includes(run.stop_reason) && (
+              <p className="hint" style={{ marginTop: 6 }}>点“继续生成”会复用已经成功的步骤；失败或未完成的步骤才会重新调用。</p>
+            )}
+            {run.stop_reason === "CHECKLIST_TRANSPORT_SINGLETON_UNRESOLVED" && <Link className="btn btn-sm" href="/settings">检查模型配置</Link>}
+          </div>
         </div>
       )}
 
@@ -295,18 +309,26 @@ export default function Workbench({ taskId }: { taskId: string }) {
               <li key={call.call_id} style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
                 <span>待核实请求 {index + 1}</span>
                 {call.unknown_age_warning && <p className="hint" role="alert">这次调用结果不明已超过 6 小时；系统没有自动隔离、重发或恢复。</p>}
-                <div className="seg" style={{ marginLeft: 12 }} role="group" aria-label={`待核实请求 ${index + 1} 的处理方式`}>
-                  <button type="button" disabled={!ack || Boolean(quarantineBusy)} aria-busy={quarantineBusy === call.call_id} onClick={() => void quarantine(call, false)}>保留，不重做</button>
-                  <button type="button" disabled={!ack || Boolean(quarantineBusy)} onClick={() => void quarantine(call, true)}>隔离并准备重做</button>
-                </div>
+                {runStopped ? (
+                  <div className="seg" style={{ marginLeft: 12 }} role="group" aria-label={`待核实请求 ${index + 1} 的处理方式`}>
+                    <button type="button" disabled={!ack || Boolean(quarantineBusy)} aria-busy={quarantineBusy === call.call_id} onClick={() => void quarantine(call, false)}>保留，不重做</button>
+                    <button type="button" disabled={!ack || Boolean(quarantineBusy)} onClick={() => void quarantine(call, true)}>隔离并准备重做</button>
+                  </div>
+                ) : (
+                  <p className="hint" role="status" style={{ marginTop: 6 }}>这次运行还在进行中。请先点顶部“暂停并保留已有内容”，等服务端确认已暂停后，再选择如何处理。</p>
+                )}
               </li>
             ))}
           </ul>
-          <label style={{ display: "flex", gap: 8, margin: "12px 0", minHeight: 44, alignItems: "center" }}>
-            <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
-            我了解结果不明的调用可能已经产生费用；“重做”可能再次计费
-          </label>
-          <p className="hint">完成隔离后，页面顶部的“继续生成”才会可用。</p>
+          {runStopped && (
+            <>
+              <label style={{ display: "flex", gap: 8, margin: "12px 0", minHeight: 44, alignItems: "center" }}>
+                <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
+                我了解结果不明的调用可能已经产生费用；“重做”可能再次计费
+              </label>
+              <p className="hint">完成隔离后，页面顶部的“继续生成”才会可用。</p>
+            </>
+          )}
         </section>
       )}
 
@@ -405,7 +427,7 @@ function UsagePanel({ run }: { run: RunSnapshot }) {
         <dt>模型调用</dt><dd>{calls.length}{inflight > 0 && `（执行中 ${inflight}）`}</dd>
         <dt>调用耗时合计</dt><dd>{calls.length ? seconds(total) : "—"}</dd>
         <dt>Token</dt><dd>{run.demo ? "演示（不调用模型）" : tokens === null ? "待核实" : `${tokens.toLocaleString("zh-CN")}${anyUnknownUsage ? "（含待核实）" : ""}`}</dd>
-        <dt>费用</dt><dd>{callCostsText(calls, run.demo)}{!run.cost_final && !run.demo ? "（总费用未确认）" : ""}</dd>
+        <dt>费用</dt><dd>{callCostsText(calls, run.demo)}{!run.cost_final && !run.demo ? "；总费用未确认" : ""}</dd>
         <dt>阶段分布</dt><dd>{stageRows.length ? stageRows.map(([stage, value]) => `${stage} ${value.calls} 次 / ${seconds(value.elapsed)}`).join("；") : "—"}</dd>
         <dt>重试来源</dt><dd>{retryRows.length ? retryRows.map(([source, value]) => `${source === "initial" ? "首次" : source === "stage_reattempt" ? "阶段重试" : source === "ancestor_resume" ? "祖先续跑" : source === "explicit_retry" ? "显式重试" : source} ${value}`).join("；") : "—"}</dd>
         <dt>费用上限</dt><dd>{limitText(budget.amount)}</dd>

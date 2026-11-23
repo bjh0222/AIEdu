@@ -173,15 +173,20 @@ def test_legacy_cache_requires_exact_content_schema_model_and_parameters(monkeyp
     data, schema, system = {"items": [{"item_id": "a", "fields": {"stem_markdown": "actual"}}]}, {"items": []}, "review"
     manifest = {"schema_version": "aiedu.prompt-manifest.v1", "context_hash": "c", "unit_id": "u",
         "entries": [], "stage": "difficulty_reviewing", "role": "review", "plan_hash": "p"}
-    params = {"max_tokens": 16384, "temperature": 0.3, "thinking": "enabled", "reasoning_effort": "high", "json_mode": True}
+    params = {"max_tokens": 32768, "temperature": 0.3, "thinking": "enabled", "reasoning_effort": "high", "json_mode": True}
     row = {"manifest": manifest, "provider": profile.llm_base_url, "model": profile.llm_model,
         "model_family": profile.llm_model_family,
         "request_hash": request_hash(manifest, request_messages(system, data, schema), profile.llm_base_url, profile.llm_model, params, schema)}
     assert matching_attempts([row], data, schema, system, profile, 16384) == [row]
     assert not matching_attempts([row], {"items": []}, schema, system, profile, 16384)
     assert not matching_attempts([row], data, {"different": []}, system, profile, 16384)
-    assert not matching_attempts([row], data, schema, system, profile, 32768)
+    # The per-call hint no longer changes the provider allowance; an explicit
+    # user override does, and must therefore invalidate the cached identity.
+    assert matching_attempts([row], data, schema, system, profile, 32768) == [row]
     assert not matching_attempts([row | {"model": "other"}], data, schema, system, profile, 16384)
+    profile.llm_output_limit_tokens = 16384
+    assert not matching_attempts([row], data, schema, system, profile, 16384)
+    profile.llm_output_limit_tokens = None
     profile.llm_reasoning_effort = "max"
     assert not matching_attempts([row], data, schema, system, profile, 16384)
 
@@ -240,3 +245,29 @@ def test_bound_report_retains_version_content_target_and_successful_execution(mo
     assert report["status"] == "completed" and report["processing_status"] == "complete"
     assert report["coverage"] == {"expected": 1, "recorded": 1, "complete_observations": 1,
         "decided": 1, "invalid_response_entries": 0}
+
+
+def test_legacy_success_at_smaller_output_cap_is_reused_but_tamper_is_not(monkeypatch):
+    from types import SimpleNamespace
+    from app.v2.contracts import request_hash
+    from app.v2.difficulty_batches import matching_attempts
+    from app.v2.inference import request_messages
+
+    capacity = {"max_output_tokens": 32768, "context_tokens": 1000000,
+        "safety_margin_tokens": 100, "estimate_method": "synthetic", "source_uri_or_config": "synthetic"}
+    monkeypatch.setattr("app.v2.capacity.get_capacity", lambda *args: capacity)
+    profile = SimpleNamespace(llm_base_url="https://fixture.invalid/v1", llm_model="fixture",
+        llm_model_family="fixture", llm_temperature=0.3, llm_thinking="enabled", llm_reasoning_effort="high")
+    data, schema, system = {"items": [{"item_id": "a", "fields": {"stem_markdown": "actual"}}]}, {"items": []}, "review"
+    manifest = {"schema_version": "aiedu.prompt-manifest.v1", "context_hash": "c", "unit_id": "u",
+        "entries": [], "stage": "difficulty_reviewing", "role": "review", "plan_hash": "p"}
+    saved = {"max_tokens": 16384, "temperature": 0.3, "thinking": "enabled",
+             "reasoning_effort": "high", "json_mode": True}
+    row = {"manifest": manifest, "provider": profile.llm_base_url, "model": profile.llm_model,
+        "model_family": profile.llm_model_family, "parameters": saved,
+        "request_hash": request_hash(manifest, request_messages(system, data, schema),
+            profile.llm_base_url, profile.llm_model, saved, schema)}
+    assert matching_attempts([row], data, schema, system, profile, 16384) == [row]
+    assert matching_attempts([row | {"parameters": {**saved, "max_tokens": 32768}}], data, schema, system,
+                             profile, 16384) == []
+    assert matching_attempts([row | {"request_hash": "0" * 64}], data, schema, system, profile, 16384) == []

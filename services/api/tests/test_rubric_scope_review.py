@@ -182,7 +182,7 @@ def test_scope_batches_cover_every_dimension_with_only_its_bound_claims(monkeypa
     def call(*args, **kwargs):
         data = args[5]
         seen.append((args[4], data))
-        assert kwargs["role"] == "review" and args[8] in {4096, 8192}
+        assert kwargs["role"] == "review" and args[8] is None
         assert len(data["dimensions"]) == 1
         assert {c["claim_id"] for c in data["source_claims"]} == {r for d in data["dimensions"] for r in d["source_refs"]}
         return {"decisions": [decision(d) for d in data["dimensions"]]}, {"call_id": f"c{len(seen)}"}
@@ -344,7 +344,7 @@ def test_only_explicitly_isolated_exact_batch_splits_preserving_other_inputs(mon
     assert [s for s, _, _ in split[2:]] == [original[2][0]+"_part_0", original[2][0]+"_part_1"]
     assert [d["dimension_id"] for _, data, _ in split for d in data["dimensions"]] == [d["dimension_id"] for d in dims]
     for _, data, reserve in split[2:]:
-        assert len(data["dimensions"]) == 1 and data["split_origin"] == binding and reserve in {6144, 8192}
+        assert len(data["dimensions"]) == 1 and data["split_origin"] == binding and reserve is None
         assert data["source_claims"] == [claims[4+data["batch_part_index"]]]
 
 
@@ -354,13 +354,13 @@ def test_new_scope_partitions_preserve_complete_dimensions_and_do_not_replay_who
     before = deepcopy(dims)
     new = research._scope_requests({}, "knowledge", 0, dims, claims, {})
     assert [d for _, data, _ in new for d in data["dimensions"]] == before
-    assert all(len(data["dimensions"]) == 1 and reserve in {6144, 8192} for _, data, reserve in new)
+    assert all(len(data["dimensions"]) == 1 and reserve is None for _, data, reserve in new)
     assert all(data["split_origin"]["method_version"] == "proactive-single-dimension-scope.v1"
                for _, data, _ in new)
     monkeypatch.setattr(research, "_persisted_scope_input", lambda state, stage, data: stage.endswith("batch_0"))
     mixed = research._scope_requests({}, "knowledge", 0, dims, claims, {})
     assert [len(data["dimensions"]) for _, data, _ in mixed] == [2, 1, 1]
-    assert mixed[0][0].endswith("batch_0") and mixed[0][2] == 8192
+    assert mixed[0][0].endswith("batch_0") and mixed[0][2] is None
     assert dims == before
 
 
@@ -467,11 +467,12 @@ def test_scope_evidence_accepts_only_the_legacy_decision_procedure_alias():
     assert bound == [row]
     assert row["evidence"]["field"] == "c_decision_procedure.1"
 
-def test_scope_output_reserve_adapts_without_changing_dimension_content():
-    small = {"dimensions": [{"text": "x" * 100}]}
-    large = {"dimensions": [{"text": "x" * 20_000}]}
-    assert research._scope_output_reserve(small) == 8192
-    assert research._scope_output_reserve(large) == 6144
+def test_scope_requests_never_impose_an_internal_output_cap():
+    dims, claims = dimensions()
+    before = deepcopy(dims)
+    requests = research._scope_requests({}, "knowledge", 0, dims, claims, {})
+    assert requests and all(reserve is None for _, _, reserve in requests)
+    assert dims == before
 
 def test_mixed_scope_keeps_usable_dimensions_and_records_explicit_gap(monkeypatch):
     dims, claims = dimensions()

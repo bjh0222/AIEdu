@@ -169,8 +169,12 @@ Decision:
   selected local materials. Query/schema/privacy contract errors still fail.
 - Model output limits use the registered model capacity. A profile
   `output_limit_tokens` may only reduce that capacity; null means no additional
-  application cap. Unknown capacity refuses dispatch and the actual wire
-  parameter plus effective reserve enter request identity.
+  application cap. Per-call budget hints are planning metadata and never become
+  an internal cap. A settled length failure at the active ceiling stops with
+  `OUTPUT_CAPACITY_EXHAUSTED` instead of re-billing the identical request;
+  raising a historical ceiling keeps successful ancestral results reusable.
+  Unknown capacity refuses dispatch and the actual wire parameter plus effective
+  reserve enter request identity.
 - When A's own scene proposal resolves an equivalent domain profile, quality
   target refs may be deterministically rebound only if every source ref matched
   the pre-A profile and the target has exactly one equivalent rule. The rebind

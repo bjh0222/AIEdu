@@ -183,8 +183,33 @@ export function reasonText(code?: string | null): string {
   if (!code) return "";
   if (code === "CHECKLIST_TRANSPORT_SINGLETON_UNRESOLVED") return "单项质检请求仍未收到完整响应，已停止继续拆分或自动重试；需要检查模型配置或执行策略，旧调用结果与费用仍待核实";
   if (code === "UNKNOWN_CALL") return "模型调用已发出但结果不明，系统不会自动重发，需要先核实或显式隔离";
-  if (code === "PROVIDER_CALL_FAILED") return "模型提供方明确拒绝或返回无效结果；具体原因保留在调用记录中";
-  return REASON_TEXT[code] ?? code;
+  if (code === "PROVIDER_CALL_FAILED") return "模型提供方明确拒绝或返回无效结果；具体原因可以在调用记录中查看";
+  if (code === "PROVIDER_OUTPUT_INVALID_OR_TRUNCATED") return "模型输出没有形成完整内容，可能是长度上限、格式错误或被内容过滤；具体原因可以在调用记录中查看";
+  if (code === "OUTPUT_CAPACITY_EXHAUSTED") return "这次允许的输出长度已经用完，仍没有生成完整内容；继续重试很可能得到同样结果，请改用输出上限更高的模型或把这一步拆小";
+  return REASON_TEXT[code] ?? `运行已停止，具体原因保留在调用记录中（原因代码：${code}）`;
+}
+
+/** 把一次失败调用翻译成普通用户能理解的一句话；没有失败信息时返回空串。 */
+export function callFailureText(call: { failure_code?: string | null; failure_diagnostics?: Record<string, unknown> | null; model?: string | null }): string {
+  const code = call.failure_code;
+  if (!code) return "";
+  const diagnostics = call.failure_diagnostics ?? {};
+  const model = call.model ? `模型（${call.model}）` : "模型";
+  const finish = diagnostics.finish_reason;
+  const validation = diagnostics.validation_reason;
+  if (code === "PROVIDER_OUTPUT_INVALID_OR_TRUNCATED") {
+    if (validation === "OUTPUT_LENGTH_LIMIT" || finish === "length") {
+      return `${model}的输出达到长度上限，内容被截断，因此这一步没有完成。`;
+    }
+    if (validation === "EMPTY_OR_NON_STRING_CONTENT") return `${model}返回了空内容，这一步没有完成。`;
+    if (validation === "JSON_PARSE_FAILED") return `${model}返回的内容不是有效 JSON，这一步没有完成。`;
+    return `${model}的输出不完整或格式无效，这一步没有完成。`;
+  }
+  if (code === "PROVIDER_TRANSPORT_UNKNOWN") return "和服务商的连接中断，无法确认对方是否已经处理这次请求。";
+  if (/^PROVIDER_HTTP_429$/.test(code)) return "模型服务限流或额度不足，这一步没有完成。";
+  if (/^PROVIDER_HTTP_5\d\d$/.test(code)) return "模型服务暂时不可用，这一步没有完成。";
+  if (/^PROVIDER_HTTP_4\d\d$/.test(code)) return "模型服务拒绝了这次请求，这一步没有完成。";
+  return "模型调用失败，这一步没有完成。";
 }
 
 export const FINDING_STATUS: Record<string, string> = {
@@ -226,9 +251,9 @@ export function callCostsText(calls: Array<{ status: string; price?: Record<stri
     const key = currency.trim().toUpperCase();
     totals.set(key, (totals.get(key) ?? 0) + amount);
   }
-  if (!totals.size) return "待核实（缺少价格或币种）";
+  if (!totals.size) return "暂时无法计算（未配置模型价格）";
   const known = [...totals].map(([currency, amount]) => `${currency} ${Number(amount.toPrecision(12))}`).join("；");
-  return missing ? `已知 ${known}；${missing} 次金额待核实` : known;
+  return missing ? `已知 ${known}；另有 ${missing} 次暂未计价` : known;
 }
 export function limitText(v: unknown): string {
   return v === null || v === undefined ? "未设置" : String(v);

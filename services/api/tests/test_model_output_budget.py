@@ -74,3 +74,38 @@ def test_output_limit_is_persisted_in_full_profile_and_public_config(client):
     assert client.post("/api/settings/models", json=changed).status_code == 200
     assert next(row for row in read_config()["profiles"]
                 if row["id"] == "budget")["output_limit_tokens"] is None
+
+
+def test_per_call_hint_never_becomes_an_ai_edu_output_cap():
+    """Legacy 8k/16k call-site hints are planning inputs, not provider limits."""
+    from app.v2.capacity import planned_output_tokens
+
+    capacity = {
+        "max_output_tokens": 128000,
+        "output_limit_parameter": "max_tokens",
+        "source_uri_or_config": "fixture-capacity",
+    }
+    plan = planned_output_tokens(profile(None), 8192, capacity)
+    assert plan["requested_output_tokens"] == 8192
+    assert plan["reserved_output_tokens"] == 128000
+    assert planned_output_tokens(profile(12000), 8192, capacity)["reserved_output_tokens"] == 12000
+
+
+def test_context_shortage_is_explicit_and_never_silently_overflows():
+    from app.v2.capacity import request_capacity
+    from app.v2.contracts import DomainError
+
+    capacity = {
+        "max_output_tokens": 32768,
+        "context_tokens": 120,
+        "safety_margin_tokens": 0,
+        "estimate_method": "fixture",
+        "source_uri_or_config": "fixture",
+    }
+    messages = [{"role": "system", "content": "x" * 40}, {"role": "user", "content": "{}"}]
+    plan = request_capacity(messages, capacity, 32768)
+    assert plan["context_limited"] is True
+    assert 0 < plan["reserved_output_tokens"] < 32768
+    with pytest.raises(DomainError, match="CALL_CAPACITY_EXCEEDED"):
+        request_capacity([{"role": "system", "content": "x" * 400}, {"role": "user", "content": "{}"}],
+                         capacity, 32768)

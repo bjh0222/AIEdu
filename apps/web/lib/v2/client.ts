@@ -230,7 +230,7 @@ const ERRORS: Record<string, string> = {
   DISK_LOW: "磁盘空间不足，资料没有保存。",
   TASK_NOT_FOUND: "找不到这个任务。",
   RUN_NOT_FOUND: "找不到这次运行。",
-  RUN_NOT_PAUSABLE: "这次运行已经不能暂停了。",
+  RUN_NOT_PAUSABLE: "这次运行现在不能暂停，可能已经结束或已经暂停。请刷新页面查看最新状态。",
   CHECKPOINT_STALE: "续跑所依据的进度已过期。请先读取最新状态。",
   INPUT_CHANGED: "任务输入已改变，需要回到确认页重新确认。",
   UNKNOWN_CALL: "有模型调用的结果不明，需要你逐项选择处理方式。",
@@ -266,13 +266,58 @@ const ERRORS: Record<string, string> = {
   INVALID_CURSOR: "列表位置已失效，请刷新。",
   INVALID_PAGINATION: "分页参数无效。",
   KNOWLEDGE_SOURCE_STALE: "题目原文已更新，请重新读取。",
+  OUTPUT_CAPACITY_EXHAUSTED: "模型已经用完了允许的最大输出长度，仍没有生成完整内容。继续重试很可能得到同样的结果，请改用输出上限更高的模型，或把这一步拆小。",
+  VERIFIER_OUTPUT_CAPACITY_EXHAUSTED: "检查请求已经用到模型允许的最大输出长度，仍无法一次返回完整结果。请改用输出上限更高的模型，或把检查范围拆小。",
+  CAPACITY_UNKNOWN: "当前模型没有登记可用的上下文和输出容量，系统不会猜测，因此没有发起调用。请在设置里换一个已登记容量的模型。",
+  CALL_CAPACITY_EXCEEDED: "这次请求的输入加上完整回答已经超过模型上下文容量。请减少一次处理的材料，或换用上下文更大的模型。",
+  MODEL_OUTPUT_LIMIT_INVALID: "设置里的额外输出上限无效：它必须大于 0，且不能超过模型本身的最大输出。",
+  MODEL_OUTPUT_REQUEST_INVALID: "这次调用的输出预算参数无效。可以重试；如果反复出现，请检查模型设置。",
+  CAPACITY_PARAMETER_INVALID: "模型容量登记里的输出参数名无效，系统没有发起调用。请检查模型配置。",
+  PROVIDER_CALL_FAILED: "模型服务返回了失败结果，这次运行已停止。已保存的内容会保留，可以直接继续生成。",
+  PROVIDER_OUTPUT_INVALID_OR_TRUNCATED: "模型输出没有形成完整内容，可能是长度上限、格式错误或被内容过滤。这次运行已停止，已保存的内容会保留。",
+  UNKNOWN_QUARANTINE_REQUIRES_STOPPED_RUN: "这次运行还在进行中，不能隔离调用。请先点“暂停并保留已有内容”，等页面显示已暂停后再试。",
+  UNKNOWN_QUARANTINE_REQUIRES_RISK_ACK: "隔离可能重复计费，需要先勾选费用确认。",
+  CALL_NOT_UNKNOWN: "这个调用已经有明确结果，不需要按“结果不明”处理。请刷新页面查看最新状态。",
+  CALL_SENT_RECEIPT_PRESENT: "这个调用已经拿到了服务商回执，不能标记为结果不明。请刷新页面查看最新状态。",
+  CALL_REQUEST_MISMATCH: "要隔离的请求和记录不一致，为避免误隔离，系统没有执行。请刷新页面后重试。",
+  CALL_NOT_FOUND: "找不到要隔离的调用记录。请刷新页面后重试。",
+  FENCED: "这次运行已经停止或换了执行者，旧操作不能继续。请刷新页面查看最新状态。",
+  RESOURCE_BACKPRESSURE: "本机正在处理另一项生成任务，请等它结束或先暂停，再继续。",
+  RUN_NOT_DISPATCHABLE: "这次运行当前不能继续。请刷新页面查看最新状态。",
+  OUTPUT_LENGTH_LIMIT: "模型的输出达到长度上限，内容被截断。",
+  PROVIDER_TRANSPORT_UNKNOWN: "和服务商的连接中断，无法确认对方是否已经处理。请先查询回执，不要直接重复提交。",
 };
+
+function statusPhrase(status: number): string {
+  if (status === 400) return "请求内容有误，请检查输入后重试。";
+  if (status === 401 || status === 403) return "当前连接没有操作权限，请刷新页面后重试。";
+  if (status === 404) return "找不到对应的内容，可能已经被删除或移动。";
+  if (status === 409 || status === 422) return "当前状态不允许这个操作，请刷新页面后按最新状态重试。";
+  if (status === 429) return "操作太频繁或额度用尽，请稍后再试。";
+  if (status >= 500) return "服务器处理时出错，请稍后重试。";
+  return "操作没有完成，请稍后重试。";
+}
 
 export function explain(error: unknown): string {
   if (error instanceof UnknownOutcomeError) return "没有收到服务端的响应，操作可能已经生效。请先查询回执，不要直接重复提交。";
   if (error instanceof ApiError) {
-    return ERRORS[error.code] ?? `后端返回 ${error.code}（${error.status}）。`;
+    const known = ERRORS[error.code];
+    if (known) return known;
+    // 服务商 HTTP 错误码动态生成（例如 PROVIDER_HTTP_429）。
+    const provider = /^PROVIDER_HTTP_(\d{3})$/.exec(error.code);
+    if (provider) {
+      const status = Number(provider[1]);
+      if (status === 401 || status === 403) return "模型服务拒绝了这次请求：密钥或权限无效。请到“设置”检查模型配置。";
+      if (status === 404) return "模型服务找不到这个模型或接口。请到“设置”检查模型名称和地址。";
+      if (status === 413) return "这次请求太大，模型服务拒绝接收。请减少一次处理的材料。";
+      if (status === 429) return "模型服务限流或额度不足，请稍后再试，或检查账户余额。";
+      if (status >= 500) return "模型服务暂时不可用，请稍后重试。";
+      return "模型服务拒绝了这次请求。请检查模型配置后重试。";
+    }
+    // 给普通用户先给结论，再保留一个不显眼的错误码，方便排查时对照日志。
+    return `${statusPhrase(error.status)}（错误码：${error.code}）`;
   }
-  if (error instanceof TypeError) return "无法连接后端。请确认后端已在本机启动。";
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof TypeError) return "无法连接后端。请确认后端已在本机启动，或稍后重试。";
+  if (error instanceof Error && error.message) return error.message;
+  return "操作没有完成，请稍后重试。";
 }

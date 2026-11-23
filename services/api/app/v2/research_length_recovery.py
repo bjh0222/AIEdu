@@ -10,8 +10,10 @@ from .contracts import DomainError, request_hash
 from .skills import entry as skill_entry, review_skill
 
 METHOD = "research-rubric-batch.v3-output-length-recovery"
-REVIEW_OUTPUT_TOKENS = 65536
-LEGACY_REVIEW_OUTPUT_TOKENS = (32768, 16384, 8192, 6144)
+# Planning hint only. The dispatch allowance is the model capacity (or the
+# explicit user override), never an AI Edu constant.
+REVIEW_OUTPUT_TOKENS = None
+LEGACY_REVIEW_OUTPUT_TOKENS = (65536, 32768, 16384, 8192, 6144)
 C_REVIEW_ENTRY = skill_entry(review_skill(), "C")
 
 
@@ -50,13 +52,34 @@ def split_data(data, failed_call_id, failed_request_hash):
     return parts
 
 
+def _identity_matches(call, manifest, messages, profile, parameters):
+    """Exact identity first, then the same request with its output ceiling raised."""
+    provider, model = profile.llm_base_url, profile.llm_model
+    current = request_hash(manifest, messages, provider, model, parameters, {})
+    if call["request_hash"] == current:
+        return True
+    saved = call.get("parameters")
+    if not isinstance(saved, dict) or not saved:
+        return False
+    # Verify the stored hash describes the stored request before normalizing:
+    # a corrupt or mismatched row must never be treated as the same request.
+    if request_hash(manifest, messages, provider, model, saved, {}) != call["request_hash"]:
+        return False
+    normalized = {k: v for k, v in saved.items() if k not in {"max_tokens", "max_completion_tokens"}}
+    normalized.update({k: v for k, v in parameters.items() if k in {"max_tokens", "max_completion_tokens"}})
+    if normalized == saved:
+        return False
+    return request_hash(manifest, messages, provider, model, normalized, {}) == current
+
+
 def matching_length_failure(calls, manifest, messages, profile, parameters):
     """Pure identity gate; a successful exact request always wins over failure."""
-    expected = request_hash(manifest, messages, profile.llm_base_url, profile.llm_model, parameters, {})
     failures = []
     for call in calls:
-        if (call["request_hash"] != expected or call["provider"] != profile.llm_base_url
+        if (call["provider"] != profile.llm_base_url
                 or call["model"] != profile.llm_model or call["status"] != "settled"):
+            continue
+        if not _identity_matches(call, manifest, messages, profile, parameters):
             continue
         if call["outcome"] == "success":
             return None
@@ -97,7 +120,9 @@ def resume_partitions(run_id, state, data, system):
             CallDispatch.input_hash == state["context"]["context_hash"]).order_by(
                 CallDispatch.started_at, CallDispatch.call_id).all()
         calls = [{k: getattr(row, k) for k in ("call_id", "request_hash", "provider", "model", "status", "outcome")}
-            | {"receipt": load(row.receipt_json)} for row in rows]
+            | {"receipt": load(row.receipt_json),
+               "parameters": (load(row.request_json) or {}).get("parameters", {}) if row.request_json else {}}
+            for row in rows]
     if not any(c["outcome"] == "failed" and c["receipt"].get("failure_code") == "PROVIDER_OUTPUT_INVALID_OR_TRUNCATED"
             for c in calls):
         return [data]
@@ -124,20 +149,16 @@ def resume_partitions(run_id, state, data, system):
         return matching_length_failure(
             calls, manifest, request_messages(system, payload), profile, params)
 
-    # The current request uses 64k. Exact ancestry matching also checks the
-    # historical budgets that actually produced settled empty length failures,
-    # so enabling a larger budget never erases an already-known split identity.
-    failed = None
-    for budget in (REVIEW_OUTPUT_TOKENS, *LEGACY_REVIEW_OUTPUT_TOKENS):
-        failed = failed_at_budget(budget, data)
-        if failed:
-            break
+    # The current request already uses the model ceiling (or the user override).
+    # Identity normalization lets a failure recorded under any smaller legacy
+    # budget still be recognized, while never treating a different prompt as
+    # the same failure.
+    failed = failed_at_budget(REVIEW_OUTPUT_TOKENS, data)
     if not failed:
         return [data]
     parts = split_data(data, failed["call_id"], failed["request_hash"])
     for part in parts:
-        child_failure = next((found for budget in (REVIEW_OUTPUT_TOKENS, *LEGACY_REVIEW_OUTPUT_TOKENS)
-            if (found := failed_at_budget(budget, part))), None)
+        child_failure = failed_at_budget(REVIEW_OUTPUT_TOKENS, part)
         if child_failure:
             # Every indicator of one dimension must stay together. Do not
             # replay the failed single request or fragment its scoring rule.

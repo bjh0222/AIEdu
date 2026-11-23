@@ -63,7 +63,7 @@ def test_full_exercise_reserves_reasoning_output_in_the_audited_request(client, 
     worker.execute_run(run["run_id"])
     final=snapshot(created["task_id"])
     assert final["state"]=="completed" and len(captured)==1
-    assert captured[0]["max_tokens"]==65536
+    assert captured[0]["max_tokens"]==384000
     with SessionLocal() as db:
         call=db.get(CallDispatch,final["calls"][0]["call_id"])
-        assert json.loads(call.request_json)["parameters"]["max_tokens"]==65536
+        assert json.loads(call.request_json)["parameters"]["max_tokens"]==384000
