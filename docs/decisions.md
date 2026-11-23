@@ -173,8 +173,10 @@ Decision:
   `depends_on_titles` equal its `covers_titles` and whose position follows the
   covered units. B writes each section from the actual generated upstream
   content after the parallel chapter pass; the wrapper never invents a summary
-  or applies a template heading. A missing plan on a multi-unit tutorial gets at
-  most one explicit A correction request, not a wrapper-generated substitute.
+  or applies a template heading. A whole-tutorial summary may consume earlier
+  cross-chapter/part-summary units and must cover every non-summary unit. A
+  missing or schema/contract-invalid arrangement gets at most one explicit A
+  correction request, not a wrapper-generated substitute.
 - Provider and check concurrency is a global, user-configurable setting bounded
   to 1-5 (default 5), persisted through the model-settings CAS and exposed in the
   settings UI. Independent unit checks, L4 findings and independent research

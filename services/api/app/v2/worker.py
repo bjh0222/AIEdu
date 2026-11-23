@@ -776,8 +776,38 @@ def resolve_run_intent(run_id, worker, epoch, provider_factory=None):
         network_trace = None
     if not isinstance(result, dict):
         raise DomainError("INTENT_OUTPUT_INVALID", 422)
-    teaching = arrangement(result)
     adaptive = state.get("execution_policy", {}).get("task_adaptive_format", False)
+    try:
+        teaching = arrangement(result)
+    except DomainError as exc:
+        if not adaptive:
+            raise
+        original_error = exc
+        corrected, correction_audit = invoke(
+            run_id, worker, epoch, state,
+            stage="teaching_arrangement_contract_correcting", unit_id="task-intent",
+            role="understanding", provider_factory=provider_factory,
+            data={"original_output": result.get("teaching_arrangement"),
+                  "validation_error": exc.details,
+                  "planning_skill": planning_skill,
+                  "teaching_arrangement_json_schema": TeachingArrangement.model_json_schema()},
+            system=(
+                "Return JSON {teaching_arrangement:...} matching the supplied schema. "
+                "Correct ONLY schema placement and contract fields. Preserve every semantic "
+                "value, goal, unit, concept, dependency, output_design and integration decision. "
+                "Move fields to their exact schema locations; do not drop, add, rename or weaken "
+                "user requirements. Return one complete JSON object, no prose or fences. "
+                "Do not generate learner content."
+            ),
+            output_schema={"teaching_arrangement": TeachingArrangement.model_json_schema()},
+            output_tokens=32768,
+            entries=intent_request["entries"],
+        )
+        try:
+            teaching = arrangement(corrected)
+        except DomainError:
+            raise original_error from None
+        audit = {**audit, "teaching_arrangement_contract_correction": correction_audit}
     if adaptive and teaching.get("status") != "schema_validated":
         raise DomainError("TEACHING_ARRANGEMENT_REQUIRED", 422)
     if adaptive and teaching.get("status") == "schema_validated":
@@ -871,8 +901,51 @@ def resolve_run_intent(run_id, worker, epoch, provider_factory=None):
             from .generation_tools import bind_citations
             network_trace["initial_citation_bindings"] = network_trace["citation_bindings"]
             network_trace["citation_bindings"] = bind_citations(aligned, network_trace["receipts"])
-    plan = apply_arrangement(plan, teaching, context=context, enforce_contract=True,
-                             require_complete=strict or adaptive)
+    try:
+        plan = apply_arrangement(plan, teaching, context=context, enforce_contract=True,
+                                 require_complete=strict or adaptive)
+    except DomainError as exc:
+        if not adaptive or exc.code == "UNRESOLVED_CONFLICT":
+            raise
+        original_error = exc
+        corrected, contract_audit = invoke(
+            run_id, worker, epoch, state,
+            stage="teaching_arrangement_contract_correcting", unit_id="task-intent",
+            role="understanding", provider_factory=provider_factory,
+            data={"original_arrangement": teaching["content"],
+                  "validation_error": {"code": exc.code, "details": exc.details},
+                  "planning_skill": planning_skill,
+                  "teaching_arrangement_json_schema": TeachingArrangement.model_json_schema(),
+                  "context": planning_context(context)},
+            system=(
+                "Return JSON {teaching_arrangement:...} matching the supplied schema. "
+                "Correct ONLY the invalid contract fields identified by validation_error. "
+                "Preserve every unit title, artifact_role, depends_on_titles, output_design, "
+                "integration_plan, user requirement, quality target ref, material mapping and "
+                "acceptance target exactly. Every knowledge_chain source_concept and target_concept "
+                "must be an exact concept in that unit or an exact learner_prerequisite; every "
+                "misconception blueprint_group must match an actual question_blueprint group; "
+                "question blueprint quantities must sum to the declared quantity. Do not add, "
+                "remove or rename units. Do not generate learner content or weaken requirements."
+            ),
+            output_schema={"teaching_arrangement": TeachingArrangement.model_json_schema()},
+            output_tokens=32768,
+            entries=spec_entries(state["context"], "planning") + [
+                {"source_id": planning_skill["skill_id"], "version": planning_skill["version"],
+                 "sha256": planning_skill["hash"], "consumer": "A"}]
+                + understanding_entries + framework_entries + experience["entries"],
+        )
+        teaching = arrangement(corrected)
+        try:
+            if teaching.get("status") != "schema_validated":
+                raise original_error
+            plan = apply_design(context, {"units": []}, teaching, chunks)
+            plan["plan_hash"] = digest(plan)
+            plan = apply_arrangement(plan, teaching, context=context, enforce_contract=True,
+                                     require_complete=True)
+        except DomainError:
+            raise original_error from None
+        audit = {**audit, "teaching_arrangement_contract_correction": contract_audit}
     if strict and teaching["content"].get("unresolved_conflicts"):
         raise DomainError("UNRESOLVED_CONFLICT", 422)
     with write() as db:

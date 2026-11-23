@@ -256,14 +256,18 @@ def _validated_integration_plan(content, design, descriptions, roles, by_title):
     if undeclared:
         raise DomainError("INTEGRATION_UNIT_UNDECLARED", 422, titles=undeclared)
     summaries = [s for s in plan["sections"] if s["kind"] == "whole_tutorial_summary"]
-    substantive_titles = [d["title"] for d in substantive]
+    summary_titles = {s["title"] for s in summaries}
+    # A whole-tutorial summary may (and normally should) consume earlier
+    # cross-chapter/part-summary units too, not only raw chapters. It must not
+    # consume itself.
+    summary_targets = [d["title"] for d in descriptions if d["title"] not in summary_titles]
     if plan["whole_tutorial_summary"]:
         if len(summaries) != 1:
             raise DomainError("INTEGRATION_WHOLE_SUMMARY_REQUIRED", 422)
-        if set(summaries[0]["covers_titles"]) != set(substantive_titles):
+        if set(summaries[0]["covers_titles"]) != set(summary_targets):
             raise DomainError("INTEGRATION_WHOLE_SUMMARY_COVERAGE", 422,
                               covers_titles=summaries[0]["covers_titles"],
-                              substantive_titles=substantive_titles)
+                              substantive_titles=summary_targets)
     elif summaries:
         raise DomainError("INTEGRATION_WHOLE_SUMMARY_UNDECLARED", 422,
                           titles=[s["title"] for s in summaries])

@@ -165,7 +165,8 @@ def tutorial_evaluation(content=None, titles=("方法甲", "方法乙", "方法�
         {"title": "方法比较", "kind": "cross_chapter_synthesis", "covers_titles": list(titles),
          "required_content": ["比较三种方法的适用条件、选择依据和边界"],
          "rationale": "用户要求在同一教程中比较三种方法的适用差异"},
-        {"title": "全书总结", "kind": "whole_tutorial_summary", "covers_titles": list(titles),
+        {"title": "全书总结", "kind": "whole_tutorial_summary",
+         "covers_titles": [*titles, "方法比较"],
          "required_content": ["归纳三种方法的选择规则并给出全书结论"],
          "rationale": "用户明确要求最后给出覆盖全书的总结"},
     ]
@@ -175,7 +176,7 @@ def tutorial_evaluation(content=None, titles=("方法甲", "方法乙", "方法�
          "artifact_role": "book_level", "depends_on_titles": list(titles)},
         {"title": "全书总结", "concepts": list(titles), "question_types": [], "difficulty_basis": {},
          "quantity": None, "material_mapping": [], "acceptance_criteria": ["总结覆盖全部方法"],
-         "artifact_role": "book_level", "depends_on_titles": list(titles)},
+         "artifact_role": "book_level", "depends_on_titles": [*titles, "方法比较"]},
     ]
     if content:
         content(units, sections)
@@ -196,10 +197,11 @@ def test_A_plans_cross_chapter_synthesis_and_whole_summary_as_B_units():
     built = apply_design(ctx, {"units": []}, value, [])
     assert [u["title"] for u in built["units"]] == ["方法甲", "方法乙", "方法丙", "方法比较", "全书总结"]
     assert [u["artifact_role"] for u in built["units"][-2:]] == ["book_level", "book_level"]
-    assert [u["depends_on"] for u in built["units"][-2:]] == [
-        [built["units"][0]["unit_id"], built["units"][1]["unit_id"], built["units"][2]["unit_id"]],
-        [built["units"][0]["unit_id"], built["units"][1]["unit_id"], built["units"][2]["unit_id"]],
-    ]
+    assert built["units"][3]["depends_on"] == [
+        built["units"][0]["unit_id"], built["units"][1]["unit_id"], built["units"][2]["unit_id"]]
+    assert built["units"][4]["depends_on"] == [
+        built["units"][0]["unit_id"], built["units"][1]["unit_id"],
+        built["units"][2]["unit_id"], built["units"][3]["unit_id"]]
     assert built["units"][3]["integration_section"]["kind"] == "cross_chapter_synthesis"
     assert built["units"][4]["integration_section"]["kind"] == "whole_tutorial_summary"
     assert built["integration_plan"]["whole_tutorial_summary"] is True
