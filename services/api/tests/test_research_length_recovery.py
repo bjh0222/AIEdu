@@ -147,12 +147,12 @@ def test_actual_ancestry_requires_explicit_child_and_exact_request(client, monke
         manifest = {"schema_version": "aiedu.prompt-manifest.v1", "context_hash": state["context"]["context_hash"],
             "plan_hash": state["plan"]["plan_hash"], "unit_id": envelope["unit"]["unit_id"],
             "stage": "rubric_reviewing", "role": "review", "entries": [C_REVIEW_ENTRY]}
-        req = request_hash(manifest, request_messages(system, envelope), profile.llm_base_url,
+        req = request_hash(manifest, request_messages(system, envelope, ensure_json_literal=True), profile.llm_base_url,
                            profile.llm_model, parameters, {})
         db.add(CallDispatch(call_id=call_id, root_job_id=old.id, run_id=old.run_id, unit_id="u", epoch=1,
             attempt=1, idempotency_key=str(uuid4()), request_hash=req, input_hash=state["context"]["context_hash"],
             provider=profile.llm_base_url, model=profile.llm_model, model_family="fixture", status="settled", outcome="failed",
-            request_json=dump({"messages": request_messages(system, envelope), "parameters": parameters, "output_schema": {}}),
+            request_json=dump({"messages": request_messages(system, envelope, ensure_json_literal=True), "parameters": parameters, "output_schema": {}}),
             receipt_json=dump(identity[0]["receipt"])))
         db.add(GenerationJob(id=child_id, root_job_id=child_id, parent_job_id=old.id, run_id=child_run,
             goal_id=old.goal_id, job_type="task_v2", status="queued", state_json=dump(state)))
@@ -166,12 +166,12 @@ def test_actual_ancestry_requires_explicit_child_and_exact_request(client, monke
         assert db.get(CallDispatch, call_id).outcome == "failed"
         assert db.query(CallDispatch).count() == dispatch_count
         single_call_id, grandchild_id, grandchild_run = str(uuid4()), str(uuid4()), str(uuid4())
-        single_hash = request_hash(manifest, request_messages(system, parts[0]), profile.llm_base_url,
+        single_hash = request_hash(manifest, request_messages(system, parts[0], ensure_json_literal=True), profile.llm_base_url,
             profile.llm_model, parameters, {})
         db.add(CallDispatch(call_id=single_call_id, root_job_id=child_id, run_id=child_run, unit_id="u", epoch=1,
             attempt=1, idempotency_key=str(uuid4()), request_hash=single_hash, input_hash=state["context"]["context_hash"],
             provider=profile.llm_base_url, model=profile.llm_model, model_family="fixture", status="settled", outcome="failed",
-            request_json=dump({"messages": request_messages(system, parts[0]), "parameters": parameters, "output_schema": {}}),
+            request_json=dump({"messages": request_messages(system, parts[0], ensure_json_literal=True), "parameters": parameters, "output_schema": {}}),
             receipt_json=dump(identity[0]["receipt"])))
         db.add(GenerationJob(id=grandchild_id, root_job_id=grandchild_id, parent_job_id=child_id, run_id=grandchild_run,
             goal_id=snap["task_id"], job_type="task_v2", status="queued", state_json=dump(state)))

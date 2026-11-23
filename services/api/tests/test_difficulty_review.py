@@ -176,7 +176,7 @@ def test_legacy_cache_requires_exact_content_schema_model_and_parameters(monkeyp
     params = {"max_tokens": 32768, "temperature": 0.3, "thinking": "enabled", "reasoning_effort": "high", "json_mode": True}
     row = {"manifest": manifest, "provider": profile.llm_base_url, "model": profile.llm_model,
         "model_family": profile.llm_model_family,
-        "request_hash": request_hash(manifest, request_messages(system, data, schema), profile.llm_base_url, profile.llm_model, params, schema)}
+        "request_hash": request_hash(manifest, request_messages(system, data, schema, ensure_json_literal=True), profile.llm_base_url, profile.llm_model, params, schema)}
     assert matching_attempts([row], data, schema, system, profile, 16384) == [row]
     assert not matching_attempts([row], {"items": []}, schema, system, profile, 16384)
     assert not matching_attempts([row], data, {"different": []}, system, profile, 16384)
@@ -265,7 +265,7 @@ def test_legacy_success_at_smaller_output_cap_is_reused_but_tamper_is_not(monkey
              "reasoning_effort": "high", "json_mode": True}
     row = {"manifest": manifest, "provider": profile.llm_base_url, "model": profile.llm_model,
         "model_family": profile.llm_model_family, "parameters": saved,
-        "request_hash": request_hash(manifest, request_messages(system, data, schema),
+        "request_hash": request_hash(manifest, request_messages(system, data, schema, ensure_json_literal=True),
             profile.llm_base_url, profile.llm_model, saved, schema)}
     assert matching_attempts([row], data, schema, system, profile, 16384) == [row]
     assert matching_attempts([row | {"parameters": {**saved, "max_tokens": 32768}}], data, schema, system,
