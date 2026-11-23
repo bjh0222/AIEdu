@@ -696,6 +696,10 @@ def review_rubric_scope(run_id, worker, epoch, state, scope, dimensions, claims,
         # window and left an unknown; a per-dimension request keeps every call
         # inside that window while preserving the same revision contract, and a
         # later resume reuses each completed dimension instead of redoing all.
+        # Role separation: C (review role) only opines -- its decision row and
+        # revision_instruction are the input here. The rewrite itself is product
+        # content, so it belongs to the generation role, never to the reviewer
+        # that produced the criticism.
         claims_by_id = {c["claim_id"]: c for c in claims}
         review_by_id = {r["dimension_id"]: r for r in rows}
         preserved_hashes = {d["dimension_id"]: digest(d) for d in dimensions if d["dimension_id"] not in repair_ids}
@@ -713,7 +717,7 @@ def review_rubric_scope(run_id, worker, epoch, state, scope, dimensions, claims,
                  "method_version": SCOPE_REVIEW_METHOD, "semantic_policy_hash": sha(POLICY_PROMPT),
                  "operational_policy_hash": sha(SCOPE_OPERATIONAL_POLICY)},
                 SCOPE_REVISION_PROMPT + POLICY_PROMPT + SCOPE_OPERATIONAL_POLICY + C_SCOPE_SKILL_PROMPT,
-                provider_factory, 32768, role="review")
+                provider_factory, 32768, role="generation")
             part = part_output.get("dimensions", []) if isinstance(part_output, dict) else []
             if len(part) != 1 or part[0].get("dimension_id") != dim_id:
                 raise DomainError("RESEARCH_SCOPE_REVISION_IDENTITY_MISMATCH", 422,

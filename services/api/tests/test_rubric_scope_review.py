@@ -103,11 +103,14 @@ def test_revision_splits_one_bounded_call_per_rejected_dimension(monkeypatch):
         stage, data = args[4], args[5]
         seen.append((stage, deepcopy(data)))
         if "research_scope_revision_" in stage:
+            # 评审只出意见；维度改写由生成角色执行，不由评审自己改。
+            assert kwargs["role"] == "generation"
             dim = data["original_dimensions"][0]
             assert [d["dimension_id"] for d in data["original_dimensions"]] == [dim["dimension_id"]]
             assert [r["dimension_id"] for r in data["scope_review"]] == [dim["dimension_id"]]
             assert data["source_claims"] == [c for c in claims if c["claim_id"] in dim["source_refs"]]
             return {"dimensions": [deepcopy(dim)]}, {"call_id": "repair-" + stage}
+        assert kwargs["role"] == "review"
         attempt_one = "_1_batch" in stage
         return {"decisions": [decision(d, "usable" if attempt_one else "revise") for d in data["dimensions"]]
             }, {"call_id": "review-" + stage}

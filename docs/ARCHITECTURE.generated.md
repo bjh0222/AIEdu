@@ -4,7 +4,7 @@
 # 架构事实（自动生成）
 
 
-## 路由（209 条 = 路径 × 方法，19 组资源）
+## 路由（210 条 = 路径 × 方法，19 组资源）
 
 ### assessments（1 条）
 
@@ -210,7 +210,7 @@
 | GET | `/api/tutorials/{tutorial_id}/sections/{section_id}` |
 | POST | `/api/tutorials/{tutorial_id}/sections/{section_id}/regenerate` |
 
-### v2（69 条）
+### v2（70 条）
 
 | 方法 | 路径 |
 |---|---|
@@ -250,6 +250,7 @@
 | GET | `/api/v2/managed-resources/{kind}/{object_id}/impact` |
 | GET | `/api/v2/managed-understanding-context/{profile_id}` |
 | GET/PUT | `/api/v2/model-settings` |
+| POST | `/api/v2/model-settings/discover` |
 | POST | `/api/v2/optimization/policy` |
 | POST | `/api/v2/optimization/runs` |
 | GET | `/api/v2/quality-profiles` |
