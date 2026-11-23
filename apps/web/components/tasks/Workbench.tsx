@@ -235,8 +235,12 @@ export default function Workbench({ taskId }: { taskId: string }) {
   const canResume = run.next_actions.includes("resume");
   const hasDraft = Boolean(run.version_id);
   const runStopped = ["paused", "interrupted", "failed"].includes(run.state);
-  const failedCall = run.calls.find((c) => c.status === "settled" && c.outcome === "failed" && c.failure_code);
-  const failureDetail = failedCall ? callFailureText(failedCall) : "";
+  // 失败/结果不明的原因只取本次运行；祖先 run 的旧失败（例如上一轮的 8k 截断）
+  // 不能拿来解释本轮的停止原因。
+  const currentCalls = run.calls.filter((c) => c.current_run !== false);
+  const failedCall = currentCalls.find((c) => c.status === "settled" && c.outcome === "failed" && c.failure_code);
+  const unknownCall = currentCalls.find((c) => c.status === "unknown" || c.outcome === "unknown");
+  const failureDetail = failedCall ? callFailureText(failedCall) : unknownCall ? callFailureText(unknownCall) : "";
   const pausing = pauseUi === "requesting" && run.state !== "paused";
   const missing = missingRoles(run);
   const inflight = run.calls.filter((c) => c.status === "sent" || c.status === "authorized").length;

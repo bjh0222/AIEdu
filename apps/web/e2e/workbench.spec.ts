@@ -348,6 +348,59 @@ test.describe("运行中与失败原因的可读性", () => {
     await expect(page.getByText("研究量规中", { exact: false }).first()).toBeVisible();
   });
 
+  test("中断且结果不明时显示本次读超时原因，不引用祖先旧失败", async ({ page }) => {
+    await mockBackend(page, {
+      snapshot: () => runSnapshot({
+        state: "interrupted",
+        demo: false,
+        version_id: null,
+        cost_final: false,
+        stop_reason: "UNKNOWN_CALL",
+        next_actions: ["resume"],
+        calls: [
+          {
+            call_id: "88888888-8888-4888-8888-888888888881",
+            unit_id: IDS.unit,
+            status: "settled",
+            outcome: "failed",
+            attempt: 1,
+            usage: null,
+            price: null,
+            model_family: "glm",
+            model: "glm-5.3-flash",
+            request_hash: "1".repeat(64),
+            current_run: false,
+            retry_source: "ancestor_resume",
+            failure_code: "PROVIDER_OUTPUT_INVALID_OR_TRUNCATED",
+            failure_diagnostics: { finish_reason: "length", validation_reason: "OUTPUT_LENGTH_LIMIT", content_characters: 0 },
+          },
+          {
+            call_id: "99999999-9999-4999-8999-999999999996",
+            unit_id: IDS.unit,
+            status: "unknown",
+            outcome: "unknown",
+            attempt: 1,
+            usage: null,
+            price: null,
+            model_family: "glm",
+            model: "glm-5.3-flash",
+            request_hash: "2".repeat(64),
+            current_run: true,
+            failure_code: "PROVIDER_TRANSPORT_UNKNOWN",
+            failure_diagnostics: { timeout_phase: "read", configured_timeout_seconds: 120,
+              read_timeout_seconds: 600, elapsed_seconds: 601.031, transport_exception: "ReadTimeout" },
+          },
+        ],
+      }),
+    });
+    await page.goto(`/tasks/${IDS.task}`);
+    const banner = page.getByRole("status").filter({ hasText: "本次运行已停止" });
+    await expect(banner).toContainText("连接中断");
+    await expect(banner).toContainText("结果不明");
+    await expect(banner).not.toContainText("输出达到长度上限");
+    await expect(page.getByRole("button", { name: "隔离并准备重做" })).toBeVisible();
+  });
+
   test("输出被截断的失败运行显示普通中文原因，不暴露原始错误码", async ({ page }) => {
     await mockBackend(page, {
       snapshot: () => runSnapshot({

@@ -39,6 +39,23 @@ C scope-review execution contract:
 """
 
 SCOPE_REVIEW_METHOD = "task-rubric-scope-review.v5"
+SCOPE_REVISION_PROMPT = (
+    "Revise ONLY the supplied rejected diagnostic dimensions using C's scope review. Return {dimensions:[Dimension]} matching the exact supplied schema. "
+    "Return exactly the supplied original dimension_ids, no additions, omissions or renames. Other dimensions are preserved by the wrapper, "
+    "not rewritten. Make the smallest complete repair of each C-identified issue, keeping its indicators, anchors, examples, "
+    "unknown rules and acceptance internally consistent. Test zero/partial/full and missing-denominator cases before returning. "
+    "Preserve warranted constructs and source_refs, correct the identified applicability/denominator/anchor errors. "
+    "Research constructs guide evaluation, they are NOT a content checklist to force into the user's tutorial. "
+    "Use task-dependent applicable target concepts/relations/items as denominators and explicit missing-denominator unknown rules. "
+    "State exact indicators, 0/1/2 anchors, positive/negative/unknown examples and repair acceptance. "
+    "Do not weaken user requirements, invent measured difficulty, replace unknown with zero, or claim professional calibration. "
+    "Treat every supplied revision_instruction as a binding acceptance condition. Re-read the revised dimension and verify the same defect is gone before returning; a partial cosmetic edit that leaves the defect is invalid. "
+    "When the instruction supplies an example rewrite or asks for MECE count predicates, implement it faithfully using named counts; do not preserve ambiguous 'lacks both'/'not all' prose as a paraphrase. Every revised anchor must be a complete predicate over the supplied or explicitly defined counts and must cover the previously uncovered combined state. "
+    "If the instruction says a fixed subject-method list is not user-mandated while A is still pending, remove that fixed list as a full-coverage denominator and make the denominator conditional on A's eventual applicable arrangement or the artifact's own declared types. Do not retain the fixed list under a 'task-derived' label. "
+    "Do not introduce a global cutoff or relabel this engineering diagnostic as pass."
+)
+
+
 SCOPE_OPERATIONAL_POLICY = (
     " Operational consistency is required before a rubric is usable. For each dimension, test its anchors "
     "against the same possible observations, including zero, partial and full coverage, boundary equality, "
@@ -674,36 +691,44 @@ def review_rubric_scope(run_id, worker, epoch, state, scope, dimensions, claims,
         if not repair_ids:
             return _scope_completion(dimensions, rows, reviews, audits)
         repair_dimensions = [d for d in dimensions if d["dimension_id"] in repair_ids]
-        revised, revision_audit = _call(run_id, worker, epoch, state, f"research_scope_revision_{scope}_{attempt+1}",
-            {"scope": scope, "task_contract": task, "original_dimensions": repair_dimensions,
-             "scope_review": [r for r in rows if r["dimension_id"] in repair_ids],
-             "preserved_dimension_hashes": {d["dimension_id"]: digest(d) for d in dimensions if d["dimension_id"] not in repair_ids},
-             "revision_method": "only-rejected-dimensions.v1",
-             "source_claims": claims, "dimension_json_schema": Dimension.model_json_schema(),
-             "method_version": SCOPE_REVIEW_METHOD, "semantic_policy_hash": sha(POLICY_PROMPT),
-             "operational_policy_hash": sha(SCOPE_OPERATIONAL_POLICY)},
-            "Revise ONLY the supplied rejected diagnostic dimensions using C's scope review. Return {dimensions:[Dimension]} matching the exact supplied schema. "
-            "Return exactly the supplied original dimension_ids, no additions, omissions or renames. Other dimensions are preserved by the wrapper, "
-            "not rewritten. Make the smallest complete repair of each C-identified issue, keeping its indicators, anchors, examples, "
-            "unknown rules and acceptance internally consistent. Test zero/partial/full and missing-denominator cases before returning. "
-            "Preserve warranted constructs and source_refs, correct the identified applicability/denominator/anchor errors. "
-            "Research constructs guide evaluation, they are NOT a content checklist to force into the user's tutorial. "
-            "Use task-dependent applicable target concepts/relations/items as denominators and explicit missing-denominator unknown rules. "
-            "State exact indicators, 0/1/2 anchors, positive/negative/unknown examples and repair acceptance. "
-            "Do not weaken user requirements, invent measured difficulty, replace unknown with zero, or claim professional calibration. "
-            "Treat every supplied revision_instruction as a binding acceptance condition. Re-read the revised dimension and verify the same defect is gone before returning; a partial cosmetic edit that leaves the defect is invalid. "
-            "When the instruction supplies an example rewrite or asks for MECE count predicates, implement it faithfully using named counts; do not preserve ambiguous 'lacks both'/'not all' prose as a paraphrase. Every revised anchor must be a complete predicate over the supplied or explicitly defined counts and must cover the previously uncovered combined state. "
-            "If the instruction says a fixed subject-method list is not user-mandated while A is still pending, remove that fixed list as a full-coverage denominator and make the denominator conditional on A's eventual applicable arrangement or the artifact's own declared types. Do not retain the fixed list under a 'task-derived' label. "
-            "Do not introduce a global cutoff or relabel this engineering diagnostic as pass."
-                + POLICY_PROMPT + SCOPE_OPERATIONAL_POLICY + C_SCOPE_SKILL_PROMPT,
-            provider_factory, 32768, role="review")
+        # One bounded revision call per rejected dimension. Rewriting many full
+        # dimensions in a single request exceeded the provider's configured read
+        # window and left an unknown; a per-dimension request keeps every call
+        # inside that window while preserving the same revision contract, and a
+        # later resume reuses each completed dimension instead of redoing all.
+        claims_by_id = {c["claim_id"]: c for c in claims}
+        review_by_id = {r["dimension_id"]: r for r in rows}
+        preserved_hashes = {d["dimension_id"]: digest(d) for d in dimensions if d["dimension_id"] not in repair_ids}
+        revised_dimensions, revision_audits = [], []
+        for dimension in repair_dimensions:
+            dim_id = dimension["dimension_id"]
+            part_output, part_audit = _call(run_id, worker, epoch, state,
+                f"research_scope_revision_{scope}_{attempt+1}_{dim_id}",
+                {"scope": scope, "task_contract": task, "original_dimensions": [deepcopy(dimension)],
+                 "scope_review": [review_by_id[dim_id]],
+                 "preserved_dimension_hashes": preserved_hashes,
+                 "revision_method": "per-dimension-scope-revision.v1",
+                 "source_claims": [claims_by_id[ref] for ref in dimension.get("source_refs", []) if ref in claims_by_id],
+                 "dimension_json_schema": Dimension.model_json_schema(),
+                 "method_version": SCOPE_REVIEW_METHOD, "semantic_policy_hash": sha(POLICY_PROMPT),
+                 "operational_policy_hash": sha(SCOPE_OPERATIONAL_POLICY)},
+                SCOPE_REVISION_PROMPT + POLICY_PROMPT + SCOPE_OPERATIONAL_POLICY + C_SCOPE_SKILL_PROMPT,
+                provider_factory, 32768, role="review")
+            part = part_output.get("dimensions", []) if isinstance(part_output, dict) else []
+            if len(part) != 1 or part[0].get("dimension_id") != dim_id:
+                raise DomainError("RESEARCH_SCOPE_REVISION_IDENTITY_MISMATCH", 422,
+                                  dimension_id=dim_id,
+                                  returned_dimension_ids=[d.get("dimension_id") for d in part] if isinstance(part, list) else None)
+            revised_dimensions.append(part[0])
+            revision_audits.append(part_audit)
+        revised = {"dimensions": revised_dimensions}
         repaired, contract_audits = validate_generated_dimensions(run_id, worker, epoch, state,
             f"research_scope_revision_{scope}_{attempt+1}", revised, scope, claims, provider_factory)
         if {d["dimension_id"] for d in repaired} != repair_ids:
             raise DomainError("RESEARCH_SCOPE_REVISION_IDENTITY_MISMATCH", 422)
         replacements = {d["dimension_id"]: d for d in repaired}
         dimensions = [replacements.get(d["dimension_id"], d) for d in dimensions]
-        audits.append(revision_audit)
+        audits.extend(revision_audits)
         audits.extend(contract_audits)
 
 

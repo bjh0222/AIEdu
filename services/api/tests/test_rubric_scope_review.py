@@ -77,7 +77,7 @@ def test_revision_freezes_usable_dimensions_and_only_sends_rejected_dimensions_t
             assert data["original_dimensions"] == [before[1]]
             assert data["preserved_dimension_hashes"] == {before[0]["dimension_id"]: research.digest(before[0])}
             assert [d["dimension_id"] for d in data["scope_review"]] == ["needs-repair"]
-            assert data["revision_method"] == "only-rejected-dimensions.v1"
+            assert data["revision_method"] == "per-dimension-scope-revision.v1"
             return {"dimensions": [repaired]}, {"call_id": "repair"}
         return {"decisions": [decision(d, "revise" if d == before[1] else "usable")
             for d in data["dimensions"]]}, {"call_id": "review-"+stage}
@@ -89,6 +89,37 @@ def test_revision_freezes_usable_dimensions_and_only_sends_rejected_dimensions_t
     assert len(records[1]["unchanged_accepted_decisions_reused"]) == 1
     assert records[1]["unchanged_accepted_decisions_reused"][0] == decision(before[0])
     assert seen[-1][1]["dimensions"] == [repaired]
+
+
+def test_revision_splits_one_bounded_call_per_rejected_dimension(monkeypatch):
+    """A combined multi-dimension rewrite exceeded the provider read window."""
+    dims, _ = dimensions()
+    base = dims[0]
+    claims = [{"claim_id": f"claim:{i}", "claim": f"evidence {i}"} for i in range(3)]
+    dims = [dict(deepcopy(base), dimension_id=f"D{i}", source_refs=[f"claim:{i}"]) for i in range(3)]
+    before = deepcopy(dims)
+    seen = []
+    def call(*args, **kwargs):
+        stage, data = args[4], args[5]
+        seen.append((stage, deepcopy(data)))
+        if "research_scope_revision_" in stage:
+            dim = data["original_dimensions"][0]
+            assert [d["dimension_id"] for d in data["original_dimensions"]] == [dim["dimension_id"]]
+            assert [r["dimension_id"] for r in data["scope_review"]] == [dim["dimension_id"]]
+            assert data["source_claims"] == [c for c in claims if c["claim_id"] in dim["source_refs"]]
+            return {"dimensions": [deepcopy(dim)]}, {"call_id": "repair-" + stage}
+        attempt_one = "_1_batch" in stage
+        return {"decisions": [decision(d, "usable" if attempt_one else "revise") for d in data["dimensions"]]
+            }, {"call_id": "review-" + stage}
+    monkeypatch.setattr(research, "_call", call)
+    approved, records, audits = review(dims, claims)
+    assert dims == before
+    assert [d["dimension_id"] for d in approved] == ["D0", "D1", "D2"]
+    revisions = [(s, d) for s, d in seen if "research_scope_revision_" in s]
+    assert [s for s, _ in revisions] == [f"research_scope_revision_knowledge_1_D{i}" for i in range(3)]
+    assert [d["original_dimensions"][0]["dimension_id"] for _, d in revisions] == ["D0", "D1", "D2"]
+    assert [a["call_id"] for a in audits if a["call_id"].startswith("repair-")] == \
+        ["repair-" + s for s, _ in revisions]
 
 
 @pytest.mark.parametrize("fault", ["rename", "drop", "extra"])
