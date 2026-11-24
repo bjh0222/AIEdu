@@ -6,10 +6,11 @@ no implicit transport retries, model choice or storage are performed here.
 from copy import deepcopy
 
 from .contracts import DomainError, digest
+from .review_contract import normalize_contract
 from .research_observations import bind_batch, COMPLETE
 
-METHOD = "research-content-contract-correction.v6"
-SCHEMA_METHOD = "research-content-contract-correction.v7"
+METHOD = "research-content-contract-correction.v7"
+SCHEMA_METHOD = "research-content-contract-correction.v8"
 PROMPT = (
     "Correct ONLY the invalid C output observations listed in target_dimension_ids. "
     "This is output-contract correction, NOT B content repair: the fixed unit body, frozen user/A targets, "
@@ -192,7 +193,10 @@ def correct_batch(output, audit, dimensions, unit, data, invoke_correction, *, m
     # Verdict locks come from the original observation, not an intermediate
     # malformed correction. Missing fields are execution defects; they must
     # neither count as a substantive change nor erase this lock for attempt 2.
-    original_rows = {r["dimension_id"]: r for r in _raw_rows(output, list(originals))}
+    # Verdict locks and previous-target rows are read through the same
+    # wire-shape normalization the binder applies.
+    normalized_output = normalize_contract(output)[0]
+    original_rows = {r["dimension_id"]: r for r in _raw_rows(normalized_output, list(originals))}
     method = METHOD if _has_response_shape(output, dimensions) else SCHEMA_METHOD
     for attempt in range(max_corrections + 1):
         evidence_catalog = data.get("evidence_catalog") if isinstance(data.get("evidence_catalog"), list) else None
@@ -228,7 +232,7 @@ def correct_batch(output, audit, dimensions, unit, data, invoke_correction, *, m
             scoped["source_claims"] = [c for c in scoped["source_claims"] if c.get("claim_id") in refs]
         if "source_claims" in scoped["research_rubric"]:
             scoped["research_rubric"]["source_claims"] = [c for c in scoped["research_rubric"]["source_claims"] if c.get("claim_id") in refs]
-        previous = _raw_rows(working, invalid)
+        previous = _raw_rows(normalize_contract(working)[0], invalid)
         scoped.update(previous_target_outputs=previous, original_output_hash=digest(output),
             previous_output_hash=digest(working), correction_method=method, correction_attempt=attempt + 1,
             validation_errors=[{"dimension_id": r["dimension_id"], "errors": r["validation_errors"],
@@ -250,6 +254,13 @@ def correct_batch(output, audit, dimensions, unit, data, invoke_correction, *, m
             system=SCHEMA_PROMPT if method == SCHEMA_METHOD else PROMPT, attempt=attempt + 1)
         audits.append(correction_audit)
         provider_output_hash = digest(revised)
+        # An unambiguous wire-shape wrapper ({"dimensions": {"items": [...]}})
+        # must be normalized BEFORE indicator restoration and row extraction;
+        # otherwise a fully valid correction reads as zero rows, erases the
+        # invalid targets from `working`, and burns the bounded retry budget.
+        # The raw provider bytes keep their identity in provider_output_hash
+        # and the immutable receipt.
+        revised, _shape_changes = normalize_contract(revised)
         revised, indicator_restorations = _restore_complete_indicators(
             revised, locked_indicators)
         revised_bound = bind_batch(
@@ -292,7 +303,7 @@ def correct_batch(output, audit, dimensions, unit, data, invoke_correction, *, m
         if revised_bound["batch_contract_errors"]:
             raise DomainError("RESEARCH_CONTENT_REVIEW_CONTRACT_INVALID", 422,
                 batch_contract_errors=revised_bound["batch_contract_errors"], correction_audits=audits)
-        accepted = _raw_rows(working, [i for i in originals if i not in invalid])
+        accepted = _raw_rows(normalize_contract(working)[0], [i for i in originals if i not in invalid])
         working = {"dimensions": accepted + proposed}
         for identity in invalid:
             row_audits[identity] = correction_audit

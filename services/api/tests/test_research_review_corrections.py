@@ -59,6 +59,37 @@ def test_only_invalid_target_corrected_and_sibling_exactly_preserved(sample):
     assert sample == before and output["dimensions"][0]["evidence"][0]["quote"] == "nonexistent quote"
 
 
+def test_wrapped_correction_output_binds_instead_of_erasing_targets(sample):
+    """Wire-shape regression: {"dimensions": {"items": [...]}} hid a valid fix.
+
+    The same class of failure as criterion f3444394: an unambiguous wrapper
+    must not make a complete correction read as zero rows, which previously
+    dropped the invalid targets from `working` and burned the bounded budget.
+    """
+    output = {"dimensions": deepcopy(sample[2])}
+    output["dimensions"][0]["evidence"][0]["quote"] = "nonexistent quote"
+    calls = []
+    def wrapped(**kwargs):
+        calls.append(kwargs)
+        return {"dimensions": {"items": [deepcopy(sample[2][0])]}}, {"call_id": "wrapped"}
+    report = run(sample, output, wrapped)
+    assert len(calls) == 1
+    assert report["status"] == "completed"
+    assert report["corrections"][0]["target_dimension_ids"] == ["a"]
+
+
+def test_wrapped_original_output_still_enforces_scored_evasion_locks(sample):
+    """Normalization must not weaken the semantic evasion guard."""
+    output = {"dimensions": {"items": [deepcopy(sample[2][0]), deepcopy(sample[2][1])]}}
+    output["dimensions"]["items"][0]["evidence"] = []
+    def evade(**kwargs):
+        row = deepcopy(sample[2][0])
+        row.update(result="undecidable", score=None)
+        return {"dimensions": [row]}, {"call_id": "evade"}
+    with pytest.raises(DomainError, match="RESEARCH_CONTENT_REVIEW_CORRECTION_EVASION"):
+        run(sample, output, evade)
+
+
 def test_exhaustion_is_explicit_contract_failure_not_grounded_unknown(sample):
     calls = []
     def broken(**kwargs):

@@ -64,6 +64,26 @@ def test_contract_normalizer_handles_only_unambiguous_wire_shapes():
     assert malformed["evidence"] == [{"invalid_evidence_shape": "int"}]
 
 
+def test_contract_normalizer_unwraps_unambiguous_row_containers():
+    """Real failure f3444394: {"assessments": {"items": [...]}} hid valid rows."""
+    rows = [{"request_id": "r", "clauses": []}, {"request_id": "s", "clauses": []}]
+    value, changes = normalize_contract({"assessments": {"items": rows}})
+    assert value["assessments"] == rows
+    assert any(row["code"] == "row_container_single_wrapper_unwrapped" for row in changes)
+    # Ambiguous or non-row shapes are never unwrapped.
+    kept, kept_changes = normalize_contract({"assessments": {"items": rows, "extra": 1}})
+    assert isinstance(kept["assessments"], dict)
+    assert not kept_changes
+    kept2, _ = normalize_contract({"assessments": {"items": "not-a-list"}})
+    assert kept2["assessments"] == {"items": "not-a-list"}
+    # A single dict row is not a row list and stays wrapped.
+    kept3, _ = normalize_contract({"dimensions": {"items": {"dimension_id": "d"}}})
+    assert kept3["dimensions"] == {"items": {"dimension_id": "d"}}
+    # Empty wrapper value stays untouched; a missing list is an explicit failure.
+    kept4, _ = normalize_contract({"checks": {"items": []}})
+    assert kept4["checks"] == {"items": []}
+
+
 def test_contract_normalizer_never_silently_truncates_a_long_list():
     original = {"assessments": [
         {"request_id": f"r{index}", "clauses": []}

@@ -10,9 +10,9 @@ import re
 from copy import deepcopy
 
 from .contracts import DomainError, canonical, digest, sha
-from .review_contract import prepare_review_output
+from .review_contract import normalize_contract, prepare_review_output
 
-VERSION = "criterion-observation-protocol.v5"
+VERSION = "criterion-observation-protocol.v6"
 MAX_CORRECTIONS = 2  # Finite engineering retry budget, not a quality cutoff.
 RESULTS = {"satisfied", "violated", "undecidable", "not_applicable"}
 CONTEXT_KEYS = ("task", "sources", "requirements", "output_design", "review_scope", "literal_tool_observations")
@@ -241,11 +241,15 @@ def correction_payload(data, original_output, bound, *, attempt):
     if not incomplete:
         raise DomainError("CRITERION_CORRECTION_NOT_NEEDED", 409)
     pending = [r for r in requests if r["request_id"] in incomplete]
+    # Lock declarations are read through the same wire-shape normalization the
+    # binder applies; a wrapped original output must not silently lose its
+    # declared-result locks for the correction attempt.
+    normalized_rows = _rows(normalize_contract(original_output)[0])
     locks = []
     for row in bound["rows"]:
         if row["request_id"] not in incomplete:
             continue
-        raw = _matches(_rows(original_output), "request_id", row["request_id"])
+        raw = _matches(normalized_rows, "request_id", row["request_id"])
         raw = raw[0] if len(raw) == 1 else {}
         values = raw.get("clauses", [])
         values = values if isinstance(values, list) else []
@@ -511,20 +515,28 @@ def correct_observations(data, output, audit, unit_id, invoke_correction):
         output, data["requests"], data["fields"], audit, unit_id, catalog)
     if original["complete"]:
         return original
-    persistent_locks = persistent_result_locks(original, output)
+    persistent_locks = persistent_result_locks(original, normalize_contract(output)[0])
     current, current_output, correction_audits, history = original, output, [], []
     for attempt in range(1, MAX_CORRECTIONS + 1):
         payload = correction_payload(data, current_output, current, attempt=attempt)
         revised, new_audit = invoke_correction(data=payload, system=INSTRUCTION,
             output_schema=response_contract(payload["requests"], payload["fields"]))
         correction_audits.append(new_audit)
+        provider_output_hash = digest(revised)
+        # An unambiguous wire-shape wrapper ({"assessments": {"items": [...]}})
+        # must reach lock restoration intact; otherwise the restore step wipes
+        # a fully valid correction as "missing rows" and the bounded loop burns
+        # attempts on a shape defect the server can normalize deterministically.
+        # The raw provider bytes stay in the immutable receipt; the audit hash
+        # keeps identifying them exactly.
+        shaped, _shape_changes = normalize_contract(revised)
         restored, restorations = restore_locked_clauses(
-            revised, payload["execution_correction"], persistent_locks)
+            shaped, payload["execution_correction"], persistent_locks)
         corrected = bind_observations(
             restored, payload["requests"], payload["fields"], new_audit, unit_id,
             payload.get("evidence_catalog") if isinstance(payload.get("evidence_catalog"), list) else catalog)
         merged = merge_correction(current, corrected, payload, restorations=restorations,
-                                  provider_output_hash=digest(revised))
+                                  provider_output_hash=provider_output_hash)
         history.extend(merged["execution_corrections"])
         current, current_output = merged, restored
         if merged["complete"]:

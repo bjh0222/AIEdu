@@ -8,9 +8,9 @@ from copy import deepcopy
 from .contracts import DomainError, digest
 from .criterion_review import bound_quote
 from .difficulty_review import AXES, NONROUTINE, OPERATIONS, _entries, _dependency_depth, bind_item
-from .review_contract import prepare_review_output
+from .review_contract import normalize_contract, prepare_review_output
 
-VERSION = "difficulty-observation-protocol.v2"
+VERSION = "difficulty-observation-protocol.v3"
 MAX_CORRECTIONS = 1  # Project execution budget, not a research-authored cutoff.
 INSTRUCTION = (
     "Correct ONLY execution/schema/quote binding for the exact supplied difficulty targets. "
@@ -140,9 +140,11 @@ def correction_payload(data, original_output, bound, *, attempt):
     if not pending:
         raise DomainError("DIFFICULTY_CORRECTION_NOT_NEEDED", 409)
     selected = [deepcopy(r) for r in data["items"] if r["item_id"] in pending]
+    # Read lock rows through the same wire-shape normalization as the binder.
+    normalized_rows = _raw_rows(normalize_contract(original_output)[0])
     locks = []
     for request in selected:
-        values = _matches(_raw_rows(original_output), request["item_id"])
+        values = _matches(normalized_rows, request["item_id"])
         raw = values[0] if len(values) == 1 else {}
         locks.append({"item_id": request["item_id"], **_locks(raw, request["fields"])})
     policy = {"method_version": VERSION, "attempt": attempt, "maximum": MAX_CORRECTIONS,
@@ -328,7 +330,13 @@ def correct_observations(data, output, items, unit, audit, invoke_correction):
     policy = payload["execution_correction"]
     revised, new_audit = invoke_correction(data=payload, system=INSTRUCTION,
         output_schema=response_contract(payload["items"], policy["locks"]))
-    restored, lock_changes = _restore_locks(policy, revised)
+    provider_output_hash = digest(revised)
+    # Normalize unambiguous wire-shape wrappers BEFORE lock restoration; the
+    # binder normalizes internally, but restoring locks against a wrapped row
+    # list silently matches nothing and would skip lock enforcement. The raw
+    # provider bytes stay in the immutable receipt and keep their audit hash.
+    shaped, _shape_changes = normalize_contract(revised)
+    restored, lock_changes = _restore_locks(policy, shaped)
     corrected = bind_observations(payload, restored, items, unit, new_audit)
     if not corrected["complete"]:
         raise DomainError("DIFFICULTY_CORRECTION_UNRESOLVED", 422, original_audit=audit,
@@ -338,7 +346,7 @@ def correct_observations(data, output, items, unit, audit, invoke_correction):
     merged = deepcopy(original)
     merged["rows"] = [deepcopy(r if r["processing_status"] == "complete" else by_id[r["item_id"]]) for r in original["rows"]]
     merged["complete"], merged["protocol_errors"] = True, []
-    merged["execution_corrections"] = [deepcopy(policy) | {"corrected_output_hash": digest(revised),
+    merged["execution_corrections"] = [deepcopy(policy) | {"corrected_output_hash": provider_output_hash,
         "restored_output_hash": digest(restored),
         "corrected_fields_hash": corrected["fields_hash"], "complete": True,
         "locked_observation_changes": lock_changes,

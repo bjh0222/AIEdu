@@ -48,6 +48,23 @@ def test_only_bad_quote_can_be_corrected_while_easy_observation_and_valid_axes_s
     assert bound["execution_corrections"][0]["not_a_content_repair"]
 
 
+def test_wrapped_correction_output_binds_instead_of_failing_unresolved():
+    """Wire-shape regression: {"items": {"items": [...]}} hid a valid fix."""
+    from app.v2.difficulty_protocol import correct_observations
+    output, data, item, unit = sample()
+    output["items"][0]["nonroutine_operations"] = []
+    output["items"][0]["prerequisites"][0]["evidence"][0]["quote"] = "not present"
+    calls = []
+    def callback(**kw):
+        calls.append(kw)
+        revised = deepcopy(output)
+        revised["items"][0]["prerequisites"][0]["evidence"][0]["quote"] = "条件甲"
+        return {"items": {"items": revised["items"]}}, {"call_id": "wrapped"}
+    bound = correct_observations(data, output, [item], unit, {"call_id": "old"}, callback)
+    assert len(calls) == 1 and bound["complete"]
+    assert bound["rows"][0]["result"] == "violated"
+
+
 @pytest.mark.parametrize("fault", ["change_complete_axis", "remove_declared_id", "add_declared_id", "change_operation"])
 def test_quote_correction_rejects_semantic_identity_changes(fault):
     from app.v2.difficulty_protocol import correct_observations

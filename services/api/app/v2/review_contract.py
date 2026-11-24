@@ -18,7 +18,7 @@ from .contracts import DomainError, digest, sha
 from .quality_policy import context_domains, unit_domains
 
 EVIDENCE_VERSION = "server-evidence-catalog.v1"
-NORMALIZER_VERSION = "provider-contract-normalizer.v2"
+NORMALIZER_VERSION = "provider-contract-normalizer.v3"
 APPLICABILITY_VERSION = "zero-model-applicability.v2"
 PROTOCOL_VERSION = "quality-protocol-freeze.v8"
 MAX_CONTRACT_LIST_ITEMS = 256
@@ -47,6 +47,10 @@ _TRUE = {"true", "yes", "y", "是"}
 _FALSE = {"false", "no", "n", "否"}
 _NULL = {"", "null", "none"}
 _EVIDENCE_ID = re.compile(r"^E[0-9]{4,}$")
+# Root keys whose value must be the row list. A provider that nests the list
+# one level deeper ({"assessments": {"items": [...]}}) is an unambiguous
+# wire-shape variant: unwrapping never adds, drops or rewrites a row.
+_ROW_CONTAINERS = ("assessments", "items", "dimensions", "checks", "findings")
 _QUALITY_STAGES = {
     "checking",
     "checking_perturbation",
@@ -176,6 +180,15 @@ def normalize_contract(value: Any) -> tuple[Any, list[dict[str, str]]]:
                 result["result"] = normalized
         if "evidence" in result:
             result["evidence"] = _evidence_shape(result["evidence"], f"{path}.evidence", changes)
+        for key in _ROW_CONTAINERS:
+            inner = result.get(key)
+            if not isinstance(inner, dict) or len(inner) != 1:
+                continue
+            wrapper_value = next(iter(inner.values()))
+            if (isinstance(wrapper_value, list) and wrapper_value
+                    and all(isinstance(row, dict) for row in wrapper_value)):
+                result[key] = wrapper_value
+                _change(changes, f"{path}.{key}", "row_container_single_wrapper_unwrapped")
         return result
 
     return walk(deepcopy(value), "$"), changes

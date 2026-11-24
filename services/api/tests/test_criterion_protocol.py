@@ -430,6 +430,56 @@ def test_second_bounded_correction_can_remove_one_ambiguous_sibling_quote():
     assert request_id == result["rows"][0]["request_id"]
 
 
+def test_wrapped_correction_output_binds_instead_of_burning_attempts():
+    """Real failure f3444394: {"assessments": {"items": [...]}} hid a valid fix.
+
+    Both correction waves returned complete, well-evidenced rows nested under
+    an extra "items" wrapper. The binder discarded them as missing rows, the
+    lock restore re-synthesized the incomplete original, and the bounded loop
+    died CRITERION_CORRECTION_UNRESOLVED on a pure wire-shape variant.
+    """
+    d = data() | {"requests": [req("C4.constraints", None, {"requirement": "原需求限制"})]}
+    broken = output(d["requests"][0], rating=None)
+    broken["assessments"][0]["clauses"][0]["evidence"] = [
+        {"field": "unit:body", "quote": "不存在的引文"}]
+    calls = []
+
+    def callback(**kwargs):
+        calls.append(kwargs)
+        fixed = output(d["requests"][0], rating=None)
+        return {"assessments": {"items": fixed["assessments"]}}, {"call_id": "wrapped"}
+
+    result = correct_observations(d, broken, {"call_id": "original"}, "u", callback)
+    assert len(calls) == 1
+    assert result["complete"]
+    assert result["rows"][0]["clauses"][0]["result"] == "satisfied"
+    # The raw provider bytes keep their own audit identity.
+    assert result["execution_corrections"][0]["provider_output_hash"] == digest(
+        {"assessments": {"items": output(d["requests"][0], rating=None)["assessments"]}})
+
+
+def test_wrapped_original_output_binds_and_keeps_declared_locks():
+    """A wrapped original must still bind and still enforce semantic locks."""
+    d = data() | {"requests": [req("C4.constraints", None, {"requirement": "原需求限制"})]}
+    good = output(d["requests"][0], rating=None)
+    wrapped_good = {"assessments": {"items": deepcopy(good["assessments"])}}
+    bound = bind_observations(wrapped_good, d["requests"], review_fields(d), {}, "u")
+    assert bound["complete"]
+
+    broken = deepcopy(good)
+    broken["assessments"][0]["clauses"][0]["evidence"] = [
+        {"field": "unit:body", "quote": "不存在的引文"}]
+    wrapped_broken = {"assessments": {"items": deepcopy(broken["assessments"])}}
+
+    def callback(**kwargs):
+        relabelled = deepcopy(good)
+        relabelled["assessments"][0]["clauses"][0]["result"] = "violated"
+        return relabelled, {"call_id": "relabelling"}
+
+    with pytest.raises(DomainError, match="CRITERION_CORRECTION_CHANGED_OBSERVATION"):
+        correct_observations(d, wrapped_broken, {"call_id": "original"}, "u", callback)
+
+
 def test_incomplete_correction_cannot_bless_rewritten_locked_clause_on_retry():
     d = data() | {"requests": [req()]}
     broken = output()
