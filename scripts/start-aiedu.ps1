@@ -24,6 +24,7 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir      = $PSScriptRoot
 $RepoRoot       = Split-Path -Parent $ScriptDir
 $WebDir         = Join-Path $RepoRoot 'apps\web'
+$ApiRoot        = Join-Path $RepoRoot 'services\api'
 $BackendStarter = Join-Path $ScriptDir 'start-backend-v2.ps1'
 $PrivateRoot    = Join-Path $env:LOCALAPPDATA 'AI Edu 2.0'
 $PaidConfigRoot = $PrivateRoot
@@ -78,6 +79,40 @@ function Wait-ForHttp([string]$Url, [int]$Seconds) {
         } catch { Start-Sleep -Milliseconds 700 }
     }
     return $false
+}
+
+function Get-ExpectedProtocolHash {
+    # The health hash is frozen at backend import time; compute the same hash
+    # from the code on disk so a stale listener cannot pass a health-only check.
+    if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { return $null }
+    # Avoid embedded quotes: Windows PowerShell strips them from native -c
+    # arguments. manifest_hash is the final key added by the manifest builder.
+    $code = 'from app.v2.review_contract import review_protocol_manifest; print(list(review_protocol_manifest().values())[-1])'
+    Push-Location -LiteralPath $ApiRoot
+    try {
+        $output = & $PythonExe -c $code 2>$null
+        if ($LASTEXITCODE -ne 0) { return $null }
+        $line = @($output | Where-Object { $_ -and $_.Trim() } | Select-Object -Last 1)
+        if (-not $line) { return $null }
+        return ([string]$line[0]).Trim()
+    } catch {
+        return $null
+    } finally {
+        Pop-Location
+    }
+}
+
+function Assert-BackendProtocol([object]$Health) {
+    $expected = Get-ExpectedProtocolHash
+    if (-not $expected) {
+        Write-Log 'WARN' 'Backend protocol hash unavailable; cannot verify whether the listener loaded current quality code'
+        return
+    }
+    $actual = [string]$Health.quality_protocol_hash
+    if ($actual -ne $expected) {
+        throw "Backend protocol mismatch: running=$actual expected=$expected. Stop the old AI Edu backend before launching the current build."
+    }
+    Write-Log 'INFO' "Backend protocol hash verified: $expected"
 }
 
 function Test-TaskApi([string]$BaseUrl, [string]$Origin) {
@@ -255,11 +290,14 @@ try {
 # ---- 后端 ---------------------------------------------------------------
 $backendHealth = "http://127.0.0.1:$BackendPort/api/health"
 $backendReused = $false
+$protocolChecked = $false
 if (Test-TcpPort $BackendPort) {
     $backendReused = $true
     Write-Log 'WARN' "Backend port $BackendPort already listening; reusing existing instance, NOT restarting it."
     $h = Invoke-RestMethod -Uri $backendHealth -TimeoutSec 5
     if ($h.app -ne 'AI Edu' -or $h.status -ne 'ok') { throw "Port $BackendPort is not a healthy AI Edu backend" }
+    Assert-BackendProtocol $h
+    $protocolChecked = $true
 } else {
     if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
         Show-Notice "找不到私有 Python 环境：`n$PythonExe`n`n请按 services/api/README-v2.md 建立 venv。"; throw 'Private venv missing'
@@ -275,6 +313,9 @@ if (Test-TcpPort $BackendPort) {
 
 if (-not (Wait-ForHttp $backendHealth $TimeoutSec)) {
     Show-Notice "后端在 $TimeoutSec 秒内未就绪，请查看日志：`n$LogRoot"; throw 'Backend not healthy'
+}
+if (-not $protocolChecked) {
+    Assert-BackendProtocol (Invoke-RestMethod -Uri $backendHealth -TimeoutSec 5)
 }
 Write-Log 'INFO' "Backend healthy at $backendHealth (reused=$backendReused)"
 $backendCaps = Wait-ForTaskApi $backendUrl $webUrl $TimeoutSec
