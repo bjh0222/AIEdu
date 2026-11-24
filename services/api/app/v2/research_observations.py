@@ -64,8 +64,6 @@ def _indicator(raw, expected, unit):
     # even permit a dimension anchor through a stated vacuous alternative.
     # Bind that observation; never invent a universal all-indicators-decided
     # passing rule. C still has to apply this dimension's actual anchors.
-    zero_denominator = (num is None and _number(den) and den == 0
-        and _text(expected.get("missing_denominator_rule")) and _text(raw.get("unknown_reason")))
     missing_rule_value = expected.get("missing_denominator_rule")
     missing_rule = missing_rule_value.strip() if isinstance(missing_rule_value, str) else ""
     lower_rule = missing_rule.casefold()
@@ -82,6 +80,17 @@ def _indicator(raw, expected, unit):
             or ("零个" in missing_rule and "0" in missing_rule)
         )
     )
+    # A real-world encoder keeps writing numerator=0 for an explicit null
+    # exit ("If denominator is 0, return null, not 0"). When the frozen rule
+    # itself says null and the absence is grounded in unknown_reason, bind it
+    # as the null exit; the returned row still reports numerator=None, so no
+    # zero count is invented and the scored-zero contract stays exclusive.
+    explicit_null_rule = bool(missing_rule) and "null" in lower_rule
+    zero_denominator = (
+        _number(den) and den == 0 and _text(raw.get("unknown_reason"))
+        and not scored_zero_denominator
+        and ((num is None and bool(missing_rule))
+             or (_number(num) and num == 0 and explicit_null_rule)))
     if count_supplied and not counts and not zero_denominator and not scored_zero_denominator:
         errors.append("INDICATOR_COUNTS_INVALID")
     if enum_supplied and not _text(enum):

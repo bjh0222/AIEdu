@@ -193,6 +193,36 @@ def test_declared_zero_denominator_exit_is_grounded_null_not_execution_failure(s
     assert review(sample)["status"] == "incomplete"
 
 
+def test_declared_null_exit_binds_zero_encoded_counts_as_null(sample):
+    sample[1][0]["indicators"][0]["missing_denominator_rule"] = (
+        "If denominator is 0, return null for BU-3, not 0."
+    )
+    raw = sample[2]["dimensions"][0]["indicators"][0]
+    raw.update(applicable=True, numerator=0, denominator=0, enum_value=None,
+               unknown_reason="No outcome claim exists; denominator is 0, so BU-3 is null.")
+    report = review(sample)
+    indicator = report["dimensions"][0]["indicators"][0]
+    assert report["status"] == "completed"
+    assert indicator["result"] == "undecidable"
+    # The bound row keeps the rubric's null contract: no zero count is invented.
+    assert indicator["numerator"] is None and indicator["denominator"] == 0
+    raw.pop("unknown_reason")
+    assert review(sample)["status"] == "incomplete"
+
+
+def test_zero_encoded_counts_without_a_null_rule_stay_invalid(sample):
+    sample[1][0]["indicators"][0]["missing_denominator_rule"] = (
+        "If denominator is 0, treat the claim set as missing evidence."
+    )
+    raw = sample[2]["dimensions"][0]["indicators"][0]
+    raw.update(applicable=True, numerator=0, denominator=0, enum_value=None,
+               unknown_reason="No outcome claim exists.")
+    report = review(sample)
+    indicator = report["dimensions"][0]["indicators"][0]
+    assert report["status"] == "incomplete"
+    assert "INDICATOR_COUNTS_INVALID" in indicator["validation_errors"]
+
+
 def test_declared_zero_occurrence_best_case_can_be_scored_zero(sample):
     sample[1][0]["indicators"][0]["missing_denominator_rule"] = (
         "If there are zero absolute statements, set B3=0 (perfect compliance; "

@@ -8,8 +8,8 @@ from copy import deepcopy
 from .contracts import DomainError, digest
 from .research_observations import bind_batch, COMPLETE
 
-METHOD = "research-content-contract-correction.v5"
-SCHEMA_METHOD = "research-content-contract-correction.v6"
+METHOD = "research-content-contract-correction.v6"
+SCHEMA_METHOD = "research-content-contract-correction.v7"
 PROMPT = (
     "Correct ONLY the invalid C output observations listed in target_dimension_ids. "
     "This is output-contract correction, NOT B content repair: the fixed unit body, frozen user/A targets, "
@@ -24,10 +24,14 @@ PROMPT = (
     "invalidates the entire indicator, so never repeat a previously rejected non-unique quote and never add a "
     "replacement paraphrase. If no unique admissible evidence remains, leave the indicator unresolved. "
     "Execute every indicator. Use actual counts/enums or a grounded null with explicit limitation, never "
-    "invent a count to fill a field. An explicitly declared zero-denominator null exit remains null with "
-    "denominator zero. If the missing_denominator_rule instead explicitly says that zero occurrences are "
-    "the best case and score the indicator as 0, return applicable=true, numerator=0, denominator=0, "
-    "null enum_value, and literal evidence of the audited relevant text; do not turn that scored zero into null. "
+    "invent a count to fill a field. A zero-denominator null exit (the missing_denominator_rule says to "
+    "return null when the denominator is 0) must be encoded as applicable=true, numerator=null (JSON null, "
+    "never 0), denominator=0, enum_value=null, an unknown_reason naming what was audited and why no items "
+    "exist, and literal evidence of the audited relevant text; do not use numerator=0 for such a rule. "
+    "Only when the missing_denominator_rule instead explicitly defines zero occurrences as the best case "
+    "scored as 0 (for example perfect compliance or zero-occurrence = 0), return applicable=true, "
+    "numerator=0, denominator=0, null enum_value, and literal evidence of the audited relevant text; "
+    "do not turn that scored zero into null. "
     "When applicable is false, numerator, denominator and enum_value must all be null; put the "
     "non-applicability reason only in unknown_reason. A string beginning with null_ is not a substitute "
     "for the null enum field. "
