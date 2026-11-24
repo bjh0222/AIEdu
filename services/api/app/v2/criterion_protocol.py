@@ -6,12 +6,13 @@ content. Relational Q4 evidence requires the target endpoint as well as any peer
 Contract correction is bounded and cannot change already declared judgments or
 ratings to manufacture a pass. It never invokes a provider or changes storage.
 """
+import re
 from copy import deepcopy
 
 from .contracts import DomainError, canonical, digest, sha
 from .review_contract import prepare_review_output
 
-VERSION = "criterion-observation-protocol.v4"
+VERSION = "criterion-observation-protocol.v5"
 MAX_CORRECTIONS = 2  # Finite engineering retry budget, not a quality cutoff.
 RESULTS = {"satisfied", "violated", "undecidable", "not_applicable"}
 CONTEXT_KEYS = ("task", "sources", "requirements", "output_design", "review_scope", "literal_tool_observations")
@@ -23,6 +24,8 @@ INSTRUCTION = (
     "Prefer evidence_id from the supplied server evidence_catalog. When evidence_id is supplied, it overrides "
     "any model-written field/quote pair. Use a legacy field/quote pair only when no catalog entry represents the span. "
     "Every unit clause needs actual unit/item content evidence, even if you conclude no source or constraint applies. "
+    "Exception: when the clause text itself declares a frozen `unknown:` evidence binding, declare not_applicable "
+    "or undecidable with a specific reason; do not fabricate content quotes for it. "
     "Every item clause needs its own item's content. Only Q4.transfer may additionally cite peer item fields; "
     "cite both endpoints when comparing them, never peer-only or unit-body-only evidence for an item. "
     "Before returning, count exact occurrences of every quote within its named field. If the count is not exactly one, "
@@ -79,6 +82,23 @@ def _rows(output):
 
 def _matches(values, key, identity):
     return [v for v in values if isinstance(v, dict) and v.get(key) == identity]
+
+
+_FROZEN_UNKNOWN_BINDING = re.compile(r"^Use only the frozen evidence binding: unknown:")
+
+
+def frozen_unknown_binding(request, clause_id):
+    """True when the server-frozen clause text declares an unknown evidence binding.
+
+    requests_for_unit freezes A's evidence_ref verbatim into the clause text.
+    An `unknown:` binding is an honest planning record (for example, no selected
+    textbook fragment); no unit/item quote can establish it, so demanding
+    content evidence there manufactures an unresolvable correction loop instead
+    of a grounded abstention. The text is server-generated, never model input.
+    """
+    clauses = (request.get("criterion") or {}).get("clauses") or {}
+    text = clauses.get(clause_id)
+    return isinstance(text, str) and bool(_FROZEN_UNKNOWN_BINDING.match(text))
 
 
 def _rating(record, request, result):
@@ -144,6 +164,13 @@ def bind_observations(output, requests, fields, audit, unit_id, catalog=None):
                 else:
                     evidence.append(bound)
             item_id = request.get("item_id")
+            declared = value.get("result")
+            # A frozen `unknown:` evidence binding cannot carry content quotes;
+            # a declared abstention there is complete execution, not a missing
+            # observation. Positive/negative verdicts still need real evidence.
+            grounded_abstention = (item_id is None
+                and declared in ("not_applicable", "undecidable")
+                and frozen_unknown_binding(request, clause_id))
             if item_id:
                 own = "item:" + item_id + ":"
                 if not any(e["field"].startswith(own) for e in evidence):
@@ -152,11 +179,13 @@ def bind_observations(output, requests, fields, audit, unit_id, catalog=None):
                 peer_evidence = any(e["field"].startswith("item:") and not e["field"].startswith(own) for e in evidence)
                 if peer_evidence and not relational:
                     faults.append("cross_item_evidence_out_of_scope")
-                if relational and value.get("result") in ("satisfied", "violated") and not peer_evidence:
+                if relational and declared in ("satisfied", "violated") and not peer_evidence:
                     faults.append("comparison_endpoint_evidence_required")
+            elif grounded_abstention:
+                pass
             elif not any(e["field"] == "unit:body" or e["field"].startswith("item:") for e in evidence):
                 faults.append("content_evidence_required")
-            reason, declared = value.get("reason"), value.get("result")
+            reason = value.get("reason")
             if not isinstance(reason, str) or len(reason.strip()) < 8:
                 faults.append("specific_reason_required")
             if not isinstance(declared, str) or declared not in RESULTS or item_id and declared == "not_applicable":
@@ -443,11 +472,14 @@ def response_contract(requests, fields):
     for request in requests:
         clauses = []
         for clause_id in request["criterion"]["clauses"]:
+            # A frozen unknown binding is provable only by abstention; forcing
+            # minItems 1 here would invite fabricated quotes.
+            min_evidence = 0 if frozen_unknown_binding(request, clause_id) else 1
             clauses.append({"type": "object", "additionalProperties": False,
             "required": ["clause_id", "result", "reason", "evidence"], "properties": {
                     "clause_id": {"const": clause_id}, "result": {"enum": sorted(RESULTS)},
                     "reason": {"type": "string", "minLength": 8}, "evidence": {
-                        "type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": False,
+                        "type": "array", "minItems": min_evidence, "items": {"type": "object", "additionalProperties": False,
                             "oneOf": [
                                 {"required": ["evidence_id"], "properties": {
                                     "evidence_id": {"type": "string", "pattern": "^E[0-9]{4,}$"}}},

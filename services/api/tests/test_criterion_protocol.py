@@ -5,7 +5,8 @@ import pytest
 
 from app.v2.contracts import DomainError, digest
 from app.v2.criterion_protocol import (
-    bind_observations, correction_payload, correct_observations, merge_correction, review_fields,
+    bind_observations, correction_payload, correct_observations, merge_correction, response_contract,
+    review_fields,
 )
 from app.v2.review_contract import build_evidence_catalog
 
@@ -131,6 +132,82 @@ def test_server_evidence_id_replaces_model_quote_and_binds_exact_span():
     assert evidence["quote"] == catalog[0]["quote"]
     assert evidence["span_hash"] == catalog[0]["span_hash"]
     assert bound["normalization"]["change_count"] >= 1
+
+
+def _frozen_unknown_request(result="not_applicable", evidence=None):
+    """Server-frozen A.knowledge row whose evidence clause binds an unknown ref."""
+    contract = {"name": "Knowledge relation 甲 -> 乙", "target": "unit",
+        "clauses": {"relation": "Verify the actual content implements the frozen prerequisite relation.",
+            "condition": "No extra condition declared.",
+            "evidence": "Use only the frozen evidence binding: unknown:无选定教材片段，依据统计规划."},
+        "pass_condition": "The relation and any declared boundary must be located in actual content or remain undecidable.",
+        "source_ref": "frozen:A-teaching-arrangement:v6", "version": "aiedu.criterion-assessment.v1",
+        "check_id": "A.knowledge.deadbeef"}
+    contract["criterion_hash"] = digest(contract)
+    return {"request_id": "k", "check_id": contract["check_id"], "item_id": None,
+        "ordinal": None, "criterion": contract}, {"assessments": [{"request_id": "k", "rating": None,
+        "clauses": [
+            {"clause_id": "relation", "result": "satisfied", "reason": "正文实现了前置关系的具体理由。",
+             "evidence": [{"field": "unit:body", "quote": data()["fields"]["unit:body"]}]},
+            {"clause_id": "condition", "result": "satisfied", "reason": "无附加条件声明，正文一致。",
+             "evidence": [{"field": "unit:body", "quote": data()["fields"]["unit:body"]}]},
+            {"clause_id": "evidence", "result": result, "reason": "冻结绑定为 unknown，无教材片段可引。",
+             "evidence": [] if evidence is None else evidence}]}]}
+
+
+@pytest.mark.parametrize("declared", ["not_applicable", "undecidable"])
+def test_frozen_unknown_evidence_binding_accepts_grounded_abstention(declared):
+    """Real failure b21a529a: unknown evidence_ref made content evidence impossible."""
+    request, out = _frozen_unknown_request(declared)
+    bound = bind_observations(out, [request], review_fields(data()), {}, "u")
+    assert bound["complete"]
+    assert bound["rows"][0]["clauses"][2]["result"] == declared
+    assert bound["rows"][0]["clauses"][2]["protocol_errors"] == []
+
+
+def test_frozen_unknown_binding_still_rejects_positive_verdict_without_evidence():
+    request, out = _frozen_unknown_request("satisfied")
+    bound = bind_observations(out, [request], review_fields(data()), {}, "u")
+    assert not bound["complete"]
+    assert "content_evidence_required" in bound["rows"][0]["clauses"][2]["protocol_errors"]
+
+
+def test_frozen_unknown_abstention_keeps_reason_and_context_evidence_requirements():
+    request, out = _frozen_unknown_request("not_applicable")
+    out["assessments"][0]["clauses"][2]["reason"] = "短"
+    bound = bind_observations(out, [request], review_fields(data()), {}, "u")
+    assert not bound["complete"]
+    assert "specific_reason_required" in bound["rows"][0]["clauses"][2]["protocol_errors"]
+
+
+def test_frozen_unknown_clause_contract_allows_empty_evidence_only_there():
+    request, _ = _frozen_unknown_request()
+    fields = review_fields(data())
+    schema = response_contract([request], fields)
+    clause_schemas = schema["properties"]["assessments"]["items"]["anyOf"][0]["properties"]["clauses"]["items"]["anyOf"]
+    by_id = {c["properties"]["clause_id"]["const"]: c for c in clause_schemas}
+    assert by_id["evidence"]["properties"]["evidence"]["minItems"] == 0
+    assert by_id["relation"]["properties"]["evidence"]["minItems"] == 1
+
+
+def test_correction_completes_after_frozen_unknown_abstention_is_accepted():
+    """The bounded loop must finish once the structural impossibility is gone."""
+    request, out = _frozen_unknown_request("undecidable")
+    out["assessments"][0]["clauses"][0]["evidence"] = [{"field": "unit:body", "quote": "无法绑定的引文"}]
+    d = data() | {"requests": [request]}
+    calls = []
+
+    def invoke(*, data, system, output_schema):
+        calls.append(1)
+        fixed = deepcopy(out)
+        fixed["assessments"][0]["clauses"][0]["evidence"] = [
+            {"field": "unit:body", "quote": data["fields"]["unit:body"]}]
+        return fixed, {"call_id": "corr"}
+
+    bound = correct_observations(d, out, {"call_id": "orig"}, "u", invoke)
+    assert bound["complete"]
+    assert len(calls) == 1
+    assert bound["rows"][0]["clauses"][2]["result"] == "undecidable"
 
 
 def test_extra_batch_targets_are_recorded_not_used_to_gain_credit():
