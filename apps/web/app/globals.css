@@ -549,15 +549,21 @@ dialog.dlg::backdrop { background: rgba(10, 16, 22, 0.45); }
   .chat-cell { display: none !important; }
   .chat-toggle-btn { display: none !important; }
 }
-@media (max-width: 1279px) {
+@media (max-width: 767px) {
   .panel-resize { display: none !important; }
 }
 
 /* ===== 2026-11-22 轮3-Agent1-续：导航拖拽 / 聊天卡自适应与滚动联动 ===== */
 /* 主 Agent 预置共享样式；子 Agent 只改各自 TSX，不改本文件，避免并发覆盖。 */
 .sidebar .panel-resize { right: 0; width: 6px; }
-@media (max-width: 1279px) { .sidebar .panel-resize { display: none !important; } }
+@media (max-width: 767px) { .sidebar .panel-resize { display: none !important; } }
 .panel-resize:hover { background: color-mix(in srgb, var(--primary) 30%, transparent); }
+/* 触屏设备加大拖拽热区（iPad/安卓平板），手机仍隐藏 */
+@media (pointer: coarse) and (min-width: 768px) {
+  .panel-resize { width: 20px; }
+  .panel-resize.right { right: -10px; }
+  .panel-resize.left { left: -10px; }
+}
 .chat-quote-flag { display: inline-flex; align-items: center; gap: 6px; margin: 0; padding: 5px 8px; border-radius: 8px; background: var(--bg); border: 1px dashed var(--line-strong); font-size: 12px; color: var(--ink-2); }
 .chat-expand-tab { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 45; writing-mode: vertical-rl; padding: 12px 4px; border: 1px solid var(--line); border-right: 0; border-radius: 8px 0 0 8px; background: var(--surface); color: var(--ink-2); cursor: pointer; }
 .chat-expand-tab:hover { color: var(--primary); }

@@ -209,8 +209,8 @@ export default function Reader({ taskId }: { taskId: string }) {
 
   // 平板/桌面列宽：桌面用可持久化宽度，平板用固定窄列；竖屏不提供停靠目录（改用抽屉）。
   const rulerDocked = !focus && rulerShown && (tier === "desktop" || tier === "tablet-land");
-  const rulerDockedWidth = tier === "desktop" ? rulerWidth : 200;
-  const chatWidthEffective = tier === "tablet-land" ? 300 : tier === "tablet-port" ? 280 : chatWidth;
+  const rulerDockedWidth = rulerWidth;
+  const chatWidthEffective = tier === "tablet-port" ? Math.min(Math.max(chatWidth, 240), 320) : chatWidth;
   const gridColumns = focus || tier === "phone"
     ? "minmax(0, 1fr)"
     : `${rulerDocked ? `${rulerDockedWidth}px ` : ""}minmax(0, 1fr)${chatOpen ? ` ${chatWidthEffective}px` : ""}`;
@@ -291,7 +291,7 @@ export default function Reader({ taskId }: { taskId: string }) {
         {rulerDocked && (
           <aside className="ruler" aria-label="目录与章节" style={{ width: rulerDockedWidth }}>
             {ruler}
-            {tier === "desktop" && <ResizeHandle side="right" label="拖拽调整文内位置面板宽度" onPointerDown={startRulerResize} />}
+            <ResizeHandle side="right" label="拖拽调整文内位置面板宽度" onPointerDown={startRulerResize} />
           </aside>
         )}
 
@@ -331,7 +331,7 @@ export default function Reader({ taskId }: { taskId: string }) {
         {chatOpen && !focus && (
           <div className="chat-cell" style={{ width: chatWidthEffective }}>
             <ReaderChat taskId={taskId} read={read} currentUnitId={unit?.unit_id ?? null} open={chatOpen} onOpenChange={setChatOpen} width={chatWidth} />
-            <ResizeHandle side="left" label="拖拽调整 AI 聊天面板宽度" onPointerDown={startChatResize} />
+            {tier !== "phone" && <ResizeHandle side="left" label="拖拽调整 AI 聊天面板宽度" onPointerDown={startChatResize} />}
           </div>
         )}
         {!chatOpen && !focus && (
