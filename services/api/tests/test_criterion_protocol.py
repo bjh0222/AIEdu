@@ -485,6 +485,24 @@ def test_duplicate_invalid_clause_cannot_change_declared_result_before_retry():
     assert len(calls) == 2
 
 
+def test_initial_duplicate_with_unanimous_result_is_still_a_semantic_lock():
+    d = data() | {"requests": [req()]}
+    broken = output()
+    broken["assessments"][0]["clauses"].append(
+        deepcopy(broken["assessments"][0]["clauses"][1]))
+    calls = []
+
+    def callback(**kwargs):
+        calls.append(kwargs)
+        revised = output()
+        revised["assessments"][0]["clauses"][1]["result"] = "violated"
+        return revised, {"call_id": "changed-result"}
+
+    with pytest.raises(DomainError, match="CRITERION_CORRECTION_CHANGED_OBSERVATION"):
+        correct_observations(d, broken, {"call_id": "original"}, "u", callback)
+    assert len(calls) == 1
+
+
 def test_missing_invalid_clause_cannot_change_declared_result_before_retry():
     d = data() | {"requests": [req()]}
     broken = output()

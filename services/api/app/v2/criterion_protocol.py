@@ -250,8 +250,14 @@ def persistent_result_locks(bound, output):
         values = values if isinstance(values, list) else []
         for clause in row["clauses"]:
             candidates = _matches(values, "clause_id", clause["clause_id"])
-            value = candidates[0] if len(candidates) == 1 else {}
-            declared = value.get("result")
+            value = candidates[0] if candidates else {}
+            declared_results = {c.get("result") for c in candidates
+                                if isinstance(c.get("result"), str)
+                                and c.get("result") in RESULTS}
+            # A duplicated clause with one unanimous semantic result still
+            # carries a declared verdict. Preserve that verdict; conflicting
+            # duplicates remain an execution defect with no invented lock.
+            declared = next(iter(declared_results)) if len(declared_results) == 1 else None
             if isinstance(declared, str) and declared in RESULTS:
                 locks.setdefault(row["request_id"], {})[clause["clause_id"]] = {
                     "result": declared,
