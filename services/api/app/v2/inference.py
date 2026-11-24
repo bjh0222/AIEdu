@@ -82,6 +82,61 @@ def complete_object_prefix(content):
     return None
 
 
+def recover_assessment_sequence(content):
+    """Recover a stopped response that emitted assessment objects after
+    the first root object, separated by a comma.
+
+    This accepts only the exact provider shape:
+    `{"assessments":[...]}`, followed by one or more bare assessment objects
+    with request_id/clauses and no unrelated root keys. It does not repair
+    truncation, prose, fences or missing fields; the normal binder still
+    validates every request, clause and evidence span.
+    """
+    if not isinstance(content, str):
+        return None
+    text = content.strip()
+    decoder = json.JSONDecoder()
+    values, pos = [], 0
+    while pos < len(text):
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        if pos >= len(text):
+            break
+        if values:
+            # The provider may append the outer array/object closers after the
+            # bare second assessment. Those closers are redundant, not another
+            # value; accept only closers and never prose or a missing object.
+            tail = text[pos:].strip()
+            if tail and all(char in "}] \r\n\t" for char in tail):
+                break
+            if text[pos] != ",":
+                return None
+            pos += 1
+            while pos < len(text) and text[pos].isspace():
+                pos += 1
+            if pos >= len(text):
+                return None
+        try:
+            value, end = decoder.raw_decode(text, pos)
+        except ValueError:
+            return None
+        values.append(value)
+        pos = end
+    if len(values) < 2 or len(values) > 257:
+        return None
+    first, extras = values[0], values[1:]
+    if not isinstance(first, dict) or set(first) != {"assessments"} \
+            or not isinstance(first["assessments"], list):
+        return None
+    allowed = {"request_id", "rating", "clauses"}
+    for extra in extras:
+        if not isinstance(extra, dict) or set(extra) - allowed \
+                or not isinstance(extra.get("request_id"), str) \
+                or not isinstance(extra.get("clauses"), list):
+            return None
+    return {"assessments": first["assessments"] + extras}
+
+
 class AuditedProvider(OpenAICompatibleProvider):
     def __init__(self, profile):
         super().__init__(profile)
@@ -156,10 +211,18 @@ class AuditedProvider(OpenAICompatibleProvider):
             try:
                 output = extract_json(content, str(finish_reason or ""))
             except LLMError:
-                output = complete_object_prefix(content) if finish_reason == "stop" else None
+                output, method = None, None
+                if finish_reason == "stop":
+                    output = complete_object_prefix(content)
+                    if output is not None:
+                        method = "complete_object_redundant_closers.v1"
+                    else:
+                        output = recover_assessment_sequence(content)
+                        if output is not None:
+                            method = "assessment_sequence_recovery.v1"
                 if output is None:
                     raise
-                self.response_normalization = {"method": "complete_object_redundant_closers.v1", "raw_hash": digest(content)}
+                self.response_normalization = {"method": method, "raw_hash": digest(content)}
         except (KeyError, IndexError, TypeError, ValueError, LLMError):
             safe_content = content.replace(self.api_key, "[REDACTED]") if self.api_key and isinstance(content, str) else content
             diagnostics = {"validation_reason": validation, "finish_reason": finish_reason if finish_reason in
@@ -291,9 +354,13 @@ def invoke(run_id, worker, epoch, state, *, stage, unit_id, data, system, role="
                     continue
                 raw = load(BlobStore().get(prior.result_blob_hash).decode())
                 recovered = complete_object_prefix(raw.get("provider_content"))
+                method = "complete_object_redundant_closers.v1"
+                if recovered is None:
+                    recovered = recover_assessment_sequence(raw.get("provider_content"))
+                    method = "assessment_sequence_recovery.v1"
                 if recovered is not None:
                     return recovered, {"call_id": prior.call_id, "cache": "explicit_resume_local_parse_recovery",
-                        "processing_method": "complete_object_redundant_closers.v1", "original_dispatch_outcome": "failed",
+                        "processing_method": method, "original_dispatch_outcome": "failed",
                         "request_hash": req, "raw_result_blob_hash": prior.result_blob_hash,
                         "usage": load(prior.usage_json) if prior.usage_json else None, "model_family": prior.model_family,
                         "new_provider_dispatch": False}

@@ -1,4 +1,5 @@
 """Provider failures retain distinguishable, non-sensitive processing evidence."""
+import json
 import re
 from types import SimpleNamespace
 import httpx
@@ -15,6 +16,30 @@ def test_complete_prefix_never_salvages_truncation_or_drops_another_value():
     assert complete_object_prefix('{"a":{"b":1}}}') == {"a": {"b": 1}}
     for invalid in ('{"a":', '{"a":1', '{"a":1}{"b":2}', '{"a":1} prose', '```json\n{"a":1}\n```'):
         assert complete_object_prefix(invalid) is None
+
+
+def test_assessment_sequence_recovery_is_narrow_and_lossless():
+    from app.v2.inference import recover_assessment_sequence
+    first = {"request_id": "a", "rating": None, "clauses": []}
+    second = {"request_id": "b", "rating": None, "clauses": []}
+    content = '{"assessments":[' + json.dumps(first) + ']},' + json.dumps(second) + ']}'
+    assert recover_assessment_sequence(content) == {"assessments": [first, second]}
+    assert recover_assessment_sequence('{"assessments":[]},{"request_id":"b","clauses":[]} prose') is None
+    assert recover_assessment_sequence('{"items":[]},{"request_id":"b","clauses":[]}') is None
+    assert recover_assessment_sequence('{"assessments":[]},{"request_id":"b","clauses":[],"extra":1}') is None
+    assert recover_assessment_sequence('{"assessments":[]},{"request_id":"b","clauses":[]') is None
+
+
+def test_stopped_assessment_sequence_is_recovered_before_binding(monkeypatch):
+    from app.v2.inference import AuditedProvider
+    content = ('{"assessments":[{"request_id":"a","rating":null,"clauses":[]}]},'
+               '{"request_id":"b","rating":null,"clauses":[]}]}')
+    monkeypatch.setattr("app.v2.inference.httpx.post", lambda *a, **k: httpx.Response(200,
+        json={"choices": [{"finish_reason": "stop", "message": {"content": content}}]}))
+    provider = AuditedProvider(profile())
+    result, _, _ = provider.complete_json("json", "input")
+    assert [row["request_id"] for row in result["assessments"]] == ["a", "b"]
+    assert provider.response_normalization["method"] == "assessment_sequence_recovery.v1"
 
 
 def test_json_mode_prompt_always_contains_literal_json():
