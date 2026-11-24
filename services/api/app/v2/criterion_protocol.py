@@ -240,22 +240,40 @@ def correction_payload(data, original_output, bound, *, attempt):
 
 
 def merge_correction(original, corrected, payload):
-    """Keep original valid siblings byte-for-byte; record, never erase, the failure."""
+    """Keep original valid siblings byte-for-byte; record, never erase, the failure.
+
+    A locked complete clause whose corrected twin restates the same verdict with
+    different prose/evidence is not a new judgment: the locked observation is
+    restored byte-for-byte and the rewrite is recorded. A changed verdict,
+    rating, or a locked clause that becomes invalid remains a hard rejection.
+    """
     policy = payload["execution_correction"]
     if policy["original_fields_hash"] != original["fields_hash"] or policy["fields_hash"] != corrected["fields_hash"] or \
        policy["original_binding_hash"] != binding_identity(original) or policy["target_set_hash"] != corrected["request_set_hash"] or \
        original["unit_id"] != corrected["unit_id"]:
         raise DomainError("CRITERION_CORRECTION_INPUT_MISMATCH", 409)
     rows = {r["request_id"]: r for r in corrected["rows"]}
+    locked_clause_changes = []
     for lock in policy["locks"]:
         row = rows[lock["request_id"]]
         if row["processing_status"] != "complete":
             continue  # Still invalid: not a newly accepted judgment.
         by_id = {c["clause_id"]: c for c in row["clauses"]}
-        if lock["declared_rating"] is not None and row["rating"] != lock["declared_rating"] or \
-           any(by_id[c["clause_id"]]["result"] != c["result"] for c in lock["declared_results"]) or \
-           any(by_id[c["clause_id"]] != c for c in lock["complete_clauses"]):
+        if lock["declared_rating"] is not None and row["rating"] != lock["declared_rating"]:
             raise DomainError("CRITERION_CORRECTION_CHANGED_OBSERVATION", 409)
+        if any(by_id[c["clause_id"]]["result"] != c["result"] for c in lock["declared_results"]):
+            raise DomainError("CRITERION_CORRECTION_CHANGED_OBSERVATION", 409)
+        for locked in lock["complete_clauses"]:
+            candidate = by_id[locked["clause_id"]]
+            if candidate == locked:
+                continue
+            if candidate["invalid_or_missing_observation"] or candidate["result"] != locked["result"]:
+                raise DomainError("CRITERION_CORRECTION_CHANGED_OBSERVATION", 409)
+            locked_clause_changes.append({"request_id": lock["request_id"],
+                "clause_id": locked["clause_id"],
+                "fields": sorted(k for k in set(locked) | set(candidate) if locked.get(k) != candidate.get(k))})
+            by_id[locked["clause_id"]] = deepcopy(locked)
+            row["clauses"] = [by_id[c["clause_id"]] for c in row["clauses"]]
     merged = deepcopy(original)
     merged["fields_hash"] = corrected["fields_hash"]
     merged["output_hash"] = corrected["output_hash"]
@@ -264,7 +282,8 @@ def merge_correction(original, corrected, payload):
     merged["protocol_errors"] = deepcopy(corrected["protocol_errors"])
     merged["execution_corrections"] = [deepcopy(policy) | {"corrected_binding_hash": digest(corrected),
         "complete": corrected["complete"], "protocol_errors": corrected["protocol_errors"],
-        "original_protocol_errors": deepcopy(original["protocol_errors"])}]
+        "original_protocol_errors": deepcopy(original["protocol_errors"]),
+        "locked_clause_changes": locked_clause_changes}]
     return merged
 
 

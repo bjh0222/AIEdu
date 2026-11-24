@@ -164,20 +164,62 @@ def test_correction_reexecutes_only_missing_targets_and_freezes_valid_siblings()
     assert initial["rows"][1]["processing_status"] == "invalid_or_missing_observation"
 
 
-def test_correction_cannot_change_prior_declared_result_rating_or_valid_clause():
+def test_correction_cannot_change_prior_declared_result_or_rating():
     d = data() | {"requests": [req()]}
     o = output()
     o["assessments"][0]["clauses"][1]["evidence"][0]["quote"] = "无法绑定"
     initial = bind_observations(o, d["requests"], review_fields(d), {}, "u")
     p = correction_payload(d, o, initial, attempt=1)
-    for fault in ("rating", "result", "valid_reason"):
+    for fault in ("rating", "result"):
         new = output()
         if fault == "rating": new["assessments"][0]["rating"] = 3
         if fault == "result": new["assessments"][0]["clauses"][1]["result"] = "violated"
-        if fault == "valid_reason": new["assessments"][0]["clauses"][0]["reason"] = "试图改变有效观察的推理理由。"
         b = bind_observations(new, d["requests"], review_fields(d), {}, "u")
         with pytest.raises(DomainError, match="CRITERION_CORRECTION_CHANGED_OBSERVATION"):
             merge_correction(initial, b, p)
+
+
+def test_correction_rewrites_of_locked_prose_are_recorded_not_applied():
+    d = data() | {"requests": [req()]}
+    o = output()
+    o["assessments"][0]["clauses"][1]["evidence"][0]["quote"] = "无法绑定"
+    initial = bind_observations(o, d["requests"], review_fields(d), {}, "u")
+    p = correction_payload(d, o, initial, attempt=1)
+    locked_clause = deepcopy(initial["rows"][0]["clauses"][0])
+    # Real command-line-task failure: the correction restates the same verdict
+    # with reworded reasons and an enlarged evidence list for locked clauses.
+    new = output()
+    new["assessments"][0]["clauses"][0]["reason"] = "同结论但换了措辞的推理理由。"
+    new["assessments"][0]["clauses"][0]["evidence"].append(
+        {"field": "unit:body", "quote": data()["fields"]["unit:body"]})
+    b = bind_observations(new, d["requests"], review_fields(d), {}, "u")
+    merged = merge_correction(initial, b, p)
+    assert merged["complete"]
+    row = merged["rows"][0]
+    assert row["clauses"][0] == locked_clause  # byte-for-byte locked observation
+    assert row["clauses"][1] == b["rows"][0]["clauses"][1]  # newly accepted observation
+    changes = merged["execution_corrections"][0]["locked_clause_changes"]
+    assert changes == [{"request_id": "r", "clause_id": locked_clause["clause_id"],
+        "fields": ["evidence", "reason"]}]
+    assert row["clauses"][1] == b["rows"][0]["clauses"][1]  # newly accepted observation
+
+
+def test_correction_invalidating_a_locked_clause_stays_incomplete_for_retry():
+    d = data() | {"requests": [req()]}
+    o = output()
+    o["assessments"][0]["clauses"][1]["evidence"][0]["quote"] = "无法绑定"
+    initial = bind_observations(o, d["requests"], review_fields(d), {}, "u")
+    p = correction_payload(d, o, initial, attempt=1)
+    new = output()
+    new["assessments"][0]["clauses"][0]["evidence"][0]["quote"] = "无法绑定"
+    b = bind_observations(new, d["requests"], review_fields(d), {}, "u")
+    merged = merge_correction(initial, b, p)
+    # The row is incomplete again, so the bounded loop retries instead of
+    # accepting a correction that broke a previously complete clause.
+    assert not merged["complete"]
+    assert merged["rows"][0]["processing_status"] == "invalid_or_missing_observation"
+    assert merged["rows"][0]["clauses"][0]["protocol_errors"] == \
+        ["current_item_evidence_required", "invalid_evidence_quote"]
 
 
 def test_unfixable_or_exhausted_correction_cannot_loop_or_relabel_success():
