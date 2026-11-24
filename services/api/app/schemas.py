@@ -13,6 +13,7 @@ class HealthOut(BaseModel):
     app: str = "AI Edu"
     demo: bool
     llm_configured: bool
+    quality_protocol_hash: str
 
 
 class TokenUsage(BaseModel):

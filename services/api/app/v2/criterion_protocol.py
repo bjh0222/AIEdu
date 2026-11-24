@@ -239,7 +239,148 @@ def correction_payload(data, original_output, bound, *, attempt):
         "previous_output_untrusted": deepcopy(original_output), "execution_correction": correction}
 
 
-def merge_correction(original, corrected, payload):
+def persistent_result_locks(bound, output):
+    """Capture declared clause results that must survive every correction try."""
+    raw_rows = _rows(output)
+    locks = {}
+    for row in bound["rows"]:
+        matches = _matches(raw_rows, "request_id", row["request_id"])
+        raw = matches[0] if len(matches) == 1 else {}
+        values = raw.get("clauses", []) if isinstance(raw, dict) else []
+        values = values if isinstance(values, list) else []
+        for clause in row["clauses"]:
+            candidates = _matches(values, "clause_id", clause["clause_id"])
+            value = candidates[0] if len(candidates) == 1 else {}
+            declared = value.get("result")
+            if isinstance(declared, str) and declared in RESULTS:
+                locks.setdefault(row["request_id"], {})[clause["clause_id"]] = {
+                    "result": declared,
+                    "reason": clause.get("reason"),
+                    "evidence": [{"field": e["field"], "quote": e["quote"]}
+                                 for e in clause.get("evidence", [])],
+                }
+    return locks
+
+
+def restore_locked_clauses(output, policy, persistent_locks=None):
+    """Restore locked complete clauses before a correction is bound.
+
+    A correction may legitimately leave the target incomplete on its first
+    try. It must not thereby replace an already accepted clause with a new
+    reason/evidence/rating that becomes the lock for the next attempt. Missing
+    or malformed locked fields are restored; a changed semantic result is a
+    hard rejection. The raw provider output remains in its immutable receipt.
+    """
+    restored = deepcopy(output)
+    changes = []
+    if not isinstance(restored, dict):
+        restored = {}
+    if not isinstance(restored.get("assessments"), list):
+        restored["assessments"] = []
+    raw_rows = _rows(restored)
+    for lock in policy["locks"]:
+        matches = _matches(raw_rows, "request_id", lock["request_id"])
+        if len(matches) != 1:
+            if lock.get("complete_clauses"):
+                synthetic = {"request_id": lock["request_id"], "clauses": [
+                    {"clause_id": locked["clause_id"], "result": locked["result"],
+                     "reason": locked["reason"],
+                     "evidence": [{"field": e["field"], "quote": e["quote"]}
+                                  for e in locked["evidence"]]}
+                    for locked in lock["complete_clauses"]
+                ]}
+                if type(lock.get("declared_rating")) is int:
+                    synthetic["rating"] = lock["declared_rating"]
+                if matches:
+                    raw_rows[:] = [r for r in raw_rows
+                                   if not isinstance(r, dict)
+                                   or r.get("request_id") != lock["request_id"]]
+                raw_rows.append(synthetic)
+                changes.append({"request_id": lock["request_id"],
+                    "action": "restored_missing_assessment" if not matches
+                    else "restored_duplicate_assessment"})
+            continue
+        row = matches[0]
+        clauses = row.get("clauses")
+        clauses = clauses if isinstance(clauses, list) else []
+        for locked in lock.get("complete_clauses", []):
+            candidates = _matches(clauses, "clause_id", locked["clause_id"])
+            projection = {"clause_id": locked["clause_id"], "result": locked["result"],
+                "reason": locked["reason"],
+                "evidence": [{"field": e["field"], "quote": e["quote"]}
+                             for e in locked["evidence"]]}
+            if not candidates:
+                clauses.append(projection)
+                changes.append({"request_id": lock["request_id"],
+                    "clause_id": locked["clause_id"], "action": "restored_missing_clause"})
+                continue
+            if len(candidates) != 1:
+                clauses[:] = [c for c in clauses
+                              if not isinstance(c, dict)
+                              or c.get("clause_id") != locked["clause_id"]]
+                clauses.append(projection)
+                changes.append({"request_id": lock["request_id"],
+                    "clause_id": locked["clause_id"], "action": "restored_duplicate_clause"})
+                continue
+            candidate = candidates[0]
+            declared = candidate.get("result")
+            if isinstance(declared, str) and declared in RESULTS and declared != locked["result"]:
+                raise DomainError("CRITERION_CORRECTION_CHANGED_OBSERVATION", 409)
+            if candidate != projection:
+                changes.append({"request_id": lock["request_id"],
+                    "clause_id": locked["clause_id"], "action": "restored_complete_clause",
+                    "fields": sorted(k for k in set(candidate) | set(projection)
+                                     if candidate.get(k) != projection.get(k))})
+                candidate.clear()
+                candidate.update(deepcopy(projection))
+        # A declared result on an incomplete clause is a semantic lock even
+        # when its evidence/field is malformed. Persistent locks come from the
+        # original observation, so a partial first correction cannot erase the
+        # declaration and let attempt two silently choose another verdict.
+        declared_values = {c["clause_id"]: {"result": c["result"]}
+                           for c in lock.get("declared_results", [])}
+        declared_values.update(deepcopy(
+            (persistent_locks or {}).get(lock["request_id"], {})))
+        complete_ids = {c["clause_id"] for c in lock.get("complete_clauses", [])}
+        for clause_id, declared in declared_values.items():
+            if clause_id in complete_ids:
+                continue
+            candidates = _matches(clauses, "clause_id", clause_id)
+            if any(isinstance(c.get("result"), str) and c["result"] in RESULTS
+                   and c["result"] != declared["result"] for c in candidates):
+                raise DomainError("CRITERION_CORRECTION_CHANGED_OBSERVATION", 409)
+            if len(candidates) == 1:
+                candidate = candidates[0]
+                if candidate.get("result") != declared["result"]:
+                    candidate["result"] = declared["result"]
+                    changes.append({"request_id": lock["request_id"],
+                        "clause_id": clause_id, "action": "restored_declared_result"})
+                continue
+            preserved = {
+                "clause_id": clause_id, "result": declared["result"],
+                "reason": declared.get("reason") or "保留原始语义判断",
+                "evidence": deepcopy(declared.get("evidence", [])),
+            }
+            clauses[:] = [c for c in clauses if not isinstance(c, dict)
+                          or c.get("clause_id") != clause_id]
+            clauses.append(preserved)
+            changes.append({"request_id": lock["request_id"], "clause_id": clause_id,
+                "action": "restored_missing_declared_clause" if not candidates
+                else "restored_duplicate_declared_clause"})
+        rating = lock.get("declared_rating")
+        if type(rating) is int:
+            candidate = row.get("rating")
+            if type(candidate) is int and candidate != rating:
+                raise DomainError("CRITERION_CORRECTION_CHANGED_OBSERVATION", 409)
+            if candidate != rating:
+                changes.append({"request_id": lock["request_id"], "action": "restored_rating",
+                    "before_type": type(candidate).__name__, "after_type": "int"})
+                row["rating"] = rating
+        row["clauses"] = clauses
+    return restored, changes
+
+
+def merge_correction(original, corrected, payload, *, restorations=None, provider_output_hash=None):
     """Keep original valid siblings byte-for-byte; record, never erase, the failure.
 
     A locked complete clause whose corrected twin restates the same verdict with
@@ -283,7 +424,10 @@ def merge_correction(original, corrected, payload):
     merged["execution_corrections"] = [deepcopy(policy) | {"corrected_binding_hash": digest(corrected),
         "complete": corrected["complete"], "protocol_errors": corrected["protocol_errors"],
         "original_protocol_errors": deepcopy(original["protocol_errors"]),
-        "locked_clause_changes": locked_clause_changes}]
+        "locked_clause_changes": locked_clause_changes,
+        "restorations": deepcopy(restorations or []),
+        "provider_output_hash": provider_output_hash or corrected["output_hash"],
+        "restored_output_hash": corrected["output_hash"]}]
     return merged
 
 
@@ -329,18 +473,22 @@ def correct_observations(data, output, audit, unit_id, invoke_correction):
         output, data["requests"], data["fields"], audit, unit_id, catalog)
     if original["complete"]:
         return original
+    persistent_locks = persistent_result_locks(original, output)
     current, current_output, correction_audits, history = original, output, [], []
     for attempt in range(1, MAX_CORRECTIONS + 1):
         payload = correction_payload(data, current_output, current, attempt=attempt)
         revised, new_audit = invoke_correction(data=payload, system=INSTRUCTION,
             output_schema=response_contract(payload["requests"], payload["fields"]))
         correction_audits.append(new_audit)
+        restored, restorations = restore_locked_clauses(
+            revised, payload["execution_correction"], persistent_locks)
         corrected = bind_observations(
-            revised, payload["requests"], payload["fields"], new_audit, unit_id,
+            restored, payload["requests"], payload["fields"], new_audit, unit_id,
             payload.get("evidence_catalog") if isinstance(payload.get("evidence_catalog"), list) else catalog)
-        merged = merge_correction(current, corrected, payload)
+        merged = merge_correction(current, corrected, payload, restorations=restorations,
+                                  provider_output_hash=digest(revised))
         history.extend(merged["execution_corrections"])
-        current, current_output = merged, revised
+        current, current_output = merged, restored
         if merged["complete"]:
             merged["execution_corrections"] = history
             return merged

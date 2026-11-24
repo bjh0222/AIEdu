@@ -249,6 +249,19 @@ def test_untrusted_malformed_output_does_not_crash_or_pass(malformed):
     assert not b["complete"]
 
 
+def test_over_limit_assessment_list_fails_explicitly_not_by_truncation():
+    valid = output()["assessments"][0]
+    oversized = {"assessments": [valid] + [
+        {"request_id": f"extra-{index}", "clauses": []}
+        for index in range(256)
+    ]}
+    b = bind_observations(oversized, [req()], review_fields(data()), {}, "u")
+    assert not b["complete"]
+    assert "unrequested_assessment" in b["protocol_errors"]
+    assert any(row["code"] == "list_over_limit"
+               for row in b["normalization"]["changes"])
+
+
 def test_individual_source_bytes_have_their_own_quote_fields():
     d = data() | {"sources": [{"source_id": "reference", "text": "独立来源原文", "sha256": "not_a_verified_hash"}]}
     fields = review_fields(d)
@@ -338,6 +351,160 @@ def test_second_bounded_correction_can_remove_one_ambiguous_sibling_quote():
     assert result["rows"][0]["audit"]["call_id"] == "good-second"
     assert [row["attempt"] for row in result["execution_corrections"]] == [1, 2]
     assert request_id == result["rows"][0]["request_id"]
+
+
+def test_incomplete_correction_cannot_bless_rewritten_locked_clause_on_retry():
+    d = data() | {"requests": [req()]}
+    broken = output()
+    broken["assessments"][0]["clauses"][1]["evidence"][0]["quote"] = "缺失的原文"
+    original_reason = broken["assessments"][0]["clauses"][0]["reason"]
+    calls = []
+
+    def callback(**kwargs):
+        calls.append(kwargs)
+        revised = output()
+        revised["assessments"][0]["clauses"][0]["reason"] = f"第{len(calls)}次改写的锁定理由。"
+        if len(calls) == 1:
+            revised["assessments"][0]["clauses"][1]["evidence"][0]["quote"] = "缺失的原文"
+        return revised, {"call_id": f"correction-{len(calls)}"}
+
+    result = correct_observations(d, broken, {"call_id": "original"}, "u", callback)
+    assert result["complete"] and len(calls) == 2
+    assert result["rows"][0]["clauses"][0]["reason"] == original_reason
+    assert any(row["action"] == "restored_complete_clause"
+               for row in result["execution_corrections"][0]["restorations"])
+
+
+def test_incomplete_correction_cannot_change_locked_result_before_retry():
+    d = data() | {"requests": [req()]}
+    broken = output()
+    broken["assessments"][0]["clauses"][1]["evidence"][0]["quote"] = "缺失的原文"
+    calls = []
+
+    def callback(**kwargs):
+        calls.append(kwargs)
+        revised = output()
+        revised["assessments"][0]["clauses"][0]["result"] = "violated"
+        revised["assessments"][0]["clauses"][1]["evidence"][0]["quote"] = "缺失的原文"
+        return revised, {"call_id": "bad-correction"}
+
+    with pytest.raises(DomainError, match="CRITERION_CORRECTION_CHANGED_OBSERVATION"):
+        correct_observations(d, broken, {"call_id": "original"}, "u", callback)
+    assert len(calls) == 1
+
+
+def test_missing_partial_correction_cannot_erase_locked_clause_before_retry():
+    d = data() | {"requests": [req()]}
+    broken = output()
+    broken["assessments"][0]["clauses"][1]["evidence"][0]["quote"] = "缺失的原文"
+    original_reason = broken["assessments"][0]["clauses"][0]["reason"]
+    calls = []
+
+    def callback(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {}, {"call_id": "missing-correction"}
+        revised = output()
+        revised["assessments"][0]["clauses"][0]["reason"] = "第二次改写不应进入最终观察。"
+        return revised, {"call_id": "complete-correction"}
+
+    result = correct_observations(d, broken, {"call_id": "original"}, "u", callback)
+    assert result["complete"] and len(calls) == 2
+    assert result["rows"][0]["clauses"][0]["reason"] == original_reason
+    assert any(row["action"] == "restored_missing_assessment"
+               for row in result["execution_corrections"][0]["restorations"])
+
+
+def test_duplicate_assessment_cannot_erase_locked_clause_before_retry():
+    d = data() | {"requests": [req()]}
+    broken = output()
+    broken["assessments"][0]["clauses"][1]["evidence"][0]["quote"] = "缺失的原文"
+    original_reason = broken["assessments"][0]["clauses"][0]["reason"]
+    calls = []
+
+    def callback(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {"assessments": deepcopy(broken["assessments"] * 2)}, {
+                "call_id": "duplicate-correction"}
+        revised = output()
+        revised["assessments"][0]["clauses"][0]["reason"] = "第二次改写不应进入最终观察。"
+        return revised, {"call_id": "complete-correction"}
+
+    result = correct_observations(d, broken, {"call_id": "original"}, "u", callback)
+    assert result["complete"] and len(calls) == 2
+    assert result["rows"][0]["clauses"][0]["reason"] == original_reason
+    assert any(row["action"] == "restored_duplicate_assessment"
+               for row in result["execution_corrections"][0]["restorations"])
+
+
+def test_duplicate_locked_clause_cannot_erase_original_clause_before_retry():
+    d = data() | {"requests": [req()]}
+    broken = output()
+    broken["assessments"][0]["clauses"][1]["evidence"][0]["quote"] = "缺失的原文"
+    original_reason = broken["assessments"][0]["clauses"][0]["reason"]
+    calls = []
+
+    def callback(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            revised = deepcopy(broken)
+            revised["assessments"][0]["clauses"].append(
+                deepcopy(revised["assessments"][0]["clauses"][0]))
+            return revised, {"call_id": "duplicate-correction"}
+        revised = output()
+        revised["assessments"][0]["clauses"][0]["reason"] = "第二次改写不应进入最终观察。"
+        return revised, {"call_id": "complete-correction"}
+
+    result = correct_observations(d, broken, {"call_id": "original"}, "u", callback)
+    assert result["complete"] and len(calls) == 2
+    assert result["rows"][0]["clauses"][0]["reason"] == original_reason
+    assert any(row["action"] == "restored_duplicate_clause"
+               for row in result["execution_corrections"][0]["restorations"])
+
+
+def test_duplicate_invalid_clause_cannot_change_declared_result_before_retry():
+    d = data() | {"requests": [req()]}
+    broken = output()
+    broken["assessments"][0]["clauses"][1]["evidence"][0]["quote"] = "缺失的原文"
+    calls = []
+
+    def callback(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            revised = deepcopy(broken)
+            revised["assessments"][0]["clauses"].append(
+                deepcopy(revised["assessments"][0]["clauses"][1]))
+            return revised, {"call_id": "duplicate-invalid"}
+        revised = output()
+        revised["assessments"][0]["clauses"][1]["result"] = "violated"
+        return revised, {"call_id": "changed-result"}
+
+    with pytest.raises(DomainError, match="CRITERION_CORRECTION_CHANGED_OBSERVATION"):
+        correct_observations(d, broken, {"call_id": "original"}, "u", callback)
+    assert len(calls) == 2
+
+
+def test_missing_invalid_clause_cannot_change_declared_result_before_retry():
+    d = data() | {"requests": [req()]}
+    broken = output()
+    broken["assessments"][0]["clauses"][1]["evidence"][0]["quote"] = "缺失的原文"
+    calls = []
+
+    def callback(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            revised = deepcopy(broken)
+            revised["assessments"][0]["clauses"] = [
+                revised["assessments"][0]["clauses"][0]]
+            return revised, {"call_id": "missing-invalid"}
+        revised = output()
+        revised["assessments"][0]["clauses"][1]["result"] = "violated"
+        return revised, {"call_id": "changed-result"}
+
+    with pytest.raises(DomainError, match="CRITERION_CORRECTION_CHANGED_OBSERVATION"):
+        correct_observations(d, broken, {"call_id": "original"}, "u", callback)
+    assert len(calls) == 2
 
 
 def test_unscored_request_does_not_silently_accept_an_invented_numeric_score():

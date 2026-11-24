@@ -6,12 +6,10 @@ retain valid sub-observations without converting malformed output to abstention.
 """
 from __future__ import annotations
 
-import math
-
 from .contracts import sha
 from .review_contract import prepare_review_output
 
-VERSION = "research-observation-binding.v2"
+VERSION = "research-observation-binding.v3"
 COMPLETE = "complete"
 INVALID = "invalid_or_missing_observation"
 
@@ -20,10 +18,10 @@ def _text(value):
     return isinstance(value, str) and bool(value.strip())
 
 
-def _number(value):
-    # bool is not an observed count; arbitrary-size Python ints need no float
-    # conversion (math.isfinite on those can overflow).
-    return type(value) is int or type(value) is float and math.isfinite(value)
+def _count(value):
+    # Counts are exact integers. Floats such as 0.5/2.5 must not become a
+    # plausible-looking numerator/denominator; bool is not a count.
+    return type(value) is int and value >= 0
 
 
 def _evidence(proposals, unit):
@@ -57,7 +55,7 @@ def _indicator(raw, expected, unit):
     errors.extend(evidence_errors)
     applicable, num, den = (raw.get(k) for k in ("applicable", "numerator", "denominator"))
     enum = raw.get("enum_value")
-    counts = _number(num) and _number(den) and num >= 0 and den > 0
+    counts = _count(num) and _count(den) and den > 0
     count_supplied = num is not None or den is not None
     enum_supplied = enum is not None
     # Some frozen rubrics explicitly define a zero-denominator/null exit and
@@ -72,7 +70,7 @@ def _indicator(raw, expected, unit):
     # statements -> B3=0; perfect compliance, not null"). Accept that narrow
     # shape only when the rubric says so and literal evidence was supplied.
     scored_zero_denominator = (
-        _number(num) and num == 0 and _number(den) and den == 0 and evidence
+        _count(num) and num == 0 and _count(den) and den == 0 and evidence
         and missing_rule and (
             ("perfect compliance" in lower_rule and "zero" in lower_rule)
             or ("zero-occurrence" in lower_rule and "0" in missing_rule)
@@ -87,10 +85,10 @@ def _indicator(raw, expected, unit):
     # zero count is invented and the scored-zero contract stays exclusive.
     explicit_null_rule = bool(missing_rule) and "null" in lower_rule
     zero_denominator = (
-        _number(den) and den == 0 and _text(raw.get("unknown_reason"))
+        _count(den) and den == 0 and _text(raw.get("unknown_reason"))
         and not scored_zero_denominator
         and ((num is None and bool(missing_rule))
-             or (_number(num) and num == 0 and explicit_null_rule)))
+             or (_count(num) and num == 0 and explicit_null_rule)))
     if count_supplied and not counts and not zero_denominator and not scored_zero_denominator:
         errors.append("INDICATOR_COUNTS_INVALID")
     if enum_supplied and not _text(enum):

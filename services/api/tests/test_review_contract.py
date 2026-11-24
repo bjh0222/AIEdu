@@ -64,6 +64,18 @@ def test_contract_normalizer_handles_only_unambiguous_wire_shapes():
     assert malformed["evidence"] == [{"invalid_evidence_shape": "int"}]
 
 
+def test_contract_normalizer_never_silently_truncates_a_long_list():
+    original = {"assessments": [
+        {"request_id": f"r{index}", "clauses": []}
+        for index in range(257)
+    ]}
+    value, changes = normalize_contract(original)
+    assert len(value["assessments"]) == 257
+    assert value["assessments"][-1] == {
+        "__aiedu_contract_error__": "list_over_limit"}
+    assert any(row["code"] == "list_over_limit" for row in changes)
+
+
 def _context():
     return {
         "domain_key": "math_logic",

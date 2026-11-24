@@ -105,6 +105,56 @@ def test_grounded_original_abstention_needs_no_correction(sample):
     assert report["coverage"]["grounded_abstentions"] == 1
 
 
+def test_partial_correction_cannot_replace_a_complete_indicator_between_attempts(sample):
+    unit, _, _, data = sample
+    dimensions = [
+        {"dimension_id": "a", "source_refs": ["claim:a"], "indicators": [
+            {"indicator_id": "i1"}, {"indicator_id": "i2"}]},
+        {"dimension_id": "b", "source_refs": ["claim:b"], "indicators": []},
+    ]
+    sample[1][:] = dimensions
+    data["research_rubric"]["dimensions"] = dimensions
+    output = {"dimensions": [
+        {"dimension_id": "a", "result": "satisfied", "score": 2,
+         "reason": "An actual supported observation.",
+         "evidence": [{"field": "body", "quote": "Supported source."}],
+         "indicators": [
+             {"indicator_id": "i1", "applicable": True, "numerator": 1,
+              "denominator": 1, "unit": "claims", "enum_value": None,
+              "evidence": [{"field": "body", "quote": "Supported source."}],
+              "unknown_reason": None},
+             {"indicator_id": "i2", "applicable": True, "numerator": 1,
+              "denominator": 1, "unit": "claims", "enum_value": None,
+              "evidence": [{"field": "body", "quote": "invented"}],
+              "unknown_reason": None},
+         ]},
+        {"dimension_id": "b", "result": "satisfied", "score": 2,
+         "reason": "A second supported observation.",
+         "evidence": [{"field": "body", "quote": "Fixed sibling."}],
+         "indicators": []},
+    ]}
+    calls = []
+
+    def correction(**kwargs):
+        calls.append(kwargs)
+        revised = deepcopy(output)
+        row = next(r for r in revised["dimensions"] if r["dimension_id"] == "a")
+        row["indicators"][0].update(numerator=0.5,
+            evidence=[{"field": "body", "quote": "Fixed sibling."}])
+        if len(calls) == 2:
+            row["indicators"][1]["evidence"] = [
+                {"field": "body", "quote": "Supported source."}]
+        return {"dimensions": [row]}, {"call_id": f"correction-{len(calls)}"}
+
+    report = run(sample, output, correction)
+    assert report["status"] == "completed" and len(calls) == 2
+    indicator = next(i for i in report["dimensions"][0]["indicators"]
+                     if i["indicator_id"] == "i1")
+    assert indicator["numerator"] == 1
+    assert indicator["evidence"][0]["quote"] == "Supported source."
+    assert all(c["restored_indicators"] for c in report["corrections"])
+
+
 @pytest.mark.parametrize("count", [-1, 3, True, None])
 def test_correction_budget_cannot_be_unbounded(sample, count):
     with pytest.raises(ValueError):

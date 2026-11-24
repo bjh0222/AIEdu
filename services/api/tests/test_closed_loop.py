@@ -2,6 +2,8 @@
 
 import time
 
+from app.v2.review_contract import review_protocol_manifest
+
 
 def _create_goal(client) -> dict:
     resp = client.post(
@@ -26,6 +28,7 @@ def test_health(client):
     assert body["status"] == "ok"
     assert body["demo"] is True  # 测试环境未配置模型
     assert body["llm_configured"] is False
+    assert body["quality_protocol_hash"] == review_protocol_manifest()["manifest_hash"]
 
 
 def test_closed_loop_demo(client):

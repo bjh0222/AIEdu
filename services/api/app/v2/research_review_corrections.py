@@ -72,8 +72,8 @@ def response_contract(dimensions):
                 "required": ["indicator_id", "applicable", "numerator", "denominator", "unit",
                     "enum_value", "evidence", "unknown_reason"],
                 "properties": {"indicator_id": {"enum": ids}, "applicable": {"type": "boolean"},
-                    "numerator": {"type": ["number", "null"], "minimum": 0},
-                    "denominator": {"type": ["number", "null"], "minimum": 0},
+                    "numerator": {"type": ["integer", "null"], "minimum": 0},
+                    "denominator": {"type": ["integer", "null"], "minimum": 0},
                     "unit": {"type": ["string", "null"]}, "enum_value": {"type": ["string", "null"]},
                     "evidence": evidence, "unknown_reason": {"type": ["string", "null"]}}} if ids else False}
         properties = {"dimension_id": {"const": dimension.get("dimension_id") or dimension["id"]},
@@ -124,6 +124,51 @@ def _scored(row):
     return isinstance(row.get("result"), str) and row["result"] in {"satisfied", "violated"}
 
 
+def _indicator_projection(indicator):
+    keys = ("indicator_id", "applicable", "numerator", "denominator", "unit",
+            "enum_value", "unknown_reason")
+    value = {key: deepcopy(indicator.get(key)) for key in keys}
+    value["evidence"] = [{"field": e["field"], "quote": e["quote"]}
+                         for e in indicator.get("evidence", [])
+                         if isinstance(e, dict) and isinstance(e.get("field"), str)
+                         and isinstance(e.get("quote"), str)]
+    return value
+
+
+def _restore_complete_indicators(output, locked):
+    """Keep accepted indicators stable while repairing an invalid sibling."""
+    restored = deepcopy(output)
+    changes = []
+    rows = restored.get("dimensions") if isinstance(restored, dict) else None
+    rows = rows if isinstance(rows, list) else []
+    for dimension_id, indicators in locked.items():
+        matches = [r for r in rows if isinstance(r, dict)
+                   and r.get("dimension_id") == dimension_id]
+        if len(matches) != 1:
+            continue
+        row = matches[0]
+        proposals = row.get("indicators")
+        proposals = proposals if isinstance(proposals, list) else []
+        for indicator in indicators:
+            identity = indicator.get("indicator_id")
+            found = [i for i in proposals if isinstance(i, dict)
+                     and i.get("indicator_id") == identity]
+            projection = _indicator_projection(indicator)
+            if not found:
+                proposals.append(projection)
+                changes.append({"dimension_id": dimension_id, "indicator_id": identity,
+                                "action": "restored_missing_indicator"})
+            elif len(found) == 1 and found[0] != projection:
+                changes.append({"dimension_id": dimension_id, "indicator_id": identity,
+                                "action": "restored_complete_indicator",
+                                "fields": sorted(k for k in set(found[0]) | set(projection)
+                                                 if found[0].get(k) != projection.get(k))})
+                found[0].clear()
+                found[0].update(deepcopy(projection))
+        row["indicators"] = proposals
+    return restored, changes
+
+
 def correct_batch(output, audit, dimensions, unit, data, invoke_correction, *, max_corrections=2):
     """Keep valid original rows; ask C only for invalid rows at most twice.
 
@@ -136,6 +181,14 @@ def correct_batch(output, audit, dimensions, unit, data, invoke_correction, *, m
     working = deepcopy(output)
     audits, corrections, row_audits = [audit], [], {}
     originals = {d.get("dimension_id") or d["id"]: d for d in dimensions}
+    initial_bound = bind_batch(output, dimensions, unit,
+        data.get("evidence_catalog") if isinstance(data.get("evidence_catalog"), list) else None)
+    locked_indicators = {}
+    for row in initial_bound["dimensions"]:
+        complete = [deepcopy(i) for i in row["indicators"]
+                    if i["processing_status"] == COMPLETE]
+        if complete:
+            locked_indicators[row["dimension_id"]] = complete
     # Verdict locks come from the original observation, not an intermediate
     # malformed correction. Missing fields are execution defects; they must
     # neither count as a substantive change nor erase this lock for attempt 2.
@@ -146,6 +199,12 @@ def correct_batch(output, audit, dimensions, unit, data, invoke_correction, *, m
         bound = bind_batch(working, dimensions, unit, evidence_catalog)
         for row in bound["dimensions"]:
             row_audits.setdefault(row["dimension_id"], audit)
+            complete = [deepcopy(i) for i in row["indicators"]
+                        if i["processing_status"] == COMPLETE]
+            if complete:
+                known = {i["indicator_id"] for i in locked_indicators.get(row["dimension_id"], [])}
+                locked_indicators.setdefault(row["dimension_id"], []).extend(
+                    i for i in complete if i["indicator_id"] not in known)
         if bound["status"] == "completed":
             return bound | {"audits": audits, "corrections": corrections,
                 "dimension_audits": row_audits, "correction_method": method}
@@ -190,6 +249,9 @@ def correct_batch(output, audit, dimensions, unit, data, invoke_correction, *, m
         revised, correction_audit = invoke_correction(data=scoped,
             system=SCHEMA_PROMPT if method == SCHEMA_METHOD else PROMPT, attempt=attempt + 1)
         audits.append(correction_audit)
+        provider_output_hash = digest(revised)
+        revised, indicator_restorations = _restore_complete_indicators(
+            revised, locked_indicators)
         revised_bound = bind_batch(
             revised, [originals[i] for i in invalid], unit, evidence_catalog)
         proposed = _raw_rows(revised, invalid)
@@ -221,9 +283,11 @@ def correct_batch(output, audit, dimensions, unit, data, invoke_correction, *, m
             raise DomainError("RESEARCH_CONTENT_REVIEW_CORRECTION_EVASION", 422,
                 correction_audits=audits)
         corrections.append({"attempt": attempt + 1, "target_dimension_ids": invalid,
-            "previous_output_hash": digest(working), "output_hash": digest(revised),
+            "previous_output_hash": digest(working), "provider_output_hash": provider_output_hash,
+            "output_hash": digest(revised),
             "audit": correction_audit, "coverage": revised_bound["coverage"],
-            "batch_contract_errors": revised_bound["batch_contract_errors"]})
+            "batch_contract_errors": revised_bound["batch_contract_errors"],
+            "restored_indicators": indicator_restorations})
         # Never allow an unrequested correction to mutate a valid sibling.
         if revised_bound["batch_contract_errors"]:
             raise DomainError("RESEARCH_CONTENT_REVIEW_CONTRACT_INVALID", 422,

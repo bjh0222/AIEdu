@@ -18,9 +18,10 @@ from .contracts import DomainError, digest, sha
 from .quality_policy import context_domains, unit_domains
 
 EVIDENCE_VERSION = "server-evidence-catalog.v1"
-NORMALIZER_VERSION = "provider-contract-normalizer.v1"
+NORMALIZER_VERSION = "provider-contract-normalizer.v2"
 APPLICABILITY_VERSION = "zero-model-applicability.v2"
 PROTOCOL_VERSION = "quality-protocol-freeze.v8"
+MAX_CONTRACT_LIST_ITEMS = 256
 
 _RESULT_ALIASES = {
     "pass": "satisfied",
@@ -128,7 +129,16 @@ def normalize_contract(value: Any) -> tuple[Any, list[dict[str, str]]]:
 
     def walk(item: Any, path: str) -> Any:
         if isinstance(item, list):
-            return [walk(child, f"{path}[{index}]") for index, child in enumerate(item[:256])]
+            # A provider response must never be silently shortened. Keep the
+            # bounded prefix for diagnostics, then add an explicit invalid
+            # sentinel so the binder rejects the batch instead of dropping
+            # extra assessments/clauses/evidence beyond the limit.
+            bounded = [walk(child, f"{path}[{index}]")
+                       for index, child in enumerate(item[:MAX_CONTRACT_LIST_ITEMS])]
+            if len(item) > MAX_CONTRACT_LIST_ITEMS:
+                _change(changes, path, "list_over_limit")
+                bounded.append({"__aiedu_contract_error__": "list_over_limit"})
+            return bounded
         if not isinstance(item, dict):
             return item
         result = {key: walk(child, f"{path}.{key}") for key, child in item.items()}

@@ -155,41 +155,131 @@ def correction_payload(data, original_output, bound, *, attempt):
                              "execution_correction": policy}
 
 
-def _check_locks(policy, revised):
+def _same_entry_identity(candidate, declared, axis):
+    if not isinstance(candidate, dict) or not isinstance(declared, dict):
+        return False
+    if candidate.get("id") != declared.get("id"):
+        return False
+    if ("operation" in declared or axis in {"cognitive_operations", "nonroutine_operations", "steps"}) and \
+            candidate.get("operation") != declared.get("operation"):
+        return False
+    if ("depends_on" in declared or axis == "steps") and \
+            candidate.get("depends_on") != declared.get("depends_on"):
+        return False
+    return True
+
+
+def _same_axis_identity(candidate, original, axis):
+    if not isinstance(candidate, list) or not isinstance(original, list) or len(candidate) != len(original):
+        return False
+    return all(_same_entry_identity(candidate[index], original[index], axis)
+               for index in range(len(original)))
+
+
+def _restore_locks(policy, revised):
+    """Restore locked observations, rejecting only semantic identity changes.
+
+    Real providers sometimes reword a reason or replace an already-valid quote
+    while correcting a sibling. That is not authority to change the accepted
+    observation: restore it byte-for-byte and keep an audit record. IDs,
+    operations, dependency edges and axis order remain hard locks.
+    """
+    restored = deepcopy(revised)
+    changes = []
     for lock in policy["locks"]:
-        matches = _matches(_raw_rows(revised), lock["item_id"])
+        matches = _matches(_raw_rows(restored), lock["item_id"])
         if len(matches) != 1:
-            continue  # Binder records incomplete execution, never accepts it.
+            continue  # Binder records missing/duplicate execution.
         row = matches[0]
-        if any(row.get(axis) != value for axis, value in lock["complete_axes"].items()):
-            raise DomainError("DIFFICULTY_CORRECTION_CHANGED_OBSERVATION", 409)
-        for axis, sequence in lock["declared_sequences"].items():
+        complete_axes = lock.get("complete_axes", {})
+        for axis, original in complete_axes.items():
+            candidate = row.get(axis)
+            if candidate == original:
+                continue
+            if candidate is not None and not _same_axis_identity(candidate, original, axis):
+                raise DomainError("DIFFICULTY_CORRECTION_CHANGED_OBSERVATION", 409)
+            changed_entries = []
+            if isinstance(candidate, list):
+                for old, new in zip(original, candidate):
+                    fields = sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
+                    if fields:
+                        changed_entries.append({"id": old.get("id"), "fields": fields})
+            changes.append({"item_id": lock["item_id"], "axis": axis,
+                "action": "restored_complete_axis", "entries": changed_entries})
+            row[axis] = deepcopy(original)
+        for axis, sequence in lock.get("declared_sequences", {}).items():
+            if axis in complete_axes:
+                continue
             values = row.get(axis)
-            if not isinstance(values, list) or [v.get("id") if isinstance(v, dict) else None for v in values] != sequence:
+            identity = [v.get("id") if isinstance(v, dict) else None for v in values] \
+                if isinstance(values, list) else None
+            if identity != sequence:
                 raise DomainError("DIFFICULTY_CORRECTION_CHANGED_OBSERVATION", 409)
-        for axis, entries in lock["valid_entries"].items():
-            values = row.get(axis, [])
-            if not isinstance(values, list) or any(entry not in values for entry in entries):
-                raise DomainError("DIFFICULTY_CORRECTION_CHANGED_OBSERVATION", 409)
-        for axis, declarations in lock["declared_fields"].items():
-            values = row.get(axis, [])
+        for axis, entries in lock.get("valid_entries", {}).items():
+            if axis in complete_axes:
+                continue
+            values = row.get(axis)
+            if not isinstance(values, list):
+                continue  # Binder will report the missing/invalid axis.
+            for declared in entries:
+                found = [v for v in values if isinstance(v, dict) and v.get("id") == declared.get("id")]
+                if len(found) != 1 or not _same_entry_identity(found[0], declared, axis):
+                    raise DomainError("DIFFICULTY_CORRECTION_CHANGED_OBSERVATION", 409)
+                if found[0] != declared:
+                    changes.append({"item_id": lock["item_id"], "axis": axis,
+                        "entry_id": declared.get("id"), "action": "restored_valid_entry",
+                        "fields": sorted(k for k in set(found[0]) | set(declared)
+                                         if found[0].get(k) != declared.get(k))})
+                    found[0].clear()
+                    found[0].update(deepcopy(declared))
+        for axis, declarations in lock.get("declared_fields", {}).items():
+            values = row.get(axis)
             values = values if isinstance(values, list) else []
             for declared in declarations:
-                found = [v for v in values if isinstance(v, dict) and v.get("id") == declared["id"]]
-                if len(found) != 1 or any(found[0].get(k) != v for k, v in declared.items() if k != "valid_quotes"):
+                found = [v for v in values if isinstance(v, dict) and v.get("id") == declared.get("id")]
+                if len(found) != 1 or not _same_entry_identity(found[0], declared, axis):
                     raise DomainError("DIFFICULTY_CORRECTION_CHANGED_OBSERVATION", 409)
-                evidence = found[0].get("evidence", [])
-                if not isinstance(evidence, list) or any(q not in evidence for q in declared["valid_quotes"]):
-                    raise DomainError("DIFFICULTY_CORRECTION_CHANGED_OBSERVATION", 409)
+                if "reason" in declared and found[0].get("reason") != declared["reason"]:
+                    changes.append({"item_id": lock["item_id"], "axis": axis,
+                        "entry_id": declared.get("id"), "action": "restored_reason"})
+                    found[0]["reason"] = declared["reason"]
+                evidence = found[0].get("evidence")
+                if isinstance(evidence, list):
+                    present = {(e.get("field"), e.get("quote")) for e in evidence if isinstance(e, dict)}
+                    for quote in declared.get("valid_quotes", []):
+                        key = (quote.get("field"), quote.get("quote"))
+                        if key not in present:
+                            evidence.append({"field": quote["field"], "quote": quote["quote"]})
+                            present.add(key)
+                            changes.append({"item_id": lock["item_id"], "axis": axis,
+                                "entry_id": declared.get("id"),
+                                "action": "restored_valid_quote"})
         load = row.get("computation_load")
-        load = load if isinstance(load, dict) else {}
-        if (lock["complete_load"] is not None and load != lock["complete_load"]
-                or lock["declared_load_level"] is not None and load.get("level") != lock["declared_load_level"]):
-            raise DomainError("DIFFICULTY_CORRECTION_CHANGED_OBSERVATION", 409)
-        evidence = load.get("evidence", [])
-        if not isinstance(evidence, list) or any(q not in evidence for q in lock["valid_load_quotes"]):
-            raise DomainError("DIFFICULTY_CORRECTION_CHANGED_OBSERVATION", 409)
-
+        complete_load = lock.get("complete_load")
+        if complete_load is not None:
+            if load != complete_load:
+                if load is not None and (not isinstance(load, dict)
+                        or load.get("level") != complete_load.get("level")):
+                    raise DomainError("DIFFICULTY_CORRECTION_CHANGED_OBSERVATION", 409)
+                changes.append({"item_id": lock["item_id"], "axis": "computation_load",
+                    "action": "restored_complete_load"})
+                row["computation_load"] = deepcopy(complete_load)
+        elif lock.get("declared_load_level") is not None:
+            if not isinstance(load, dict) or load.get("level") != lock["declared_load_level"]:
+                # A missing load is an execution failure; a different level is
+                # a semantic change and remains a hard rejection.
+                if isinstance(load, dict) and load.get("level") is not None:
+                    raise DomainError("DIFFICULTY_CORRECTION_CHANGED_OBSERVATION", 409)
+            elif isinstance(load.get("evidence"), list):
+                present = {(e.get("field"), e.get("quote")) for e in load["evidence"] if isinstance(e, dict)}
+                for quote in lock.get("valid_load_quotes", []):
+                    key = (quote.get("field"), quote.get("quote"))
+                    if key not in present:
+                        load["evidence"].append({"field": quote["field"], "quote": quote["quote"]})
+                        present.add(key)
+                        changes.append({"item_id": lock["item_id"], "axis": "computation_load",
+                            "action": "restored_valid_quote"})
+    return restored, changes
 
 def response_contract(requests, locks=()):
     by_id = {lock["item_id"]: lock for lock in locks}
@@ -238,8 +328,8 @@ def correct_observations(data, output, items, unit, audit, invoke_correction):
     policy = payload["execution_correction"]
     revised, new_audit = invoke_correction(data=payload, system=INSTRUCTION,
         output_schema=response_contract(payload["items"], policy["locks"]))
-    _check_locks(policy, revised)
-    corrected = bind_observations(payload, revised, items, unit, new_audit)
+    restored, lock_changes = _restore_locks(policy, revised)
+    corrected = bind_observations(payload, restored, items, unit, new_audit)
     if not corrected["complete"]:
         raise DomainError("DIFFICULTY_CORRECTION_UNRESOLVED", 422, original_audit=audit,
             correction_audit=new_audit, invalid_item_ids=[r["item_id"] for r in corrected["rows"] if r["processing_status"] != "complete"],
@@ -249,6 +339,8 @@ def correct_observations(data, output, items, unit, audit, invoke_correction):
     merged["rows"] = [deepcopy(r if r["processing_status"] == "complete" else by_id[r["item_id"]]) for r in original["rows"]]
     merged["complete"], merged["protocol_errors"] = True, []
     merged["execution_corrections"] = [deepcopy(policy) | {"corrected_output_hash": digest(revised),
+        "restored_output_hash": digest(restored),
         "corrected_fields_hash": corrected["fields_hash"], "complete": True,
+        "locked_observation_changes": lock_changes,
         "original_protocol_errors": deepcopy(original["protocol_errors"])}]
     return merged

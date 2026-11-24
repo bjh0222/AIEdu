@@ -148,7 +148,7 @@ def test_extra_dimension_must_not_be_silently_discarded(sample):
 
 
 @pytest.mark.parametrize("num,den", [(True, 1), (1, False), (-1, 1), (1, 0), (None, 1),
-    (float("nan"), 1), (1, float("inf")), ("1", 1)])
+    (float("nan"), 1), (1, float("inf")), ("1", 1), (0.5, 1), (1, 2.5)])
 def test_invalid_counts_not_zero_or_enum_fallback(sample, num, den):
     sample[2]["dimensions"][0]["indicators"][0].update(numerator=num, denominator=den, enum_value="fallback")
     report = review(sample)

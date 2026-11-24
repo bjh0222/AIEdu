@@ -48,8 +48,8 @@ def test_only_bad_quote_can_be_corrected_while_easy_observation_and_valid_axes_s
     assert bound["execution_corrections"][0]["not_a_content_repair"]
 
 
-@pytest.mark.parametrize("fault", ["change_complete_axis", "change_valid_entry", "remove_declared_id", "add_declared_id", "change_reason", "change_operation"])
-def test_quote_correction_cannot_rewrite_or_inflate_existing_observations(fault):
+@pytest.mark.parametrize("fault", ["change_complete_axis", "remove_declared_id", "add_declared_id", "change_operation"])
+def test_quote_correction_rejects_semantic_identity_changes(fault):
     from app.v2.difficulty_protocol import correct_observations
     output, data, item, unit = sample()
     output["items"][0]["prerequisites"].append(deepcopy(output["items"][0]["prerequisites"][0]) | {
@@ -59,14 +59,38 @@ def test_quote_correction_cannot_rewrite_or_inflate_existing_observations(fault)
         row = revised["items"][0]
         row["prerequisites"][1]["evidence"][0]["quote"] = "比较方法乙"
         if fault == "change_complete_axis": row["nonroutine_operations"] = []
-        if fault == "change_valid_entry": row["prerequisites"][0]["reason"] += "different claim"
         if fault == "remove_declared_id": row["prerequisites"].pop()
         if fault == "add_declared_id": row["prerequisites"].append(deepcopy(row["prerequisites"][0]) | {"id": "p3"})
-        if fault == "change_reason": row["prerequisites"][1]["reason"] += "changed semantic interpretation"
         if fault == "change_operation": row["prerequisites"][1]["operation"] = "transfer"
         return revised, {"call_id": "new"}
     with pytest.raises(DomainError, match="DIFFICULTY_CORRECTION_CHANGED_OBSERVATION"):
         correct_observations(data, output, [item], unit, {}, callback)
+
+
+@pytest.mark.parametrize("fault", ["change_valid_entry", "change_reason"])
+def test_quote_correction_restores_locked_prose_without_losing_correction(fault):
+    from app.v2.difficulty_protocol import correct_observations
+    output, data, item, unit = sample()
+    output["items"][0]["prerequisites"].append(deepcopy(output["items"][0]["prerequisites"][0]) | {
+        "id": "p2", "evidence": [{"field": "answer.reasoning", "quote": "missing"}]})
+    original = deepcopy(output)
+    def callback(**kw):
+        revised = deepcopy(output)
+        row = revised["items"][0]
+        row["prerequisites"][1]["evidence"][0]["quote"] = "比较方法乙"
+        if fault == "change_valid_entry":
+            row["prerequisites"][0]["reason"] += "different claim"
+        else:
+            row["prerequisites"][1]["reason"] += "changed semantic interpretation"
+        return revised, {"call_id": "new"}
+    result = correct_observations(data, output, [item], unit, {}, callback)
+    assert result["complete"]
+    assert result["rows"][0]["dimensions"]["prerequisites"][0]["reason"] == \
+        original["items"][0]["prerequisites"][0]["reason"]
+    assert result["rows"][0]["dimensions"]["prerequisites"][1]["reason"] == \
+        original["items"][0]["prerequisites"][1]["reason"]
+    changes = result["execution_corrections"][0]["locked_observation_changes"]
+    assert any(row["action"].startswith("restored_") for row in changes)
 
 
 def test_one_missing_axis_executes_once_and_preserves_original_valid_sibling():
@@ -229,7 +253,7 @@ def test_correction_schema_excludes_routine_nonroutine_code():
     assert set(codes) == NONROUTINE
 
 
-@pytest.mark.parametrize("fault", ["level", "quote", "dependencies"])
+@pytest.mark.parametrize("fault", ["level", "dependencies"])
 def test_valid_load_and_dependency_declarations_cannot_change_during_quote_fix(fault):
     from app.v2.difficulty_protocol import correct_observations
     output, data, item, unit = sample()
@@ -244,6 +268,43 @@ def test_valid_load_and_dependency_declarations_cannot_change_during_quote_fix(f
         return revised, {}
     with pytest.raises(DomainError, match="DIFFICULTY_CORRECTION_CHANGED_OBSERVATION"):
         correct_observations(data, output, [item], unit, {}, correct)
+
+
+def test_valid_quote_rewrite_is_restored_while_invalid_sibling_is_repaired():
+    from app.v2.difficulty_protocol import correct_observations
+    output, data, item, unit = sample()
+    output["items"][0]["steps"][0]["evidence"].append({"field": "answer.final", "quote": "bad"})
+    original_quote = output["items"][0]["steps"][0]["evidence"][0]["quote"]
+    def correct(**kw):
+        revised = deepcopy(output)
+        row = revised["items"][0]
+        row["steps"][0]["evidence"][1]["quote"] = "精确结论丁"
+        row["steps"][0]["evidence"][0]["quote"] = "条件甲"
+        return revised, {}
+    result = correct_observations(data, output, [item], unit, {}, correct)
+    assert result["complete"]
+    quotes = [e["quote"] for e in result["rows"][0]["dimensions"]["steps"][0]["evidence"]]
+    assert original_quote in quotes
+    assert any(row["action"] == "restored_valid_quote"
+               for row in result["execution_corrections"][0]["locked_observation_changes"])
+
+
+def test_omitted_complete_load_is_restored_not_treated_as_a_new_observation():
+    from app.v2.difficulty_protocol import correct_observations
+    output, data, item, unit = sample()
+    del output["items"][0]["prerequisites"]
+    original_load = deepcopy(output["items"][0]["computation_load"])
+    def correct(**kw):
+        revised = deepcopy(output)
+        revised["items"][0].pop("computation_load")
+        revised["items"][0]["prerequisites"] = deepcopy(
+            sample()[0]["items"][0]["prerequisites"])
+        return revised, {}
+    result = correct_observations(data, output, [item], unit, {}, correct)
+    assert result["complete"]
+    assert result["rows"][0]["computation_load"]["level"] == original_load["level"]
+    assert any(row["action"] == "restored_complete_load"
+               for row in result["execution_corrections"][0]["locked_observation_changes"])
 
 
 @pytest.mark.parametrize("raw", [None, [], {"items": None}, {"items": []}, {"items": [None]}])
