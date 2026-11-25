@@ -50,6 +50,34 @@ def test_whole_exercise_unit_still_requires_items_and_projects_answers():
     assert result["body"].count("synthetic answer") == 2
 
 
+def test_adaptive_candidate_can_explicitly_remove_method_overview_without_becoming_missing():
+    from app.v2.adaptive_format import LAYOUT
+    from app.v2.items import normalize_items, render_unit_items
+    item = {"question_form": "constructed_response", "stem_markdown": "synthetic stem",
+            "answer": {"final": "synthetic answer", "reasoning": "synthetic reasoning",
+                       "display_reasoning": "synthetic note"},
+            "difficulty_basis": {"prerequisites": ["p"], "cognitive_operations": ["c"],
+                "nonroutine_operations": ["n"], "concept_interactions": ["x"],
+                "dependency_depth": 2, "rationale": "synthetic"}}
+    unit = {"unit_id": "u", "title": "专题", "artifact_role": "exercise",
+            "format_contract": LAYOUT, "source_sections": [], "method_overview": "base overview",
+            "output_design": {"mode": "method_practice", "answer_placement": "unit_end",
+                "explanation_policy": "concise", "difficulty_target": None},
+            "teaching_arrangement": {"quantity": 1}}
+    unit["items"] = normalize_items({"items": [item]}, "exercise", "u", LAYOUT, [], unit)
+    unit["body"] = render_unit_items(unit["items"], unit)
+    unit["content_hash"] = sha(unit["body"])
+    package = {"scope": {"unit_ids": ["u"], "allowed_change_modes": ["whole_unit"]}}
+    candidate = {"schema_version": CANDIDATE_SCHEMA_VERSION, "base_version": "v",
+                 "base_content_hash": "h", "package_hash": digest(package), "strategy": "whole_unit",
+                 "units": [{"unit_id": "u", "method_overview": "", "items": [{
+                     **item, "stem_markdown": "changed synthetic stem"
+                 }]}]}
+    result = validate_candidate(candidate, package, SimpleNamespace(id="v", content_hash="h"), [unit])[0]
+    assert result["method_overview"] == ""
+    assert "base overview" not in result["body"]
+
+
 def test_real_optimizer_wiring_supplies_typed_schema_to_C_and_B(client, monkeypatch):
     from test_task_run_v2 import task_run
     from test_optimization_prompt_loop import _run_loop
