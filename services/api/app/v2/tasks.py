@@ -58,6 +58,39 @@ def _rollback_unbilled_optimization_attempt(db, old, state):
     }
 
 
+def _rollback_normalized_optimization_contract(state):
+    """Release an attempt consumed only by a now-deterministic wrapper rejection.
+
+    The provider receipt remains immutable and is replayed from its exact
+    request identity when possible. Only the explicit stop reasons whose
+    validation semantics were corrected may receive this historical resume
+    normalization.
+    """
+    reason = state.get("optimization_stop_reason")
+    allowed = {"DEPENDENCY_CANDIDATE_MISSING"}
+    if reason not in allowed:
+        return
+    attempts = state.get("optimization_attempts")
+    if type(attempts) is not int or attempts <= 0:
+        return
+    version_id = state.get("version_id")
+    key = f"candidate:{version_id}" if version_id else None
+    per_finding = dict(state.get("optimization_attempts_by_finding") or {})
+    previous_finding_attempts = per_finding.get(key) if key else None
+    state["optimization_attempts"] = attempts - 1
+    if key and type(previous_finding_attempts) is int and previous_finding_attempts > 0:
+        per_finding[key] = previous_finding_attempts - 1
+        state["optimization_attempts_by_finding"] = per_finding
+    state.setdefault("optimization_contract_normalizations", []).append({
+        "method_version": "legacy-wrapper-contract-attempt-rollback.v1",
+        "previous_attempts": attempts,
+        "normalized_attempts": attempts - 1,
+        "candidate_key": key,
+        "source_stop_reason": reason,
+        "provider_receipt_replayed": True,
+    })
+
+
 def goal(db, task_id):
     obj = db.get(LearningGoal, task_id)
     if obj is None or not load(obj.task_state_json).get("schema_version"):
@@ -566,6 +599,7 @@ def resume(run_id, payload, key):
         new_id, root_id = str(uuid4()), str(uuid4())
         new_state = deepcopy({k: v for k, v in state.items() if k != "receipts"})
         _rollback_unbilled_optimization_attempt(db, old, new_state)
+        _rollback_normalized_optimization_contract(new_state)
         if payload.transport_retries:
             from .transport_retry import authorize
             grants = authorize(db, old, state, payload.transport_retries, body)

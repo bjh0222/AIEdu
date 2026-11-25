@@ -1014,8 +1014,6 @@ def validate_candidate(candidate: dict, package: dict, version, base_units: list
     if not changed:
         raise DomainError("OPTIMIZATION_NO_PROGRESS", 422)
     affected = set(dependency_closure(base_units, changed)["unit_ids"])
-    if affected - seen_ids:
-        raise DomainError("DEPENDENCY_CANDIDATE_MISSING", 422, missing=sorted(affected-seen_ids))
     if affected - allowed_ids:
         raise DomainError("DEPENDENCY_OUT_OF_SCOPE", 422, outside=sorted(affected-allowed_ids))
     if not set(package["scope"]["unit_ids"]) <= by_id.keys():

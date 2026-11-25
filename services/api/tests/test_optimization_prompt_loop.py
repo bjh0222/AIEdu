@@ -167,7 +167,7 @@ def test_validate_package_binds_skill_plan_profile_rubric_and_version():
             validate_package(package | {"acceptance_criteria": invalid}, version, expected_bindings=expected)
 
 
-def test_candidate_rejects_scope_item_body_drift_and_missing_dependencies():
+def test_candidate_reuses_unchanged_dependencies_but_rejects_scope_and_body_drift():
     from app.v2.optimization import CANDIDATE_SCHEMA_VERSION, digest, sha, validate_candidate
     from test_task_run_v2 import task_run as _
     version = SimpleNamespace(id="v1", content_hash="a"*64)
@@ -180,8 +180,8 @@ def test_candidate_rejects_scope_item_body_drift_and_missing_dependencies():
     candidate = {"schema_version": CANDIDATE_SCHEMA_VERSION, "base_version": "v1",
                  "base_content_hash": "a"*64, "package_hash": digest(package), "strategy": "related_units",
                  "units": [{"unit_id": "u1", "body": "A2"}]}
-    with pytest.raises(Exception, match="DEPENDENCY_CANDIDATE_MISSING"):
-        validate_candidate(candidate, package, version, base)
+    merged = validate_candidate(candidate, package, version, base)
+    assert [u["body"] for u in merged] == ["A2", "B", "C"]
     full = {**candidate, "units": [{"unit_id": "u1", "body": "A2"}, {"unit_id": "u2"}, {"unit_id": "u3"}]}
     assert validate_candidate(full, package, version, base)[1]["unit_id"] == "u2"
     narrow = {"scope": {"unit_ids": ["u1", "u2"], "allowed_change_modes": ["related_units"]}}
@@ -250,6 +250,27 @@ def test_legacy_capacity_resume_rolls_back_only_unbilled_attempt():
     assert state["optimization_attempts"] == 5
     assert state["optimization_attempts_by_finding"] == {"candidate:v": 0}
     assert state["resume_attempt_normalization"]["provider_dispatch_count"] == 0
+
+
+def test_legacy_dependency_contract_resume_releases_one_replayable_attempt():
+    from app.v2.tasks import _rollback_normalized_optimization_contract
+    state = {
+        "optimization_stop_reason": "DEPENDENCY_CANDIDATE_MISSING",
+        "optimization_attempts": 6,
+        "optimization_attempts_by_finding": {"candidate:v": 1},
+        "version_id": "v",
+    }
+    _rollback_normalized_optimization_contract(state)
+    assert state["optimization_attempts"] == 5
+    assert state["optimization_attempts_by_finding"] == {"candidate:v": 0}
+    assert state["optimization_contract_normalizations"][-1] == {
+        "method_version": "legacy-wrapper-contract-attempt-rollback.v1",
+        "previous_attempts": 6,
+        "normalized_attempts": 5,
+        "candidate_key": "candidate:v",
+        "source_stop_reason": "DEPENDENCY_CANDIDATE_MISSING",
+        "provider_receipt_replayed": True,
+    }
 
 
 def test_resume_applies_capacity_attempt_rollback_only_to_new_state(client, monkeypatch):
