@@ -55,14 +55,20 @@ function remarkAnswerLabels() {
 function remarkQuestionBlocks() {
   return (tree: MdNode) => {
     let inAnswers = false;
+    let inQuestion = false;
     for (const node of tree.children ?? []) {
       if (node.type === "heading") {
         const heading = node.children?.map((child) => child.value ?? "").join("").trim();
         inAnswers ||= heading === "参考答案";
+        inQuestion = false;
       }
-      if (inAnswers || node.type !== "paragraph") continue;
+      if (inAnswers) continue;
+      if (node.type !== "paragraph") continue;
       const ordinal = node.children?.[0];
-      if (ordinal?.type !== "strong" || !/^\d+\.$/.test(ordinal.children?.map((child) => child.value ?? "").join("") ?? "")) continue;
+      const startsQuestion = ordinal?.type === "strong" &&
+        /^\d+\.$/.test(ordinal.children?.map((child) => child.value ?? "").join("") ?? "");
+      if (startsQuestion) inQuestion = true;
+      if (!inQuestion) continue;
       node.data = {
         ...(node.data ?? {}),
         hProperties: { ...((node.data?.hProperties as object) ?? {}), className: ["question-block"] },

@@ -67,11 +67,13 @@ The answer is $ad-bc$.`;
   test("连续解答题之间保留三行视觉间距", async ({ page }) => {
     const body = String.raw`# 专题
 
-**1.** 第一道解答题。
+**1.** 第一道解答题，先计算：
 
 $$
 \int_0^1 x^2\,dx.
 $$
+
+并说明所用方法。
 
 **2.** 第二道解答题。
 
@@ -83,14 +85,14 @@ $$
     const v = versionRead(IDS.v2, 2, body, []);
     await mockBackend(page, { snapshot: () => runSnapshot({ quality: v.quality }), versions: { [IDS.v2]: v } });
     await page.goto(`/tasks/${IDS.task}/read`);
-    const second = page.locator(".prose p.question-block").nth(1);
+    const second = page.locator(".prose p.question-block", { hasText: "第二道解答题" });
     await expect(second).toContainText("第二道");
     const spacing = await second.evaluate((node) => {
       const style = getComputedStyle(node);
       return { gap: Number.parseFloat(style.marginTop), line: Number.parseFloat(style.lineHeight) };
     });
     expect(spacing.gap).toBeGreaterThanOrEqual(spacing.line * 3 - 1);
-    await expect(page.locator(".prose p.question-block")).toHaveCount(2);
+    await expect(page.locator(".prose p.question-block")).toHaveCount(3);
     await expect(page.locator(".prose p", { hasText: "第一题答案" })).not.toHaveClass(/question-block/);
   });
 
