@@ -52,6 +52,29 @@ def test_complete_easy_or_long_calculation_is_negative_not_unknown(negative):
     assert result["input_binding_complete"] and result["result"] == "violated"
 
 
+def test_unique_short_dependency_aliases_are_resolved_but_ambiguous_prefixes_are_not():
+    row, item, unit = fixture()
+    canonical = ["s1-construct", "s2-check", "s3-prove"]
+    aliases = ["s1", "s2", "s3"]
+    for entry, canonical_id, alias in zip(row["steps"], canonical, aliases):
+        entry["id"] = canonical_id
+    row["steps"][0]["depends_on"] = []
+    row["steps"][1]["depends_on"] = [aliases[0]]
+    row["steps"][2]["depends_on"] = [aliases[1]]
+    result = bind_item(row, item, unit, {})
+    assert result["result"] == "satisfied"
+    assert result["counts"]["dependency_depth"] == 3
+    assert result["dependency_alias_normalization"] == [
+        {"step_id": "s2-check", "from": "s1", "to": "s1-construct"},
+        {"step_id": "s3-prove", "from": "s2", "to": "s2-check"},
+    ]
+
+    ambiguous = deepcopy(row)
+    ambiguous["steps"].append(deepcopy(row["steps"][0]) | {"id": "s1-alternative"})
+    ambiguous["steps"][1]["depends_on"] = ["s1"]
+    assert bind_item(ambiguous, item, unit, {})["result"] == "undecidable"
+
+
 @pytest.mark.parametrize("fault", ["missing", "bad_quote", "repeated_anchor", "duplicate_id", "cycle", "dangling", "bad_operation", "malformed"])
 def test_incomplete_or_inflated_observations_never_pass(fault):
     row, item, unit = fixture()

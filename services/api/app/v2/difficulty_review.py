@@ -5,6 +5,7 @@ extracts content-bound operations and a reasoning DAG. The wrapper computes
 counts/depth and only then compares them with A's frozen target. These measures
 operationalize task requirements; they are NOT calibrated difficulty or DOK.
 """
+from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
 
@@ -20,6 +21,44 @@ OPERATIONS = {"recall", "execute_procedure", "select_method", "connect_concepts"
               "justify", "case_analysis", "transfer", "construct", "critique"}
 NONROUTINE = {"select_method", "generalize", "case_analysis", "transfer", "construct", "critique"}
 AXES = ("prerequisites", "cognitive_operations", "nonroutine_operations", "concept_interactions", "steps")
+
+
+def normalize_dependency_aliases(row):
+    """Resolve unique short step IDs without guessing ambiguous dependencies.
+
+    Providers commonly declare full IDs such as ``s1-construct-g`` and then
+    refer to them as ``s1`` in ``depends_on``. If a reference is a unique
+    prefix ending at a hyphen/underscore boundary, the intended edge is
+    deterministic. Ambiguous prefixes stay untouched and fail the DAG check.
+    The original provider bytes remain in the immutable call receipt.
+    """
+    if not isinstance(row, dict):
+        return row, []
+    result = deepcopy(row)
+    steps = result.get("steps")
+    if not isinstance(steps, list):
+        return result, []
+    ids = [step.get("id") for step in steps
+           if isinstance(step, dict) and isinstance(step.get("id"), str) and step.get("id")]
+    known = set(ids)
+    changes = []
+    for step in steps:
+        if not isinstance(step, dict) or not isinstance(step.get("depends_on"), list):
+            continue
+        rewritten = []
+        for dependency in step["depends_on"]:
+            if not isinstance(dependency, str) or dependency in known:
+                rewritten.append(dependency)
+                continue
+            matches = [candidate for candidate in ids
+                       if candidate.startswith(dependency + "-") or candidate.startswith(dependency + "_")]
+            if len(matches) == 1:
+                rewritten.append(matches[0])
+                changes.append({"step_id": step.get("id"), "from": dependency, "to": matches[0]})
+            else:
+                rewritten.append(dependency)
+        step["depends_on"] = rewritten
+    return result, changes
 
 
 def unit_exclusive_waves(requests, concurrency):
@@ -98,7 +137,7 @@ def _dependency_depth(steps):
 def bind_item(raw, item, unit, audit):
     fields = {"stem_markdown": item["stem_markdown"], "answer.final": item["answer"]["final"],
               "answer.reasoning": item["answer"]["reasoning"]}
-    row = raw if isinstance(raw, dict) else {}
+    row, dependency_aliases = normalize_dependency_aliases(raw if isinstance(raw, dict) else {})
     axes, valid = {}, bool(row)
     for axis in AXES:
         axes[axis], complete = _entries(row.get(axis), fields, axis)
@@ -133,6 +172,7 @@ def bind_item(raw, item, unit, audit):
         "processing_status": "complete" if valid else "invalid_or_missing_observation",
         "computation_load": {"level": load.get("level") if isinstance(load, dict) else None, "evidence": load_evidence,
             "not_a_difficulty_proxy": True},
+        "dependency_alias_normalization": dependency_aliases,
         "audit": audit, "method_version": VERSION, "empirical_status": "not_measured",
         "authority": "isolated_model_operations_with_wrapper_computed_counts_not_professional_certification"}
 

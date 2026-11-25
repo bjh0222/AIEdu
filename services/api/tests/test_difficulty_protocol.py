@@ -392,6 +392,37 @@ def test_configured_correction_dispatch_identity_ignores_cache_audit_fields(monk
     assert len(dispatches) == 2 and dispatches[0] == dispatches[1]
 
 
+def test_unique_short_dependencies_with_one_bad_quote_reach_bounded_correction(monkeypatch):
+    from app.v2.difficulty_review import evaluate_difficulty
+    output, _, _, unit = sample()
+    aliases = deepcopy(output)
+    for entry in aliases["items"][0]["steps"]:
+        short = entry["id"]
+        entry["id"] = short + "-full"
+        entry["depends_on"] = [value.replace(short, short + "-full") for value in entry.get("depends_on", [])]
+    # Provider emitted a unique short alias for the earlier step.
+    aliases["items"][0]["steps"][2]["depends_on"] = ["s2"]
+    aliases["items"][0]["steps"][2]["evidence"][0]["quote"] = "不存在的引文"
+    corrected = deepcopy(output)
+    identity = {entry["id"]: entry["id"] + "-full" for entry in corrected["items"][0]["steps"]}
+    for entry in corrected["items"][0]["steps"]:
+        short = entry["id"]
+        entry["id"] = identity[short]
+        entry["depends_on"] = [identity[value] for value in entry.get("depends_on", [])]
+    seen = []
+
+    def invoke(*args, **kwargs):
+        seen.append(kwargs["stage"])
+        if kwargs["stage"] == "difficulty_contract_correcting":
+            return corrected, {"call_id": "corrected"}
+        return aliases, {"call_id": "original"}
+
+    monkeypatch.setattr("app.v2.inference.invoke", invoke)
+    report = evaluate_difficulty("r", "w", 0, {"mode": "configured"}, [unit], "v")
+    assert seen == ["difficulty_reviewing", "difficulty_contract_correcting"]
+    assert report["status"] == "completed"
+
+
 def test_correction_schema_preserves_complete_and_partial_legacy_entries_without_contradiction():
     from app.v2.difficulty_protocol import correct_observations
     output, data, item, unit = sample()

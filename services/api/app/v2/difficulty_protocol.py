@@ -7,7 +7,10 @@ from copy import deepcopy
 
 from .contracts import DomainError, digest
 from .criterion_review import bound_quote
-from .difficulty_review import AXES, NONROUTINE, OPERATIONS, _entries, _dependency_depth, bind_item
+from .difficulty_review import (
+    AXES, NONROUTINE, OPERATIONS, _entries, _dependency_depth, bind_item,
+    normalize_dependency_aliases,
+)
 from .review_contract import normalize_contract, prepare_review_output
 
 VERSION = "difficulty-observation-protocol.v3"
@@ -69,6 +72,7 @@ def bind_observations(data, output, items, unit, audit):
 
 
 def _locks(raw, fields):
+    raw, dependency_aliases = normalize_dependency_aliases(raw)
     complete_axes, entries, declarations, sequences = {}, {}, {}, {}
     for axis in AXES:
         values = raw.get(axis)
@@ -125,7 +129,8 @@ def _locks(raw, fields):
     return {"complete_axes": complete_axes, "valid_entries": entries, "declared_sequences": sequences,
         "declared_fields": declarations,
         "complete_load": deepcopy(load) if valid_level and quotes and len(quotes) == len(proposals) else None,
-        "declared_load_level": level if valid_level else None, "valid_load_quotes": quotes}
+        "declared_load_level": level if valid_level else None, "valid_load_quotes": quotes,
+        "dependency_alias_normalization": dependency_aliases}
 
 
 def correction_payload(data, original_output, bound, *, attempt):
