@@ -22,6 +22,30 @@ NONROUTINE = {"select_method", "generalize", "case_analysis", "transfer", "const
 AXES = ("prerequisites", "cognitive_operations", "nonroutine_operations", "concept_interactions", "steps")
 
 
+def unit_exclusive_waves(requests, concurrency):
+    """Schedule batches in parallel only when they belong to different units.
+
+    Runtime dispatch admits one unresolved provider call per unit. A long unit
+    therefore cannot place two of its batches in the same thread wave, even
+    when global review concurrency is higher. Batches of different units still
+    run in parallel.
+    """
+    pending = list(requests)
+    while pending:
+        wave, remaining, units = [], [], set()
+        for pair in pending:
+            unit_id = pair[0]["unit_id"]
+            if len(wave) < concurrency and unit_id not in units:
+                wave.append(pair)
+                units.add(unit_id)
+            else:
+                remaining.append(pair)
+        if not wave:
+            raise ValueError("difficulty wave made no progress")
+        yield wave
+        pending = remaining
+
+
 def _entries(values, fields, axis):
     if not isinstance(values, list) or len(values) > 40:
         return [], False
@@ -239,9 +263,13 @@ def evaluate_difficulty(run_id, worker, epoch, state, units, version_id, provide
     concurrency = max(1, min(5, state.get("execution_policy", {}).get("check_concurrency", 1)))
     with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="difficulty-review") as pool:
         results = []
-        for start in range(0, len(requests), concurrency):
+        # authorize_call admits at most one in-flight call per unit. Wave by
+        # distinct units rather than flat list offsets so a multi-batch unit
+        # cannot dispatch two siblings concurrently and be misclassified as
+        # UNKNOWN_CALL before either provider request exists.
+        for wave in unit_exclusive_waves(requests, concurrency):
             raise_if_stopped()
-            futures = [pool.submit(evaluate_guarded, pair) for pair in requests[start:start+concurrency]]
+            futures = [pool.submit(evaluate_guarded, pair) for pair in wave]
             results.extend(f.result() for f in futures)
     rows = [r for entries, _, _ in results for r in entries]
     errors = [e for _, _, errors in results for e in errors]

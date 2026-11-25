@@ -140,6 +140,40 @@ def test_failure_stops_later_batches_and_later_unit_waves(monkeypatch):
     assert sorted(seen) == ["u0", "u1"]
 
 
+def test_multi_batch_unit_never_dispatches_two_batches_at_once(monkeypatch):
+    from threading import Lock
+    import time
+
+    row, item, unit = fixture()
+    unit["items"] = [deepcopy(item) | {"item_id": f"u1-i{i}", "ordinal": i} for i in range(1, 5)]
+    second = deepcopy(unit) | {"unit_id": "u2", "items": [
+        deepcopy(item) | {"item_id": f"u2-i{i}", "ordinal": i} for i in range(1, 4)
+    ]}
+    active, overlap, seen = set(), [], []
+    lock = Lock()
+
+    def invoke(*args, **kwargs):
+        unit_id = kwargs["unit_id"]
+        ids = [value["item_id"] for value in kwargs["data"]["items"]]
+        with lock:
+            if unit_id in active:
+                overlap.append(unit_id)
+            active.add(unit_id)
+            seen.append((unit_id, ids))
+        time.sleep(0.02)
+        with lock:
+            active.remove(unit_id)
+        return {"items": [dict(row, item_id=value) for value in ids]}, {"call_id": f"{unit_id}:{ids[0]}"}
+
+    monkeypatch.setattr("app.v2.inference.invoke", invoke)
+    report = evaluate_difficulty(
+        "r", "w", 0, {"execution_policy": {"check_concurrency": 3}}, [unit, second], "v"
+    )
+    assert overlap == []
+    assert len(seen) == len(report["items"]) == len(unit["items"]) + len(second["items"])
+    assert report["status"] == "completed"
+
+
 def test_batch_planner_reuses_success_and_stops_failed_minimum_requests():
     from app.v2.contracts import DomainError
     from app.v2.difficulty_batches import select_batches
