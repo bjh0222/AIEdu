@@ -417,6 +417,24 @@ def rejected_regression_feedback(state: dict, limit: int = 4) -> list[dict]:
     return rows
 
 
+def rollback_pre_dispatch_attempt(state: dict, attempts: int, attempt_keys: list[str],
+                                  previous_attempts_by_finding: dict[str, int], source_stop_reason: str):
+    """Restore attempt counters when no provider dispatch could be created."""
+    state["optimization_attempts"] = attempts
+    per_finding = dict(state.get("optimization_attempts_by_finding") or {})
+    for attempt_key in attempt_keys:
+        per_finding[attempt_key] = int(previous_attempts_by_finding.get(attempt_key, 0))
+    state["optimization_attempts_by_finding"] = per_finding
+    audit = {
+        "method_version": "pre-dispatch-capacity-attempt-rollback.v1",
+        "attempt_keys": list(attempt_keys),
+        "source_stop_reason": source_stop_reason,
+        "provider_dispatch_created": False,
+    }
+    state.setdefault("optimization_attempt_rollbacks", []).append(audit)
+    return audit
+
+
 def fitted_c_payload(profile, system: str, build, output_tokens: int):
     """Choose the most faithful projection level that fits the sourced capacity.
 
@@ -1187,6 +1205,10 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
             return payload
 
         data, projection_level = fitted_c_payload(c_profile, c_planner_system, build_planner_payload, 32768)
+        previous_attempts_by_finding = {
+            attempt_key: int(state.get("optimization_attempts_by_finding", {}).get(attempt_key, 0))
+            for attempt_key in attempt_keys
+        }
         with write() as db:
             obj = job(db, run_id)
             fence(obj, worker, epoch)
@@ -1197,11 +1219,22 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
                 per_finding[attempt_key] = int(per_finding.get(attempt_key, 0)) + 1
             latest["optimization_prompt_projection"] = projection_envelope(quality, projection_level)
             obj.state_json, obj.state_revision = dump(latest), obj.state_revision + 1
-        package, c_audit = invoke(run_id, worker, epoch, state, stage="optimization_prompt",
-            unit_id="optimization", data=data, system=c_planner_system, role="review", profile=c_profile,
-            provider_factory=provider_factory, entries=spec_entries(state["context"], "generating") + [skill_entry(C_REVIEW_SKILL, "C")],
-            output_schema=PACKAGE_SCHEMA, output_tokens=32768,
-            key=f"{run_id}:optimization:plan:{rounds}")
+        try:
+            package, c_audit = invoke(run_id, worker, epoch, state, stage="optimization_prompt",
+                unit_id="optimization", data=data, system=c_planner_system, role="review", profile=c_profile,
+                provider_factory=provider_factory, entries=spec_entries(state["context"], "generating") + [skill_entry(C_REVIEW_SKILL, "C")],
+                output_schema=PACKAGE_SCHEMA, output_tokens=32768,
+                key=f"{run_id}:optimization:plan:{rounds}")
+        except DomainError as exc:
+            if exc.code == "CALL_CAPACITY_EXCEEDED":
+                with write() as db:
+                    obj = job(db, run_id)
+                    fence(obj, worker, epoch)
+                    latest = load(obj.state_json)
+                    rollback_pre_dispatch_attempt(
+                        latest, attempts, attempt_keys, previous_attempts_by_finding, exc.code)
+                    obj.state_json, obj.state_revision = dump(latest), obj.state_revision + 1
+            raise
         package, binding_note = bind_frozen_bindings(package, expected_bindings)
         if binding_note:
             _persist_artifact(run_id, worker, epoch, {"normalization": binding_note},

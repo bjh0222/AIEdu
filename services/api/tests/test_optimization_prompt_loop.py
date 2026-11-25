@@ -221,6 +221,71 @@ def test_loop_injects_package_into_B_and_persists_candidate(client, monkeypatch)
     assert list(state["optimization_attempts_by_finding"].values()) == [1]
 
 
+def test_pre_dispatch_capacity_error_does_not_consume_optimization_attempt(client, monkeypatch):
+    from app.v2.optimization import rollback_pre_dispatch_attempt
+    state = {
+        "optimization_attempts": 1,
+        "optimization_attempts_by_finding": {"candidate:v": 1},
+    }
+    audit = rollback_pre_dispatch_attempt(
+        state, 0, ["candidate:v"], {"candidate:v": 0}, "CALL_CAPACITY_EXCEEDED")
+    assert state["optimization_attempts"] == 0
+    assert state["optimization_attempts_by_finding"] == {"candidate:v": 0}
+    assert audit["provider_dispatch_created"] is False
+
+
+def test_legacy_capacity_resume_rolls_back_only_unbilled_attempt():
+    from app.v2.tasks import _rollback_unbilled_optimization_attempt
+    from app.db import SessionLocal
+    state = {
+        "stop_reason": "CALL_CAPACITY_EXCEEDED",
+        "optimization_policy": {"enabled": True},
+        "optimization_attempts": 6,
+        "optimization_attempts_by_finding": {"candidate:v": 1},
+        "version_id": "v",
+    }
+    with SessionLocal() as db:
+        _rollback_unbilled_optimization_attempt(
+            db, SimpleNamespace(id="definitely-no-provider-dispatch"), state)
+    assert state["optimization_attempts"] == 5
+    assert state["optimization_attempts_by_finding"] == {"candidate:v": 0}
+    assert state["resume_attempt_normalization"]["provider_dispatch_count"] == 0
+
+
+def test_resume_applies_capacity_attempt_rollback_only_to_new_state(client, monkeypatch):
+    from app.api import v2 as v2_api
+    from app.v2.contracts import digest
+    from app.v2.runtime import dump, job, load, write
+    from app.v2.storage import CallDispatch
+    from app.db import SessionLocal
+    from test_task_run_v2 import owner, post
+    _, _, snap = task_run(client)
+    monkeypatch.setattr(v2_api, "execute_run", lambda *args, **kwargs: None)
+    with write() as db:
+        obj = job(db, snap["run_id"])
+        state = load(obj.state_json)
+        state.update(stop_reason="CALL_CAPACITY_EXCEEDED",
+                     optimization_policy={"enabled": True},
+                     optimization_attempts=6,
+                     optimization_attempts_by_finding={f"candidate:{state['version_id']}": 1})
+        obj.state_json, obj.status = dump(state), "failed"
+        obj.state_revision += 1
+        revision, checkpoint = obj.state_revision, digest(state["plan"])
+        db.query(CallDispatch).filter_by(root_job_id=obj.id).delete()
+    response = post(client, f"/runs/{snap['run_id']}/resume",
+                    {"expected_revision": revision, "checkpoint_hash": checkpoint}, owner(client))
+    assert response.status_code == 202, response.text
+    with SessionLocal() as db:
+        child = db.query(__import__("app.models", fromlist=["GenerationJob"]).GenerationJob).filter_by(
+            run_id=response.json()["run_id"]).one()
+        new_state = load(child.state_json)
+        assert new_state["optimization_attempts"] == 5
+        assert list(new_state["optimization_attempts_by_finding"].values()) == [0]
+        assert new_state["resume_attempt_normalization"]["provider_dispatch_count"] == 0
+        old_state = load(job(db, snap["run_id"]).state_json)
+        assert old_state["optimization_attempts"] == 6
+
+
 def test_frozen_research_rubric_is_consumed_by_c_and_b(client, monkeypatch):
     _, _, snap = task_run(client)
     binding = {

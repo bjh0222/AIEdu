@@ -22,6 +22,42 @@ from .resolver import bind_specs, build_units, resolve_task
 _start_lock = threading.RLock()
 
 
+def _rollback_unbilled_optimization_attempt(db, old, state):
+    """Undo a legacy attempt counter consumed by a pre-dispatch capacity error.
+
+    Older workers incremented the attempt counter before ``invoke``. A
+    deterministic CALL_CAPACITY_EXCEEDED produced no CallDispatch and cost
+    nothing, but still exhausted the finite attempt budget. Repair only the
+    copied state on explicit resume; never rewrite the historical job row.
+    """
+    if state.get("stop_reason") != "CALL_CAPACITY_EXCEEDED" or not state.get("optimization_policy"):
+        return
+    if db.query(CallDispatch).filter_by(root_job_id=old.id).first():
+        return
+    attempts = state.get("optimization_attempts")
+    if type(attempts) is not int or attempts <= 0:
+        return
+    version_id = state.get("version_id")
+    key = f"candidate:{version_id}" if version_id else None
+    per_finding = state.get("optimization_attempts_by_finding")
+    if not isinstance(per_finding, dict):
+        per_finding = {}
+    previous_finding_attempts = per_finding.get(key) if key else None
+    state["optimization_attempts"] = attempts - 1
+    if key and type(previous_finding_attempts) is int and previous_finding_attempts > 0:
+        per_finding = dict(per_finding)
+        per_finding[key] = previous_finding_attempts - 1
+        state["optimization_attempts_by_finding"] = per_finding
+    state["resume_attempt_normalization"] = {
+        "method_version": "pre-dispatch-capacity-attempt-rollback.v1",
+        "previous_attempts": attempts,
+        "normalized_attempts": attempts - 1,
+        "candidate_key": key,
+        "source_stop_reason": "CALL_CAPACITY_EXCEEDED",
+        "provider_dispatch_count": 0,
+    }
+
+
 def goal(db, task_id):
     obj = db.get(LearningGoal, task_id)
     if obj is None or not load(obj.task_state_json).get("schema_version"):
@@ -529,6 +565,7 @@ def resume(run_id, payload, key):
                 "injected_chunk_ids": [entry["chunk_id"] for entry in manifest.get("entries", []) if entry.get("status") == "injected"]}
         new_id, root_id = str(uuid4()), str(uuid4())
         new_state = deepcopy({k: v for k, v in state.items() if k != "receipts"})
+        _rollback_unbilled_optimization_attempt(db, old, new_state)
         if payload.transport_retries:
             from .transport_retry import authorize
             grants = authorize(db, old, state, payload.transport_retries, body)
