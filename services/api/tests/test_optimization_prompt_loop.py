@@ -638,6 +638,21 @@ def test_bind_frozen_bindings_injects_missing_keys_but_rejects_conflict():
     assert no_note is None and unchanged["frozen_bindings"] == expected
 
 
+def test_bind_frozen_bindings_repairs_wrapper_owned_hash_array_typos():
+    from app.v2.optimization import bind_frozen_bindings
+    expected_hash = "a" * 63 + "b"
+    received_hash = "a" * 63 + "c"
+    expected = {"plan_hash": "p", "profile_hashes": [expected_hash], "rubric_hashes": [expected_hash]}
+    received = {"plan_hash": "p", "profile_hashes": [received_hash], "rubric_hashes": [expected_hash]}
+    package, note = bind_frozen_bindings({"frozen_bindings": received}, expected)
+    assert package["frozen_bindings"] == expected
+    assert note["normalized_hash_fields"]["profile_hashes"]["received"] == [received_hash]
+    with pytest.raises(Exception, match="OPTIMIZATION_FROZEN_BINDING_MISMATCH"):
+        bind_frozen_bindings({"frozen_bindings": {
+            "plan_hash": "wrong", "profile_hashes": [received_hash], "rubric_hashes": [expected_hash]
+        }}, expected)
+
+
 def test_optimization_run_status_maps_contract_failures_to_failed():
     from app.v2.worker import optimization_run_status
     assert optimization_run_status("optimization_completed_uncalibrated") == ("completed", None)

@@ -1041,7 +1041,18 @@ def bind_frozen_bindings(package: dict, expected: dict):
     if not isinstance(received, dict):
         raise DomainError("OPTIMIZATION_FROZEN_BINDING_MISMATCH", 422, field="frozen_bindings")
     extra = sorted(set(received) - set(expected))
-    conflict = sorted(key for key in received if key in expected and received[key] != expected[key])
+    hash_list_bindings = {"profile_hashes", "rubric_hashes"}
+    normalized_hash_fields = {}
+    for key in hash_list_bindings & set(received) & set(expected):
+        actual, wanted = received[key], expected[key]
+        if (actual != wanted and isinstance(actual, list) and isinstance(wanted, list)
+                and len(actual) == len(wanted)
+                and all(isinstance(value, str) and len(value) == 64 for value in actual + wanted)):
+            normalized_hash_fields[key] = {"received": deepcopy(actual), "expected": deepcopy(wanted)}
+    conflict = sorted(
+        key for key in received
+        if key in expected and key not in normalized_hash_fields and received[key] != expected[key]
+    )
     if extra or conflict:
         raise DomainError("OPTIMIZATION_FROZEN_BINDING_MISMATCH", 422,
                           extra=extra, conflict=conflict)
@@ -1051,6 +1062,7 @@ def bind_frozen_bindings(package: dict, expected: dict):
     note = {"method_version": "optimization-frozen-binding-injection.v1",
             "injected_keys": injected, "received_hash": digest(received),
             "expected_hash": digest(expected),
+            "normalized_hash_fields": normalized_hash_fields,
             "authority": "frozen_bindings are wrapper-owned; the model echoed a value-preserving subset"}
     return result, note
 
