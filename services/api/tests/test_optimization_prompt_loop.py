@@ -491,7 +491,9 @@ def test_quality_projection_strips_audit_and_bounds_quotes_but_keeps_decisions()
     }
     projection = quality_report_projection(quality, "minimal")
     assert projection["quality_status"] == "needs_review" and projection["tqi_verdict"] == "needs_review"
-    assert projection["findings"] == quality["findings"] and projection["checks"] == quality["checks"]
+    assert projection["findings"][0]["finding_id"] == "f1"
+    assert projection["findings"][0]["status"] == "confirmed"
+    assert projection["checks"] == quality["checks"]
     criterion = projection["automated_assessment"]["criteria"][0]
     assert criterion["result"] == "satisfied" and criterion["processing_status"] == "complete"
     assert "audit" not in criterion
@@ -504,6 +506,49 @@ def test_quality_projection_strips_audit_and_bounds_quotes_but_keeps_decisions()
     assert projection["diagnostic_review"]["dimensions"][0]["evidence"][0]["span_hash"] == "t" * 64
     assert "research_evidence" not in projection["diagnostic_review"]
     assert len(canonical(projection)) < 20000
+
+
+def test_quality_projection_bounds_difficulty_and_math_audit_payloads():
+    from app.v2.contracts import canonical
+    from app.v2.optimization import quality_report_projection
+    long_quote = "q" * 10000
+    quality = {
+        "findings": [{"finding_id": "f1", "status": "confirmed", "claim": "c" * 10000,
+                      "evidence": {"field": "body", "quote": long_quote, "span_hash": "a" * 64}}],
+        "checks": [{"item_id": "Q1", "result": "violated", "reason": "r" * 10000}],
+        "check_items": [{"item_id": "Q1", "pass_condition": "p" * 10000,
+                         "criterion_contract": {"check_id": "Q1", "criterion_hash": "h" * 64,
+                                                "pass_condition": "p" * 10000}}],
+        "difficulty_review": {"status": "completed", "result": "undecidable", "audits": [long_quote],
+            "items": [{"unit_id": "u", "item_id": "i", "result": "undecidable",
+                       "counts": {"nonroutine_operations": 2}, "comparisons": [],
+                       "processing_status": "complete", "dimensions": {
+                           "steps": [{"id": "s1", "depends_on": [], "reason": "r" * 10000,
+                                      "evidence": [{"field": "answer.reasoning", "quote": long_quote,
+                                                    "span_hash": "b" * 64}]}]},
+                       "computation_load": {"level": "moderate", "evidence": [{"quote": long_quote}]}}]},
+        "mathematical_evidence": {"method_version": "m", "items": [{"unit_id": "u", "item_id": "i",
+            "results": [{"field": "answer.final", "span_hash": "c" * 64,
+                         "expression_hash": "d" * 64, "verification_result": "unsupported",
+                         "unsupported_reasons": ["syntax"]}]}]},
+        "item_quality": {"item_evaluation": {"score": 1}, "rubrics": [{"aggregate_score": 1}],
+            "independent_item_reviews": [{"item_id": "i", "unit_id": "u", "item_hash": "e" * 64,
+                "audit": {"usage": {"blob": "x" * 100000}}, "dimensions": {"reasoning": {
+                    "result": "undecidable", "observation": "concern", "reason": "r" * 10000,
+                    "source": {"field": "body", "quote": long_quote, "quote_hash": "f" * 64}}}}]},
+        "independent_review": {"status": "completed", "traces": [{"call_id": "c", "usage": {"blob": "x" * 100000},
+            "contract_normalization": {"changes": [long_quote]}}]},
+    }
+    projection = quality_report_projection(quality, "minimal")
+    assert projection["difficulty_review"]["items"][0]["result"] == "undecidable"
+    assert projection["difficulty_review"]["items"][0]["dimensions"]["steps"][0]["id"] == "s1"
+    assert "quote" not in projection["difficulty_review"]["items"][0]["dimensions"]["steps"][0]["evidence"][0]
+    assert projection["mathematical_evidence"]["items"][0]["results"][0]["expression_hash"] == "d" * 64
+    assert projection["item_quality"]["independent_item_reviews"][0]["dimensions"]["reasoning"]["result"] == "undecidable"
+    assert projection["independent_review"]["traces"] == [{"call_id": "c", "unit_id": None,
+        "item_id": None, "candidate_result": None, "perturbation": None,
+        "model_family": None, "request_hash": None, "requested_request_hash": None}]
+    assert len(canonical(projection)) < 30000
 
 
 def test_c_planner_receives_bounded_projection_not_full_report(client, monkeypatch):

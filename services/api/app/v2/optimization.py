@@ -272,6 +272,220 @@ def _projection_preflight(value):
             "non_execute_rows": rows}
 
 
+def _projection_findings(rows, limits):
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        projected = {k: row[k] for k in (
+            "finding_id", "status", "severity_class", "category", "system", "item_id",
+            "location_status", "verification_result", "verification_method", "confidence",
+            "normalized_claim_hash", "check_plan_hash", "input_hash", "tool_raw_output_hash",
+        ) if k in row}
+        for key in ("claim", "reason", "suggested_fix"):
+            if row.get(key) is not None:
+                projected[key] = _projection_text(row[key], limits["reason_codepoints"])
+        if isinstance(row.get("location"), dict):
+            projected["location"] = {
+                k: row["location"][k] for k in (
+                    "unit_id", "version_id", "unit_hash", "start_byte", "end_byte", "span_hash"
+                ) if k in row["location"]
+            }
+        if isinstance(row.get("evidence"), dict):
+            projected["evidence"] = _projection_evidence(
+                [row["evidence"]], quote_limit=limits["quote_codepoints"],
+                max_rows=limits["evidence_rows_failed"])
+        if row.get("review_evidence"):
+            projected["review_evidence"] = deepcopy(row["review_evidence"][:4])
+        out.append(projected)
+    return out
+
+
+def _projection_checks(rows, limits):
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        projected = {k: row[k] for k in (
+            "item_id", "result", "method_version", "processing_status", "unit_id",
+            "check_id", "criterion_hash", "quality_matrix_hash",
+        ) if k in row}
+        if row.get("reason") is not None:
+            projected["reason"] = _projection_text(row["reason"], limits["reason_codepoints"])
+        out.append(projected)
+    return out
+
+
+def _projection_check_items(rows, limits):
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        projected = {k: row[k] for k in (
+            "item_id", "dimension", "system", "severity_class", "required",
+            "decision_type", "verifier_binding",
+        ) if k in row}
+        for key in ("name", "pass_condition", "applicability_reason"):
+            if row.get(key) is not None:
+                projected[key] = _projection_text(row[key], limits["reason_codepoints"])
+        contract = row.get("criterion_contract")
+        if isinstance(contract, dict):
+            projected["criterion_contract"] = {
+                k: contract[k] for k in (
+                    "check_id", "name", "version", "criterion_hash", "source_ref"
+                ) if k in contract
+            }
+            if contract.get("pass_condition") is not None:
+                projected["criterion_contract"]["pass_condition"] = _projection_text(
+                    contract["pass_condition"], limits["reason_codepoints"])
+        out.append(projected)
+    return out
+
+
+def _projection_difficulty(value, limits):
+    if not isinstance(value, dict):
+        return value
+    projected = {k: value[k] for k in (
+        "method_version", "status", "result", "processing_status", "coverage",
+        "protocol_errors", "input_binding", "calibration_status", "empirical_status",
+        "professional_certification", "target_authority", "version_id",
+    ) if k in value}
+    items = []
+    for row in value.get("items") or []:
+        if not isinstance(row, dict):
+            continue
+        item = {k: row[k] for k in (
+            "unit_id", "item_id", "ordinal", "item_fields_hash", "result", "counts",
+            "target", "comparisons", "input_binding_complete", "processing_status",
+            "empirical_status", "authority", "dependency_alias_normalization",
+        ) if k in row}
+        load = row.get("computation_load")
+        item["computation_load"] = {
+            "level": load.get("level"),
+            "not_a_difficulty_proxy": load.get("not_a_difficulty_proxy"),
+        } if isinstance(load, dict) else load
+        dimensions = {}
+        for axis, entries in (row.get("dimensions") or {}).items():
+            values = []
+            for entry in entries if isinstance(entries, list) else []:
+                if not isinstance(entry, dict):
+                    continue
+                bounded = {k: entry[k] for k in ("id", "operation", "depends_on") if k in entry}
+                if entry.get("reason") is not None:
+                    bounded["reason"] = _projection_text(entry["reason"], limits["reason_codepoints"])
+                if entry.get("evidence"):
+                    bounded["evidence"] = _projection_evidence(
+                        entry["evidence"], quote_limit=limits["quote_codepoints"],
+                        max_rows=limits["evidence_rows_failed"])
+                values.append(bounded)
+            dimensions[axis] = values
+        item["dimensions"] = dimensions
+        items.append(item)
+    projected["items"] = items
+    projected["audits"] = "call_audit_metadata_stripped_for_capacity"
+    return projected
+
+
+def _projection_mathematical_evidence(value, limits):
+    if not isinstance(value, dict):
+        return value
+    projected = {k: value[k] for k in (
+        "method_version", "scope", "professional_certification",
+    ) if k in value}
+    items = []
+    for row in value.get("items") or []:
+        if not isinstance(row, dict):
+            continue
+        item = {k: row[k] for k in ("unit_id", "item_id", "method_version", "coverage", "fields")
+                if k in row}
+        results = []
+        for result in row.get("results") or []:
+            if not isinstance(result, dict):
+                continue
+            results.append({k: result[k] for k in (
+                "field", "span_kind", "start_byte", "end_byte", "span_hash",
+                "expression_hash", "claim_kind", "claim_status", "verification_result",
+                "unsupported_reasons",
+            ) if k in result})
+        item["results"] = results
+        items.append(item)
+    projected["items"] = items
+    return projected
+
+
+def _projection_item_quality(value, limits):
+    if not isinstance(value, dict):
+        return value
+    projected = {k: value[k] for k in (
+        "applicable", "calibration_status", "coupled_answer_count", "difficulty_status",
+        "item_count", "method_version", "semantic_score",
+    ) if k in value}
+    projected["item_evaluation"] = deepcopy(value.get("item_evaluation"))
+    reviews = []
+    for row in value.get("independent_item_reviews") or []:
+        if not isinstance(row, dict):
+            continue
+        item = {k: row[k] for k in (
+            "item_id", "unit_id", "item_hash", "calibration_status", "difficulty_status",
+        ) if k in row}
+        dimensions = {}
+        for name, dimension in (row.get("dimensions") or {}).items():
+            if not isinstance(dimension, dict):
+                continue
+            projected_dimension = {k: dimension[k] for k in (
+                "result", "observation", "score", "authority"
+            ) if k in dimension}
+            if dimension.get("reason") is not None:
+                projected_dimension["reason"] = _projection_text(
+                    dimension["reason"], limits["reason_codepoints"])
+            if isinstance(dimension.get("source"), dict):
+                projected_dimension["source"] = {
+                    k: dimension["source"][k] for k in (
+                        "field", "field_hash", "quote_hash", "start_byte", "end_byte"
+                    ) if k in dimension["source"]
+                }
+            dimensions[name] = projected_dimension
+        item["dimensions"] = dimensions
+        reviews.append(item)
+    projected["independent_item_reviews"] = reviews
+    projected["rubrics"] = project_rubric_summaries(value.get("rubrics"))
+    return projected
+
+
+def project_rubric_summaries(rows):
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        out.append({k: row[k] for k in (
+            "domain_key", "version", "status", "aggregate_score", "threshold",
+            "calibration_status", "difficulty_status", "learning_gain",
+        ) if k in row})
+    return out
+
+
+def _projection_independent_review(value):
+    if not isinstance(value, dict):
+        return value
+    projected = {k: value[k] for k in (
+        "status", "model_family_independent", "human_reviews", "concurrency",
+        "scheduling", "rejected_candidates",
+    ) if k in value}
+    l4 = value.get("L4")
+    if isinstance(l4, dict):
+        projected["L4"] = {
+            "status": l4.get("status"),
+            "human_reviews": l4.get("human_reviews"),
+            "random_sampling": l4.get("random_sampling"),
+            "risk_reviews": deepcopy(l4.get("risk_reviews") or []),
+        }
+    projected["traces"] = [{k: row.get(k) for k in (
+        "call_id", "unit_id", "item_id", "candidate_result", "perturbation",
+        "model_family", "request_hash", "requested_request_hash",
+    )} for row in (value.get("traces") or []) if isinstance(row, dict)]
+    return projected
+
+
 def _projection_batches(rows) -> list[dict]:
     out = []
     for row in rows or []:
@@ -331,6 +545,19 @@ def quality_report_projection(quality: dict, level: str) -> dict:
         projected["diagnostic_review"] = bounded
     if "quality_preflight" in projected:
         projected["quality_preflight"] = _projection_preflight(projected["quality_preflight"])
+    projected["findings"] = _projection_findings(quality.get("findings"), limits)
+    projected["checks"] = _projection_checks(quality.get("checks"), limits)
+    if "check_items" in projected:
+        projected["check_items"] = _projection_check_items(projected["check_items"], limits)
+    for key, projector in (
+        ("difficulty_review", _projection_difficulty),
+        ("mathematical_evidence", _projection_mathematical_evidence),
+        ("item_quality", _projection_item_quality),
+    ):
+        if key in projected:
+            projected[key] = projector(projected[key], limits)
+    if "independent_review" in projected:
+        projected["independent_review"] = _projection_independent_review(projected["independent_review"])
     if level == "minimal":
         evidence = quality.get("research_evidence")
         if isinstance(evidence, dict):
