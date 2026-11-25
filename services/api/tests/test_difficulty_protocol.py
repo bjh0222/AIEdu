@@ -423,6 +423,26 @@ def test_unique_short_dependencies_with_one_bad_quote_reach_bounded_correction(m
     assert report["status"] == "completed"
 
 
+def test_correction_feedback_reports_nonunique_quote_without_choosing_an_occurrence():
+    from app.v2.difficulty_protocol import bind_observations, correction_payload
+    output, _, item, unit = sample()
+    quote = "same"
+    item["answer"]["reasoning"] = f"{quote}; {quote}; {quote}"
+    output["items"][0]["prerequisites"][0]["evidence"] = [
+        {"field": "answer.reasoning", "quote": quote}
+    ]
+    data = {"items": [{"item_id": item["item_id"], "fields": {
+        "stem_markdown": item["stem_markdown"], "answer.final": item["answer"]["final"],
+        "answer.reasoning": item["answer"]["reasoning"],
+    }}]}
+    bound = bind_observations(data, output, [item], unit, {})
+    payload = correction_payload(data, output, bound, attempt=1)
+    feedback = payload["evidence_binding_feedback"]
+    assert any(row["issue"] == "quote_not_unique" and row["occurrences"] == 3
+               and row["quote"] == quote for row in feedback)
+    assert "longer exact substring" in __import__("app.v2.difficulty_protocol", fromlist=["INSTRUCTION"]).INSTRUCTION
+
+
 def test_correction_schema_preserves_complete_and_partial_legacy_entries_without_contradiction():
     from app.v2.difficulty_protocol import correct_observations
     output, data, item, unit = sample()
