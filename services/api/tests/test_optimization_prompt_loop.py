@@ -556,3 +556,10 @@ def test_validate_candidate_tolerates_missing_schema_version_but_not_wrong_one()
     wrong["schema_version"] = "wrong"
     with pytest.raises(Exception, match="OPTIMIZATION_CANDIDATE_VERSION_INVALID"):
         validate_candidate(wrong, package, version, [base_unit])
+
+
+def test_quality_protocol_manifest_covers_optimization_modules():
+    from app.v2.review_contract import review_protocol_manifest
+    files = review_protocol_manifest()["implementation_files"]
+    for name in ("worker.py", "optimization.py", "optimization_recheck.py", "optimization_acceptance.py"):
+        assert name in files

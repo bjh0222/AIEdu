@@ -472,6 +472,9 @@ def review_protocol_manifest() -> dict[str, Any]:
             "research_review_corrections.py",
             "difficulty_protocol.py",
             "difficulty_review.py",
+            "optimization.py",
+            "optimization_recheck.py",
+            "optimization_acceptance.py",
             "review_contract.py",
         )
     }
