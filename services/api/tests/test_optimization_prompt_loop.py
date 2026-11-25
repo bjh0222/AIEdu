@@ -457,3 +457,51 @@ def test_fitted_payload_escalates_to_smaller_projection(monkeypatch):
     payload, level = fitted_c_payload(profile, "system", build, 50)
     assert level == "minimal"
     assert payload["level"] == "minimal"
+
+
+def test_validate_package_tolerates_numeric_skill_version_but_not_wrong_identity():
+    from copy import deepcopy
+    from app.v2.optimization import OPTIMIZATION_SKILL, SCHEMA_VERSION, validate_package
+    version = SimpleNamespace(id="v1", content_hash="a" * 64)
+    package = {
+        "schema_version": SCHEMA_VERSION,
+        "skill": {"id": OPTIMIZATION_SKILL["id"], "version": OPTIMIZATION_SKILL["version"],
+                  "hash": OPTIMIZATION_SKILL["hash"]},
+        "base_version": "v1", "base_content_hash": "a" * 64, "objective": "objective",
+        "frozen_bindings": {}, "scope": {"allowed_change_modes": ["whole_unit"], "unit_ids": ["u"],
+                                         "must_preserve": [], "forbidden_changes": []},
+        "confirmed_findings": [], "unverified_hypotheses": [], "optimizations": [],
+        "priority_order": [], "dependencies": [],
+        "optimization_prompt": ("Complete natural-language optimization package with scope, preserved "
+                                "constraints, acceptance checks, and explicit stop conditions."),
+        "acceptance_criteria": [{"item_id": "i", "pass_condition": "pass", "verification_method": "m"}],
+        "stop_conditions": [], "recheck_scope": "full",
+    }
+    # JSON number echo of a dotted version label is accepted when id/hash match.
+    numeric = deepcopy(package)
+    numeric["skill"]["version"] = 1.6
+    assert validate_package(numeric, version) is numeric
+    # A genuinely different version or hash is still rejected.
+    wrong_version = deepcopy(package)
+    wrong_version["skill"]["version"] = 9.9
+    with pytest.raises(Exception, match="OPTIMIZATION_SKILL_MISMATCH"):
+        validate_package(wrong_version, version)
+    wrong_hash = deepcopy(package)
+    wrong_hash["skill"]["hash"] = "b" * 64
+    with pytest.raises(Exception, match="OPTIMIZATION_SKILL_MISMATCH"):
+        validate_package(wrong_hash, version)
+
+
+def test_bind_frozen_bindings_injects_missing_keys_but_rejects_conflict():
+    from copy import deepcopy
+    from app.v2.optimization import bind_frozen_bindings
+    expected = {"a": 1, "nested": {"x": [1, 2]}, "b": None}
+    out, note = bind_frozen_bindings({"frozen_bindings": {"a": 1}, "objective": "o"}, expected)
+    assert out["frozen_bindings"] == expected and out["objective"] == "o"
+    assert set(note["injected_keys"]) == {"nested", "b"}
+    with pytest.raises(Exception, match="OPTIMIZATION_FROZEN_BINDING_MISMATCH"):
+        bind_frozen_bindings({"frozen_bindings": {"a": 2}}, expected)
+    with pytest.raises(Exception, match="OPTIMIZATION_FROZEN_BINDING_MISMATCH"):
+        bind_frozen_bindings({"frozen_bindings": {"a": 1, "zzz": 9}}, expected)
+    unchanged, no_note = bind_frozen_bindings({"frozen_bindings": deepcopy(expected)}, expected)
+    assert no_note is None and unchanged["frozen_bindings"] == expected

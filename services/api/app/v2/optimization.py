@@ -687,6 +687,70 @@ def _require_records(value: Any, required: set[str], label: str):
             raise DomainError("OPTIMIZATION_PACKAGE_INVALID", 422, field=label, missing=missing)
 
 
+def _skill_version_matches(expected, received) -> bool:
+    """Compare a dotted version label tolerant of JSON number vs string echo.
+
+    The authoritative skill identity is ``(id, prompt hash)``. The ``version``
+    field is a human label the provider sometimes normalizes (e.g. ``"1.6.0"``
+    returned as the JSON number ``1.6``). Accept only numerically equivalent
+    dotted versions (trailing zero components ignored) so a genuinely different
+    version is still rejected; id and hash are always compared exactly.
+    """
+    if received == expected:
+        return True
+
+    def parts(value):
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, (int, float)):
+            value = str(value)
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            numbers = [int(piece) for piece in value.strip().split(".")]
+        except ValueError:
+            return None
+        while len(numbers) > 1 and numbers[-1] == 0:
+            numbers.pop()
+        return tuple(numbers)
+
+    expected_parts, received_parts = parts(expected), parts(received)
+    return expected_parts is not None and expected_parts == received_parts
+
+
+def bind_frozen_bindings(package: dict, expected: dict):
+    """Complete the model's frozen-bindings echo from authoritative state.
+
+    Frozen bindings are wrapper-owned identity, not model-authored content. The
+    static response schema advertises only a subset of the keys that
+    ``_frozen_bindings`` actually returns, so a model that copies the schema
+    verbatim omits keys such as ``subject_understanding`` or
+    ``evaluation_frameworks``. Accept a value-preserving subset echo, inject the
+    complete authoritative dict, and record exactly which keys were injected.
+    A conflicting or unknown key is still rejected.
+    """
+    if not isinstance(package, dict):
+        return package, None
+    received = package.get("frozen_bindings")
+    if received == expected:
+        return package, None
+    if not isinstance(received, dict):
+        raise DomainError("OPTIMIZATION_FROZEN_BINDING_MISMATCH", 422, field="frozen_bindings")
+    extra = sorted(set(received) - set(expected))
+    conflict = sorted(key for key in received if key in expected and received[key] != expected[key])
+    if extra or conflict:
+        raise DomainError("OPTIMIZATION_FROZEN_BINDING_MISMATCH", 422,
+                          extra=extra, conflict=conflict)
+    injected = sorted(set(expected) - set(received))
+    result = deepcopy(package)
+    result["frozen_bindings"] = deepcopy(expected)
+    note = {"method_version": "optimization-frozen-binding-injection.v1",
+            "injected_keys": injected, "received_hash": digest(received),
+            "expected_hash": digest(expected),
+            "authority": "frozen_bindings are wrapper-owned; the model echoed a value-preserving subset"}
+    return result, note
+
+
 def validate_package(package: dict, version, skill: dict = OPTIMIZATION_SKILL,
                      expected_bindings: dict | None = None) -> dict:
     required = {"schema_version", "skill", "base_version", "base_content_hash", "objective", "scope",
@@ -699,7 +763,8 @@ def validate_package(package: dict, version, skill: dict = OPTIMIZATION_SKILL,
         raise DomainError("OPTIMIZATION_PACKAGE_VERSION_INVALID", 422)
     skill_binding = package.get("skill")
     if (not isinstance(skill_binding, dict)
-            or skill_binding.get("id") != skill["id"] or skill_binding.get("version") != skill["version"]
+            or skill_binding.get("id") != skill["id"]
+            or not _skill_version_matches(skill["version"], skill_binding.get("version"))
             or skill_binding.get("hash") != skill["hash"]):
         raise DomainError("OPTIMIZATION_SKILL_MISMATCH", 422)
     if package.get("base_version") != version.id or package.get("base_content_hash") != version.content_hash:
@@ -1023,13 +1088,15 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
             return
         c_planner_system = SKILL_PROMPT + "\nReturn the C PACKAGE matching data.schema, including the complete nonempty acceptance_criteria list. candidate_schema describes ONLY the later B response; do not generate units/items or return a B candidate. Correct every source-bound package_validation_feedback contract error; never waive or fabricate criteria. Copy schema_version, skill, base_version, base_content_hash and frozen_bindings EXACTLY from the supplied metadata/schema. Never recompute hashes. confirmed_findings may ONLY reference eligible_confirmed_finding_ids; put new model observations into unverified_hypotheses or evidence-based optimizations, never invent confirmed IDs. Keep original global required checks and quality barriers unchanged. Define finite, observable candidate-improvement criteria, not a requirement to obtain unavailable professional certification. Unverifiable claims stay unknown. For mechanically testable criteria optionally add deterministic_test:{method:maximum_codepoints,unit_ids:[...],limit:integer} (Unicode codepoints including Markdown), or {method:required_literals,unit_ids:[...],literals:[...]}. Do not claim these methods certify mathematical truth." + C_REVIEW_SKILL_PROMPT
 
+        expected_bindings = _frozen_bindings(state)
+
         def build_planner_payload(level: str) -> dict:
             payload = {
                 "schema": PACKAGE_SCHEMA, "optimization_skill": {k: OPTIMIZATION_SKILL[k] for k in ("id", "version", "hash")},
                 "base_version": version.id, "base_content_hash": version.content_hash,
                 "quality_report": quality_report_projection(quality, level), "units": units, "round": rounds,
                 "quality_report_projection": projection_envelope(quality, level),
-                "frozen_bindings": _frozen_bindings(state),
+                "frozen_bindings": expected_bindings,
                 "import_understanding": state.get("context", {}).get("import_understanding", []),
                 "frozen_A_plan": state["plan"],
                 "frozen_task_contract": {k: state["context"].get(k) for k in
@@ -1066,6 +1133,10 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
             provider_factory=provider_factory, entries=spec_entries(state["context"], "generating") + [skill_entry(C_REVIEW_SKILL, "C")],
             output_schema=PACKAGE_SCHEMA, output_tokens=32768,
             key=f"{run_id}:optimization:plan:{rounds}")
+        package, binding_note = bind_frozen_bindings(package, expected_bindings)
+        if binding_note:
+            _persist_artifact(run_id, worker, epoch, {"normalization": binding_note},
+                              "optimization_binding_normalization", c_audit)
         package_hash = digest(package)
         _persist_artifact(run_id, worker, epoch, package, "optimization_package", c_audit)
         if package_hash in package_hashes:
@@ -1073,7 +1144,7 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
             return
         package_hashes.add(package_hash)
         try:
-            package = validate_package(package, version, expected_bindings=_frozen_bindings(state))
+            package = validate_package(package, version, expected_bindings=expected_bindings)
             if not {f["finding_id"] for f in package["confirmed_findings"]} <= {f["finding_id"] for f in old_confirmed}:
                 raise DomainError("OPTIMIZATION_CONFIRMATION_NOT_BOUND", 422)
         except DomainError as exc:
