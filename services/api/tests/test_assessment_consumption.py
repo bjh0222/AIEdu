@@ -160,6 +160,34 @@ def test_rejected_regression_feedback_is_bounded_and_marked_unconfirmed():
         "unit_id", "dimension_id", "binding_hash", "before", "after", "reason"}
 
 
+def test_rejected_regression_feedback_recovers_immutable_artifact(monkeypatch):
+    from app.v2.optimization import rejected_regression_feedback
+    from app.v2.contracts import canonical, digest
+    artifact = {
+        "candidate_version": "candidate-version",
+        "regressions": [{
+            "unit_id": "u", "dimension_id": "d", "binding_hash": "b",
+            "before": "satisfied", "after": "violated", "reason": "score_lost",
+        }],
+    }
+    blob = canonical(artifact)
+    identity = digest(artifact)
+    seen = []
+    monkeypatch.setattr("app.v2.optimization.BlobStore.get", lambda self, key: seen.append(key) or blob)
+    rows = rejected_regression_feedback({
+        "optimization_regression_artifacts": {
+            identity: {"blob_hash": identity, "kind": "optimization_regression", "call_id": "b-call"},
+        },
+    })
+    assert seen == [identity]
+    assert rows == [{
+        "candidate_hash": None,
+        "candidate_version": "candidate-version",
+        "authority": "unpublished_candidate_observation_not_confirmed_fact",
+        "regressions": artifact["regressions"],
+    }]
+
+
 def test_progress_identity_includes_hidden_document_end_answers_not_UUID():
     from app.v2.optimization import unit_content_identity
     original = {"unit_id": "u", "body": "题面", "items": [{"item_id": "old", "content_hash": "oldhash",

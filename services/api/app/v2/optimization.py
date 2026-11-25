@@ -367,18 +367,50 @@ def rejected_regression_feedback(state: dict, limit: int = 4) -> list[dict]:
     These are observations of unpublished candidates, not confirmed defects in
     the saved best version. Keep only stable diagnostic identities and verdict
     movement so the next C pass can preserve every previously satisfied score.
+    Current state stores a compact summary. Historical runs recover the same
+    contract from immutable regression artifacts, so a resume after reload does
+    not either lose the feedback or re-inject two full quality reports.
     """
+    source_rows = [row for row in (state.get("rejected_candidate_regressions") or [])
+                   if isinstance(row, dict)]
+    if not source_rows:
+        artifacts = state.get("optimization_regression_artifacts") or {}
+        for identity, ref in artifacts.items():
+            if not isinstance(ref, dict) or ref.get("kind") != "optimization_regression":
+                continue
+            raw = BlobStore().get(ref.get("blob_hash", ""))
+            if sha(raw) != identity or ref.get("blob_hash") != identity:
+                raise DomainError("OPTIMIZATION_ARTIFACT_HASH_MISMATCH", 422)
+            artifact = load(raw.decode())
+            regressions = artifact.get("regressions") or []
+            # Older artifacts recorded only verdict movement. Recover scores
+            # from the tied immutable full recheck when possible, otherwise
+            # preserve the genuine coarse report rather than invent detail.
+            for check_ref in (state.get("optimization_full_recheck_artifacts") or {}).values():
+                if not isinstance(check_ref, dict) or check_ref.get("call_id") != ref.get("call_id"):
+                    continue
+                check_raw = BlobStore().get(check_ref.get("blob_hash", ""))
+                checked = load(check_raw.decode())
+                richer = diagnostic_regressions(state.get("quality") or {}, checked)
+                if richer:
+                    regressions = richer
+                break
+            source_rows.append({
+                "candidate_hash": None,
+                "candidate_version": artifact.get("candidate_version"),
+                "authority": "unpublished_candidate_observation_not_confirmed_fact",
+                "regressions": regressions,
+            })
     rows = []
-    for row in (state.get("rejected_candidate_regressions") or [])[-limit:]:
-        if not isinstance(row, dict):
-            continue
+    for row in source_rows[-limit:]:
         rows.append({
             "candidate_hash": row.get("candidate_hash"),
             "candidate_version": row.get("candidate_version"),
             "authority": "unpublished_candidate_observation_not_confirmed_fact",
             "regressions": [{
                 key: regression.get(key) for key in
-                ("unit_id", "ordinal", "dimension_id", "check_id", "binding_hash", "before", "after", "reason")
+                ("unit_id", "ordinal", "dimension_id", "check_id", "binding_hash", "before", "after",
+                 "before_score", "after_score", "before_rating", "after_rating", "reason")
                 if regression.get(key) is not None
             } for regression in row.get("regressions", []) if isinstance(regression, dict)],
         })
@@ -1021,6 +1053,7 @@ def diagnostic_regressions(before: dict, after: dict) -> list[dict]:
                 or (current.get("result") == "violated" and prior.get("result") != "violated") or lower):
             rows.append({"binding_hash": key[0], "unit_id": key[1], "dimension_id": key[2],
                          "before": prior.get("result"), "after": current.get("result", "missing"),
+                         "before_score": prior.get("score"), "after_score": current.get("score"),
                          "reason": "diagnostic_observation_regressed_not_confirmed_fact"})
     # Item UUIDs are minted afresh by normalization, whereas unit + ordinal is
     # the frozen learner slot. Never let UUID churn evade per-item best guards.
@@ -1039,6 +1072,7 @@ def diagnostic_regressions(before: dict, after: dict) -> list[dict]:
             if ((prior.get("result") == "satisfied" and actual.get("result") != "satisfied") or lower_rating):
                 rows.append({"unit_id": slot[0], "ordinal": slot[1], "dimension_id": suffix,
                              "check_id": slot[2], "before": prior.get("result"), "after": actual.get("result", "missing"),
+                             "before_rating": prior.get("rating"), "after_rating": actual.get("rating"),
                              "reason": "per_item_observation_regressed_not_professional_fact"})
     return rows
 
@@ -1119,6 +1153,7 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
         c_planner_system = SKILL_PROMPT + "\nReturn the C PACKAGE matching data.schema, including the complete nonempty acceptance_criteria list. candidate_schema describes ONLY the later B response; do not generate units/items or return a B candidate. Correct every source-bound package_validation_feedback contract error; never waive or fabricate criteria. Copy schema_version, skill, base_version, base_content_hash and frozen_bindings EXACTLY from the supplied metadata/schema. Never recompute hashes. confirmed_findings may ONLY reference eligible_confirmed_finding_ids; put new model observations into unverified_hypotheses or evidence-based optimizations, never invent confirmed IDs. Keep original global required checks and quality barriers unchanged. Define finite, observable candidate-improvement criteria, not a requirement to obtain unavailable professional certification. Unverifiable claims stay unknown. For mechanically testable criteria optionally add deterministic_test:{method:maximum_codepoints,unit_ids:[...],limit:integer} (Unicode codepoints including Markdown), or {method:required_literals,unit_ids:[...],literals:[...]}. Do not claim these methods certify mathematical truth." + C_REVIEW_SKILL_PROMPT
 
         expected_bindings = _frozen_bindings(state)
+        regression_feedback = rejected_regression_feedback(state)
 
         def build_planner_payload(level: str) -> dict:
             payload = {
@@ -1141,8 +1176,11 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
                 "review_skill": {"skill_id": C_REVIEW_SKILL["skill_id"], "version": C_REVIEW_SKILL["version"], "hash": C_REVIEW_SKILL["hash"]},
                 "package_validation_feedback": package_validation_feedback(state, version),
                 "rejected_acceptance_feedback": rejected_acceptance_feedback(state),
-                "rejected_candidate_regressions": rejected_regression_feedback(state),
-                "rejected_full_rechecks": _projection_recheck_reports(state, level),
+                "rejected_candidate_regressions": regression_feedback,
+                # Explicit regression rows are the bounded authority for this
+                # retry. Re-injecting the full reports duplicates the same
+                # decisions and deterministically exhausts the C context.
+                "rejected_full_rechecks": [] if regression_feedback else _projection_recheck_reports(state, level),
             }
             if material_evidence is not None:
                 payload["material_evidence"] = material_evidence
