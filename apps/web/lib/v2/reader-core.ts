@@ -125,6 +125,57 @@ export function projectDisplayMath(source: string): Transformed {
   return { text, map: (offset: number) => offset + offsets.filter((at) => at <= offset).length * newline.length };
 }
 
+/** Render-only support for LaTeX \(...\) and \[...\] delimiters.
+ *
+ * Generated math should use $...$, but compatible models occasionally emit the
+ * LaTeX forms. Convert them outside code spans so formulas and subscripts still
+ * render. Stored bytes and evidence offsets remain unchanged; the returned map
+ * projects original offsets through the render-only replacement.
+ */
+export function projectLatexDelimiters(source: string): Transformed {
+  const parts = source.split(FENCE_OR_CODE);
+  const edits: { start: number; end: number; len: number }[] = [];
+  let original = 0;
+  const escaped = (text: string, at: number) => {
+    let slashes = 0;
+    while (at > 0 && text[--at] === "\\") slashes++;
+    return slashes % 2 === 1;
+  };
+  const pattern = /\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\)/g;
+  const rendered = parts.map((piece, index) => {
+    const base = original;
+    original += piece.length;
+    if (index % 2) return piece;
+    let cursor = 0;
+    let output = "";
+    for (const match of piece.matchAll(pattern)) {
+      const at = match.index ?? 0;
+      const isDisplay = match[1] !== undefined;
+      const closingAt = at + match[0].length - 2;
+      if (escaped(piece, at) || escaped(piece, closingAt)) continue;
+      output += piece.slice(cursor, at);
+      const body = isDisplay ? match[1] : match[2];
+      const lead = isDisplay && !/^\r?\n/.test(body) ? "\n" : "";
+      const trail = isDisplay && !/\r?\n$/.test(body) ? "\n" : "";
+      const replacement = isDisplay ? `$$${lead}${body}${trail}$$` : `$${body}$`;
+      output += replacement;
+      edits.push({ start: base + at, end: base + at + match[0].length, len: replacement.length });
+      cursor = at + match[0].length;
+    }
+    return output + piece.slice(cursor);
+  }).join("");
+  const map = (offset: number) => {
+    let delta = 0;
+    for (const edit of edits) {
+      if (edit.end <= offset) delta += edit.len - (edit.end - edit.start);
+      else if (edit.start < offset) return edit.start + delta;
+      else break;
+    }
+    return offset + delta;
+  };
+  return { text: rendered, map };
+}
+
 /**
  * 把 `[[目标|别名]]` 转成内部链接占位；`targets` 是 unit_id/标题 → 锚点。无目标则降级为带标记的文本。
  * 返回 map：原文偏移 → 变换后偏移（问题标记用原文偏移定位，渲染前必须换算）。

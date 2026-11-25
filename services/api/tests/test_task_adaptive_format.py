@@ -53,8 +53,16 @@ def test_A_owns_actual_groups_and_B_quantities_forms_and_projection():
     body = render_unit_items(items, unit)
     assert unit["title"] == "合成方法甲" and len(items) == 3
     assert "方法说明" in body and body.index("方法说明") < body.index("**1.**")
+    assert "\n\n\n\n**2.**" in body  # Three blank lines between constructed-response items.
     assert "判断题" not in body and "基础概念题" not in body and "- [ ]" not in body
     assert "完整关键推导" in body and [i["ordinal"] for i in items] == [1, 2, 3]
+
+
+@pytest.mark.parametrize("scene", ["exercise", "exam_paper"])
+def test_item_spec_packages_preserve_three_blank_lines_between_essay_questions(scene):
+    from app.v2.spec_packages import build_package
+    package = build_package("math_logic", "微积分", scene)
+    assert "相邻解答题、证明题、综合题及其它主观题之间固定保留3个空行" in package["spec"]["required_rules"]
 
 
 @pytest.mark.parametrize("fault,code", [("quantity", "TASK_ITEM_QUANTITY_MISMATCH"), ("form", "TASK_QUESTION_FORM_MISMATCH"),

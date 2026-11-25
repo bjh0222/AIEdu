@@ -47,6 +47,53 @@ The answer is $ad-bc$.`;
     expect(calls.filter((c) => c.url !== "/session").every((c) => c.method === "GET")).toBe(true);
   });
 
+  test("兼容 \\(...\\) 与 \\[...\\] 公式定界符并保留下标渲染", async ({ page }) => {
+    const body = String.raw`# LaTeX 定界符
+
+设 \(x_0\) 与 \(\frac{1}{2}\)，计算：
+
+\[
+\int_0^1 x^2\,dx.
+\]`;
+    const v = versionRead(IDS.v2, 2, body, []);
+    await mockBackend(page, { snapshot: () => runSnapshot({ quality: v.quality }), versions: { [IDS.v2]: v } });
+    await page.goto(`/tasks/${IDS.task}/read`);
+    await expect(page.locator(".prose .math-inline .katex")).toHaveCount(2);
+    await expect(page.locator(".prose .math-block .katex")).toHaveCount(1);
+    await expect(page.locator(".prose .math-fail")).toHaveCount(0);
+    await expect(page.getByLabel("公式：x_0")).toBeVisible();
+  });
+
+  test("连续解答题之间保留三行视觉间距", async ({ page }) => {
+    const body = String.raw`# 专题
+
+**1.** 第一道解答题。
+
+$$
+\int_0^1 x^2\,dx.
+$$
+
+**2.** 第二道解答题。
+
+### 参考答案
+
+**1.** 第一题答案。
+
+**2.** 第二题答案。`;
+    const v = versionRead(IDS.v2, 2, body, []);
+    await mockBackend(page, { snapshot: () => runSnapshot({ quality: v.quality }), versions: { [IDS.v2]: v } });
+    await page.goto(`/tasks/${IDS.task}/read`);
+    const second = page.locator(".prose p.question-block").nth(1);
+    await expect(second).toContainText("第二道");
+    const spacing = await second.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return { gap: Number.parseFloat(style.marginTop), line: Number.parseFloat(style.lineHeight) };
+    });
+    expect(spacing.gap).toBeGreaterThanOrEqual(spacing.line * 3 - 1);
+    await expect(page.locator(".prose p.question-block")).toHaveCount(2);
+    await expect(page.locator(".prose p", { hasText: "第一题答案" })).not.toHaveClass(/question-block/);
+  });
+
   test("R01 表格：真实 DOM，宽表局部滚动，整页不溢出", async ({ page }) => {
     await open(page);
     const tables = page.locator(".prose table");

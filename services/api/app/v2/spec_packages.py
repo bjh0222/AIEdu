@@ -40,6 +40,10 @@ def build_package(domain_key,branch,scene,*,sources=None,seed=None):
     elif scene == "reading_guide":
         structure = "原文片段映射→论点/概念/论证→背景与解释边界；源章节完成后再生成全书地图/阅读路线，不虚构引文。"
     rules = "\n".join(generation+[extra] if extra else generation)
+    if is_items:
+        # Presentation is wrapper-owned: three blank source lines between
+        # adjacent constructed-response questions, independent of model prose.
+        rules += "\n相邻解答题、证明题、综合题及其它主观题之间固定保留3个空行；题后留白不替代这一题间间距。"
     spec = FormatSpecIn(name=f"{profile['domain_key']} · {branch or '通用分支'} · {scene}",scene=scene,
         description="工程编制的学科/模式规范；未专业校准。",applicable_tasks=f"{domain_key}/{branch}/{scene}",
         applicable_intents=[scene],target_reader="依用户明确背景与先修；未知时声明假设。",output_goal="满足原话范围并产出可解释待审稿。",

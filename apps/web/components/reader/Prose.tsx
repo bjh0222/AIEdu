@@ -7,7 +7,7 @@ import remarkMath from "remark-math";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import katex from "katex";
 import "katex/dist/katex.min.css";
-import { extractHeadings, projectDisplayMath, resolveWikiLinks, type Heading } from "@/lib/v2/reader-core";
+import { extractHeadings, projectDisplayMath, projectLatexDelimiters, resolveWikiLinks, type Heading } from "@/lib/v2/reader-core";
 
 export type Pin = { n: number; start: number; end: number; state: "confirmed" | "suspected" };
 
@@ -45,6 +45,28 @@ function remarkAnswerLabels() {
         if (start < end) leaf.value = value.slice(0, start) + value.slice(end);
         offset += value.length;
       }
+    }
+  };
+}
+
+// Answer entries also begin with **n.**, so mark question paragraphs only up
+// to the answer heading. This keeps the three-line reading gap between prompts
+// without adding the same gap between answer explanations.
+function remarkQuestionBlocks() {
+  return (tree: MdNode) => {
+    let inAnswers = false;
+    for (const node of tree.children ?? []) {
+      if (node.type === "heading") {
+        const heading = node.children?.map((child) => child.value ?? "").join("").trim();
+        inAnswers ||= heading === "参考答案";
+      }
+      if (inAnswers || node.type !== "paragraph") continue;
+      const ordinal = node.children?.[0];
+      if (ordinal?.type !== "strong" || !/^\d+\.$/.test(ordinal.children?.map((child) => child.value ?? "").join("") ?? "")) continue;
+      node.data = {
+        ...(node.data ?? {}),
+        hProperties: { ...((node.data?.hProperties as object) ?? {}), className: ["question-block"] },
+      };
     }
   };
 }
@@ -162,6 +184,7 @@ const schema = {
     ...defaultSchema.attributes,
     "*": [...(defaultSchema.attributes?.["*"] ?? []), "dataPin", "dataState", "dataPinBlock"],
     aside: ["className", "dataCallout"],
+    p: [...(defaultSchema.attributes?.p ?? []), "className"],
     span: [...(defaultSchema.attributes?.span ?? []), "className", "dataPin", "dataState"],
     code: [...(defaultSchema.attributes?.code ?? []), ["className", /^language-[\w-]+$/, "math-inline", "math-display"]],
   },
@@ -301,8 +324,9 @@ function stripFrontmatter(source: string): string {
 export default function Prose({ source, wikiTargets, pins = [], onPinClick, headings }: ProseProps) {
   const transformed = useMemo(() => {
     const wiki = resolveWikiLinks(stripFrontmatter(source), wikiTargets ?? new Map());
-    const math = projectDisplayMath(wiki.text);
-    return { text: math.text, map: (offset: number) => math.map(wiki.map(offset)) };
+    const latex = projectLatexDelimiters(wiki.text);
+    const math = projectDisplayMath(latex.text);
+    return { text: math.text, map: (offset: number) => math.map(latex.map(wiki.map(offset))) };
   }, [source, wikiTargets]);
   const rendered = transformed.text;
   const mappedPins = useMemo(() => pins.map((p) => ({ ...p, start: transformed.map(p.start), end: transformed.map(p.end) })), [pins, transformed]);
@@ -329,6 +353,7 @@ export default function Prose({ source, wikiTargets, pins = [], onPinClick, head
       };
     return {
       h1: heading("h1"), h2: heading("h2"), h3: heading("h3"), h4: heading("h4"), h5: heading("h5"), h6: heading("h6"),
+      p: ({ children, className, ...rest }) => <p {...rest} className={className}>{children}</p>,
       table: ({ children }) => (
         <div className="table-scroll" tabIndex={0} role="region" aria-label="表格（可横向滚动）">
           <table>{children}</table>
@@ -440,7 +465,7 @@ export default function Prose({ source, wikiTargets, pins = [], onPinClick, head
     };
   }, [onPinClick]);
 
-  const remarkPlugins = useMemo(() => [remarkGfm, remarkEmptyTasks, [remarkMath, { singleDollarTextMath: true }], remarkPins(mappedPins), remarkAnswerLabels, remarkMark, remarkCallout] as never, [mappedPins]);
+  const remarkPlugins = useMemo(() => [remarkGfm, remarkEmptyTasks, [remarkMath, { singleDollarTextMath: true }], remarkPins(mappedPins), remarkAnswerLabels, remarkQuestionBlocks, remarkMark, remarkCallout] as never, [mappedPins]);
 
   return (
     <div className="prose" ref={ref} lang="zh-CN">
