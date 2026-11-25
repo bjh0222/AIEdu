@@ -94,6 +94,69 @@ def test_unknown_resume_requires_separate_quarantine_then_new_call(client):
     assert result["run_id"] != run["run_id"]
 
 
+def test_paused_receiptless_sent_can_be_quarantined_then_resumed(client):
+    """Pausing fences an in-flight call; the explicit UI path must not deadlock."""
+    from app.v2.contracts import DomainError, Pause, QuarantineUnknown, Resume, sha
+    from app.v2.runtime import authorize_call, claim_root, mark_sent
+    from app.v2.tasks import pause, quarantine_unknown, resume, snapshot
+
+    created, run = queued(client)
+    lease = claim_root(run["run_id"], "worker")
+    request_hash = sha("paused-sent-request")
+    call = authorize_call(
+        run["run_id"], "unit", request_hash, "input", lease["epoch"],
+        "worker", "paused-sent-call",
+    )
+    mark_sent(call, "worker", lease["epoch"])
+    current = snapshot(created["task_id"], run["run_id"])
+    paused = pause(
+        run["run_id"],
+        Pause(expected_revision=current["state_revision"], reason="user_pause"),
+        "pause-paused-sent",
+    )
+    paused_snap = snapshot(created["task_id"], run["run_id"])
+    assert paused_snap["state"] == "paused"
+    assert [c["status"] for c in paused_snap["calls"] if c["call_id"] == call] == ["sent"]
+
+    dto = Resume(
+        expected_revision=paused["state_revision"],
+        checkpoint_hash=paused["checkpoint_hash"],
+    )
+    with pytest.raises(DomainError, match="UNKNOWN_QUARANTINE_REQUIRED"):
+        resume(run["run_id"], dto, "paused-sent-resume-blocked")
+
+    isolated = quarantine_unknown(
+        run["run_id"],
+        QuarantineUnknown(
+            expected_revision=paused["state_revision"],
+            checkpoint_hash=paused["checkpoint_hash"],
+            calls=[{"call_id": call, "request_hash": request_hash}],
+            acknowledge_possible_duplicate_cost=True,
+        ),
+        "paused-sent-isolate",
+    )
+    after = snapshot(created["task_id"], run["run_id"])
+    row = next(item for item in after["calls"] if item["call_id"] == call)
+    assert row["status"] == "quarantined"
+    assert row["outcome"] == "unknown"
+    assert row["failure_diagnostics"]["validation_reason"] == "PAUSED_CALL_FENCED_WITHOUT_RECEIPT"
+
+    result = resume(
+        run["run_id"],
+        Resume(
+            expected_revision=isolated["state_revision"],
+            checkpoint_hash=isolated["checkpoint_hash"],
+            unknown_resolutions=[{
+                "call_id": call,
+                "action": "retry_as_new_attempt",
+                "acknowledge_possible_duplicate_cost": True,
+            }],
+        ),
+        "paused-sent-resume",
+    )
+    assert result["run_id"] != run["run_id"]
+
+
 def test_immutable_version_cas_rejects_stale_base(client):
     from app.v2.runtime import claim_root, publish
     from app.v2.contracts import DomainError, sha

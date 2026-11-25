@@ -30,7 +30,7 @@ export default function Workbench({ taskId }: { taskId: string }) {
   const [quarantineKey, setQuarantineKey] = useState<string | null>(null);
   const [pendingRetryCalls, setPendingRetryCalls] = useState<{ call_id: string; request_hash: string }[]>([]);
   const [ack, setAck] = useState(false);
-  const [unknownCalls, setUnknownCalls] = useState<UnknownCall[] | null>(null);
+  const [unresolvedCalls, setUnresolvedCalls] = useState<UnknownCall[] | null>(null);
 
   useEffect(() => {
     // Restore browser-only session state after hydration; cancel on task change.
@@ -47,8 +47,13 @@ export default function Workbench({ taskId }: { taskId: string }) {
 
   const run = snapshot && isRun(snapshot) ? snapshot : null;
   // 「结果不明」只指 unknown；sent 是仍在途，不能在运行中当作未知结果要求用户隔离。
-  const detectedUnknownCalls = (run?.calls.filter((call) => call.status === "unknown") ?? []) as UnknownCall[];
-  const visibleUnknownCalls = unknownCalls ?? detectedUnknownCalls;
+  const runStopped = Boolean(run && ["paused", "interrupted", "failed"].includes(run.state));
+  // A paused worker is fenced. Its receipt-less sent call cannot settle into
+  // this run, so it needs the same explicit risk/decision path as unknown.
+  const detectedUnresolvedCalls = (run?.calls.filter((call) =>
+    call.status === "unknown" || (runStopped && call.status === "sent" && !call.finished_at)
+  ) ?? []) as UnknownCall[];
+  const visibleUnresolvedCalls = unresolvedCalls ?? detectedUnresolvedCalls;
   const task = snapshot ? (snapshot as { task?: { title?: string; raw_input?: string } }).task ?? run?.resolved_task as { title?: string; raw_input?: string } | undefined : undefined;
   const title = (run?.resolved_task as { title?: string } | undefined)?.title ?? task?.title ?? "任务";
 
@@ -108,7 +113,7 @@ export default function Workbench({ taskId }: { taskId: string }) {
     setActionError("");
     try {
       const unknown_resolutions = pendingRetryCalls.map((call) => ({
-        ...call,
+        call_id: call.call_id,
         action: "retry_as_new_attempt" as const,
         acknowledge_possible_duplicate_cost: true,
       }));
@@ -119,7 +124,7 @@ export default function Workbench({ taskId }: { taskId: string }) {
         ...(acknowledgeProtocolUpgrade ? { quality_protocol_upgrade: true } : {}),
       }, newKey());
       toast(acknowledgeProtocolUpgrade ? "已创建续跑（已显式采用新质量协议）" : "已创建续跑");
-      setUnknownCalls(null);
+      setUnresolvedCalls(null);
       setPendingRetryCalls([]);
       followRun(r.run_id); // 旧 run 保持 paused；轮询切到新 run
     } catch (e) {
@@ -136,7 +141,13 @@ export default function Workbench({ taskId }: { taskId: string }) {
         }
         setActionError("已取消：未采用新质量协议，续跑未创建。");
       } else if (e instanceof ApiError && (e.code === "UNKNOWN_CALL" || e.code === "UNKNOWN_QUARANTINE_REQUIRED")) {
-        setUnknownCalls(run.calls.filter((c) => c.status === "unknown") as UnknownCall[]);
+        const stopped = ["paused", "interrupted", "failed"].includes(run.state);
+        setUnresolvedCalls(run.calls.filter((c) =>
+          c.status === "unknown" || (stopped && c.status === "sent" && !c.finished_at)
+        ) as UnknownCall[]);
+        setActionError(e.code === "UNKNOWN_QUARANTINE_REQUIRED" && !stopped
+          ? "这次运行还有模型调用没有结束。请先暂停，等页面确认暂停后再处理。"
+          : explain(e));
       } else setActionError(explain(e));
     } finally {
       setResumeBusy(false);
@@ -165,7 +176,7 @@ export default function Workbench({ taskId }: { taskId: string }) {
           ? current
           : [...current, { call_id: call.call_id, request_hash: call.request_hash }]);
       }
-      setUnknownCalls((current) => (current ?? detectedUnknownCalls).filter((item) => item.call_id !== call.call_id));
+      setUnresolvedCalls((current) => (current ?? detectedUnresolvedCalls).filter((item) => item.call_id !== call.call_id));
       setAck(false);
       setQuarantineKey(null);
       toast(retry ? "调用已隔离；继续生成时会作为新尝试" : "调用已隔离，未自动续跑");
@@ -234,7 +245,6 @@ export default function Workbench({ taskId }: { taskId: string }) {
   const canPause = run.next_actions.includes("pause");
   const canResume = run.next_actions.includes("resume");
   const hasDraft = Boolean(run.version_id);
-  const runStopped = ["paused", "interrupted", "failed"].includes(run.state);
   // 失败/结果不明的原因只取本次运行；祖先 run 的旧失败（例如上一轮的 8k 截断）
   // 不能拿来解释本轮的停止原因。
   const currentCalls = run.calls.filter((c) => c.current_run !== false);
@@ -263,7 +273,7 @@ export default function Workbench({ taskId }: { taskId: string }) {
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {canPause && <button className="btn" onClick={() => void pause()} disabled={pausing || Boolean(pauseKey)} aria-busy={pausing}>{pausing ? "正在请求暂停" : "暂停并保留已有内容"}</button>}
-          {canResume && <button className="btn btn-primary" onClick={() => void resume()} disabled={resumeBusy || visibleUnknownCalls.length > 0} aria-busy={resumeBusy}>{pendingRetryCalls.length ? `继续生成（含 ${pendingRetryCalls.length} 项重做）` : "继续生成"}</button>}
+          {canResume && <button className="btn btn-primary" onClick={() => void resume()} disabled={resumeBusy || visibleUnresolvedCalls.length > 0} aria-busy={resumeBusy}>{pendingRetryCalls.length ? `继续生成（含 ${pendingRetryCalls.length} 项重做）` : "继续生成"}</button>}
           {hasDraft && <Link className="btn" href={`/tasks/${taskId}/read?version=${run.version_id}`}>阅读草稿</Link>}
 
           {hasDraft && <button className="btn" onClick={() => setExportOpen(true)}>下载</button>}
@@ -308,14 +318,17 @@ export default function Workbench({ taskId }: { taskId: string }) {
         </div>
       )}
 
-      {visibleUnknownCalls.length > 0 && (
+      {visibleUnresolvedCalls.length > 0 && (
         <section className="panel panel-pad" style={{ marginBottom: 16 }} aria-labelledby="unk">
-          <h2 className="sub" id="unk">有 {visibleUnknownCalls.length} 个调用结果不明</h2>
-          <p className="muted">这些调用已发出但没有确认结果。先逐项隔离；隔离不会自动续跑，也不会替你重发。继续生成是另一个动作。</p>
+          <h2 className="sub" id="unk">有 {visibleUnresolvedCalls.length} 个已发出调用需要先处理</h2>
+          <p className="muted">
+            这些调用已发出但没有确认结果，或是在暂停前发出、已被暂停栅栏阻止写回结果。
+            先逐项隔离；隔离不会自动续跑，也不会替你重发。继续生成是另一个动作。
+          </p>
           <ul>
-            {visibleUnknownCalls.map((call, index) => (
+            {visibleUnresolvedCalls.map((call, index) => (
               <li key={call.call_id} style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
-                <span>待核实请求 {index + 1}</span>
+                <span>{call.status === "sent" ? "暂停时已发出、尚无回执的请求" : "结果不明请求"} {index + 1}</span>
                 {call.unknown_age_warning && <p className="hint" role="alert">这次调用结果不明已超过 6 小时；系统没有自动隔离、重发或恢复。</p>}
                 {runStopped ? (
                   <div className="seg" style={{ marginLeft: 12 }} role="group" aria-label={`待核实请求 ${index + 1} 的处理方式`}>

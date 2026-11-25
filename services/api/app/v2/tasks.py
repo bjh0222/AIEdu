@@ -429,13 +429,15 @@ def quarantine_unknown(run_id, payload, key):
                 raise DomainError("CALL_REQUEST_MISMATCH")
             # A worker can terminate after marking a provider request sent but
             # before it can persist the provider receipt.  A failed or
-            # interrupted run is a stopped execution boundary, so the explicit
-            # user-authorized quarantine may convert that exact receipt-less
-            # sent attempt to unknown.  Paused/active runs remain strict: they
-            # must first receive a provider receipt or be stopped by the
-            # worker lease reaper.  This does not infer failure, usage, price,
-            # or provider settlement.
-            if call.status == "sent" and obj.status in {"failed", "interrupted"}:
+            # interrupted run is a stopped execution boundary.  Pausing also
+            # fences the worker by advancing cancel_epoch; an older sent call
+            # can therefore never be published as a settled result.  The
+            # explicit user-authorized quarantine may convert that exact
+            # receipt-less sent attempt to unknown.  Active runs remain strict.
+            # This does not infer failure, usage, price, or provider
+            # settlement, and a late receipt is still retained.
+            paused_and_fenced = obj.status == "paused" and call.epoch < obj.cancel_epoch
+            if call.status == "sent" and (obj.status in {"failed", "interrupted"} or paused_and_fenced):
                 if not receiptless_sent(call):
                     raise DomainError("CALL_SENT_RECEIPT_PRESENT")
                 call.outcome = "unknown"
@@ -443,7 +445,12 @@ def quarantine_unknown(run_id, payload, key):
                     "outcome": "unknown", "usage": None,
                     "provider_request_id": None, "result_hash": None,
                     "failure_code": "PROVIDER_TRANSPORT_UNKNOWN",
-                    "failure_diagnostics": {"validation_reason": "WORKER_TERMINATED_WITHOUT_RECEIPT"},
+                    "failure_diagnostics": {
+                        "validation_reason": (
+                            "PAUSED_CALL_FENCED_WITHOUT_RECEIPT"
+                            if paused_and_fenced else "WORKER_TERMINATED_WITHOUT_RECEIPT"
+                        ),
+                    },
                 })
                 call.usage_json = None
             elif call.status == "sent":

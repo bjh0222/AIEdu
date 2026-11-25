@@ -241,7 +241,7 @@ const ERRORS: Record<string, string> = {
   CHECKPOINT_STALE: "续跑所依据的进度已过期。请先读取最新状态。",
   INPUT_CHANGED: "任务输入已改变，需要回到确认页重新确认。",
   UNKNOWN_CALL: "有模型调用的结果不明，需要你逐项选择处理方式。",
-  UNKNOWN_QUARANTINE_REQUIRED: "先隔离结果不明的调用，再单独继续生成。",
+  UNKNOWN_QUARANTINE_REQUIRED: "还有暂停前发出、但没有收到回执的调用。请先在下方确认费用风险并处理该调用，再继续生成。",
   CALL_NOT_QUARANTINED: "这个调用还没有完成隔离，不能作为续跑依据。",
   RETRY_REQUIRES_DUPLICATE_COST_ACK: "重做可能再次计费，需要明确确认。",
   FINAL_WAIVER_CONFIRM_REQUIRED: "专业项尚未完成校准。确认专业边界后，才可按当前固定版本继续。",
