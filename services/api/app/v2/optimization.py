@@ -873,9 +873,15 @@ def normalize_candidate_envelope(candidate: dict, package: dict, version):
 
 
 def validate_candidate(candidate: dict, package: dict, version, base_units: list[dict]) -> list[dict]:
-    if not isinstance(candidate, dict) or not {
-        "schema_version", "base_version", "base_content_hash", "package_hash", "strategy", "units"
-    } <= set(candidate):
+    if not isinstance(candidate, dict):
+        raise DomainError("OPTIMIZATION_CANDIDATE_INVALID", 422)
+    # The candidate is already bound to this exact version/package by its
+    # content and package hashes; a missing constant schema_version is a
+    # line-format omission, not different candidate content. Inject it for
+    # validation, but still reject a present-but-different schema_version.
+    if "schema_version" not in candidate:
+        candidate = {**candidate, "schema_version": CANDIDATE_SCHEMA_VERSION}
+    if not {"schema_version", "base_version", "base_content_hash", "package_hash", "strategy", "units"} <= set(candidate):
         raise DomainError("OPTIMIZATION_CANDIDATE_INVALID", 422)
     if candidate.get("schema_version") != CANDIDATE_SCHEMA_VERSION:
         raise DomainError("OPTIMIZATION_CANDIDATE_VERSION_INVALID", 422)
@@ -1168,9 +1174,9 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
         candidate, b_audit, network_trace = generation_with_sources(run_id, worker, epoch, state,
             stage="optimization", unit_id="optimization", data=b_data,
             system=("Consume the complete optimization package and the frozen research rubric/profile bindings, then propose whole item/unit/related-unit candidates. "
-                    "Return JSON {base_version,base_content_hash,package_hash,strategy,units:[{unit_id,body?|items?}]}. "
+                    "Return JSON {schema_version,base_version,base_content_hash,package_hash,strategy,units:[{unit_id,body?|items?}]}. "
                     "Do not return search/replace patches. Preserve user hard requirements, frozen materials and specs. "
-                    "Copy immutable_candidate_metadata EXACTLY into the response; do not compute or invent hashes. "
+                    "Copy schema_version, base_version, base_content_hash and package_hash EXACTLY from immutable_candidate_metadata; do not compute or invent hashes. "
                     "Follow the supplied per-unit schema: a base unit with items MUST return its complete replacement items list, NEVER body, "
                     "even with whole_unit/related_units strategy. Keep each stem and its final/reasoning in the SAME item; "
                     "for exercise format also supply question_type, source_sections and answer.display_reasoning as specified. "

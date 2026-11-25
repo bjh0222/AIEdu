@@ -538,3 +538,21 @@ def test_completed_run_with_optimization_contract_failure_is_explicitly_resumabl
                     {"expected_revision": revision, "checkpoint_hash": checkpoint}, headers)
     assert response.status_code == 202, response.text
     assert response.json()["run_id"] != snap["run_id"]
+
+
+def test_validate_candidate_tolerates_missing_schema_version_but_not_wrong_one():
+    from app.v2.contracts import digest
+    from app.v2.optimization import validate_candidate
+    version = SimpleNamespace(id="v1", content_hash="a" * 64)
+    base_unit = {"unit_id": "u", "body": "old body", "content_hash": "h", "title": "t",
+                 "artifact_role": "chapter", "depends_on": []}
+    package = {"scope": {"unit_ids": ["u"], "allowed_change_modes": ["whole_unit"]}}
+    candidate = {"base_version": "v1", "base_content_hash": "a" * 64,
+                 "package_hash": digest(package), "strategy": "whole_unit",
+                 "units": [{"unit_id": "u", "body": "new body"}]}
+    units = validate_candidate(candidate, package, version, [base_unit])
+    assert units[0]["body"] == "new body"
+    wrong = dict(candidate)
+    wrong["schema_version"] = "wrong"
+    with pytest.raises(Exception, match="OPTIMIZATION_CANDIDATE_VERSION_INVALID"):
+        validate_candidate(wrong, package, version, [base_unit])
