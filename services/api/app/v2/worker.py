@@ -40,6 +40,30 @@ def safe_worker_diagnostics(exc):
     return result
 
 
+# Optimization stop reasons that are a legitimate terminal outcome for the
+# delivered draft. Any other optimization stop is a contract/system failure:
+# the published draft is kept, but the run must remain explicitly resumable
+# instead of being reported as a clean completion.
+_OPTIMIZATION_TERMINAL_STOPS = {
+    "optimization_completed_uncalibrated",
+    "optimization_complete_uncalibrated",  # legacy spelling kept for old states
+    "optimization_round_limit",
+    "optimization_attempt_limit",
+    "no_progress",
+    "optimization_model_not_run_demo",
+    "optimization_paid_not_authorized",
+}
+
+
+def optimization_run_status(stop_reason):
+    """Map an optimization stop reason to ``(run_status, error_code)``."""
+    if not stop_reason or stop_reason in _OPTIMIZATION_TERMINAL_STOPS:
+        return "completed", None
+    if stop_reason == "UNKNOWN_CALL":
+        return "interrupted", stop_reason
+    return "failed", stop_reason
+
+
 def dispatcher(stop):
     """Persistent queue recovery; never resumes interrupted or possibly-paid calls."""
     from ..models import GenerationJob
@@ -113,8 +137,12 @@ def execute_run(run_id: str, provider_factory=None):
                 fence(obj, worker, epoch)
                 latest = load(obj.state_json)
                 latest.setdefault("stages", {})["optimizing"] = "done"
-                latest["stop_reason"] = latest.get("optimization_stop_reason", "optimization_complete_uncalibrated")
-                obj.status, obj.state_json, obj.state_revision = "completed", dump(latest), obj.state_revision+1
+                stop_reason = latest.get("optimization_stop_reason", "optimization_complete_uncalibrated")
+                latest["stop_reason"] = stop_reason
+                run_status, run_error = optimization_run_status(stop_reason)
+                obj.status, obj.state_json, obj.state_revision = run_status, dump(latest), obj.state_revision+1
+                if run_error:
+                    obj.error_code = run_error
             return
         if operation_state.get("card_source"):
             from .insights import execute_cards
@@ -291,10 +319,15 @@ def execute_run(run_id: str, provider_factory=None):
             repair_stage = "not_run" if repair_reason else ("done" if latest.get("repair_rounds") else "not_applicable")
             latest["stages"] = {**latest.get("stages", {}), "generating": "done", "checking": "done" if state["mode"] == "configured" else "deterministic_only", "repairing": repair_stage, "verifying": "done" if state["mode"] == "configured" else "not_run"}
             latest["stop_reason"] = "demo_complete" if state["mode"] == "demo" else "independent_verification_required"
+            run_status, run_error = "completed", None
             if latest.get("optimization_policy") and not state.get("review_only_source_version"):
-                latest["stages"]["optimizing"] = "done" if latest.get("optimization_stop_reason") == "optimization_completed_uncalibrated" else "stopped"
-                latest["stop_reason"] = latest.get("optimization_stop_reason", "optimization_incomplete")
-            obj.status, obj.state_revision, obj.state_json = "completed", obj.state_revision + 1, dump(latest)
+                stop_reason = latest.get("optimization_stop_reason")
+                latest["stages"]["optimizing"] = "done" if stop_reason == "optimization_completed_uncalibrated" else "stopped"
+                latest["stop_reason"] = stop_reason or "optimization_incomplete"
+                run_status, run_error = optimization_run_status(stop_reason)
+            obj.status, obj.state_revision, obj.state_json = run_status, obj.state_revision + 1, dump(latest)
+            if run_error:
+                obj.error_code = run_error
     except DomainError as exc:
         with write() as db:
             obj = job(db, run_id)

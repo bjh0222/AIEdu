@@ -445,6 +445,12 @@ def resume(run_id, payload, key):
         if payload.enable_research and not payload.replan:
             raise DomainError("RESEARCH_ENABLE_REQUIRES_EXPLICIT_REPLAN", 422)
         allowed = old.status in {"paused", "interrupted", "failed"} or (old.status == "completed" and (payload.recheck_completed or payload.replan))
+        if not allowed and old.status == "completed":
+            # Historical defect: contract-error optimization stops were recorded
+            # as "completed". They are not a clean finish and must stay
+            # explicitly resumable without rewriting the old job row.
+            from .worker import optimization_run_status
+            allowed = optimization_run_status(state.get("optimization_stop_reason"))[0] == "failed"
         if not allowed or digest(state["plan"]) != payload.checkpoint_hash:
             raise DomainError("CHECKPOINT_STALE")
         from .review_contract import review_protocol_manifest

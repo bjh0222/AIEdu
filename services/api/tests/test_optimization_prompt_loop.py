@@ -505,3 +505,36 @@ def test_bind_frozen_bindings_injects_missing_keys_but_rejects_conflict():
         bind_frozen_bindings({"frozen_bindings": {"a": 1, "zzz": 9}}, expected)
     unchanged, no_note = bind_frozen_bindings({"frozen_bindings": deepcopy(expected)}, expected)
     assert no_note is None and unchanged["frozen_bindings"] == expected
+
+
+def test_optimization_run_status_maps_contract_failures_to_failed():
+    from app.v2.worker import optimization_run_status
+    assert optimization_run_status("optimization_completed_uncalibrated") == ("completed", None)
+    assert optimization_run_status("optimization_round_limit") == ("completed", None)
+    assert optimization_run_status("optimization_attempt_limit") == ("completed", None)
+    assert optimization_run_status("no_progress") == ("completed", None)
+    assert optimization_run_status("OPTIMIZATION_SKILL_MISMATCH") == ("failed", "OPTIMIZATION_SKILL_MISMATCH")
+    assert optimization_run_status("CALL_CAPACITY_EXCEEDED") == ("failed", "CALL_CAPACITY_EXCEEDED")
+    assert optimization_run_status("UNKNOWN_CALL") == ("interrupted", "UNKNOWN_CALL")
+    assert optimization_run_status(None) == ("completed", None)
+
+
+def test_completed_run_with_optimization_contract_failure_is_explicitly_resumable(client, monkeypatch):
+    from app.api import v2 as v2_api
+    from app.v2.contracts import digest
+    from app.v2.runtime import dump, job, load, write
+    from test_task_run_v2 import owner, post
+    _, _, snap = task_run(client)
+    monkeypatch.setattr(v2_api, "execute_run", lambda *args, **kwargs: None)
+    with write() as db:
+        obj = job(db, snap["run_id"])
+        state = load(obj.state_json)
+        state["optimization_stop_reason"] = "OPTIMIZATION_SKILL_MISMATCH"
+        obj.state_json, obj.status = dump(state), "completed"
+        obj.state_revision += 1
+        revision, checkpoint = obj.state_revision, digest(state["plan"])
+    headers = owner(client)
+    response = post(client, f"/runs/{snap['run_id']}/resume",
+                    {"expected_revision": revision, "checkpoint_hash": checkpoint}, headers)
+    assert response.status_code == 202, response.text
+    assert response.json()["run_id"] != snap["run_id"]
