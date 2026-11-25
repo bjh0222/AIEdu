@@ -107,8 +107,8 @@ export default function Workbench({ taskId }: { taskId: string }) {
     }
   }
 
-  async function resume(acknowledgeProtocolUpgrade = false) {
-    if (!run) return;
+  async function resume(acknowledgeProtocolUpgrade = false, sourceRun = run, retryStale = true) {
+    if (!sourceRun) return;
     setResumeBusy(true);
     setActionError("");
     try {
@@ -117,9 +117,9 @@ export default function Workbench({ taskId }: { taskId: string }) {
         action: "retry_as_new_attempt" as const,
         acknowledge_possible_duplicate_cost: true,
       }));
-      const r = await api.resume(taskId, run.run_id, {
-        expected_revision: run.state_revision,
-        checkpoint_hash: run.checkpoint_hash,
+      const r = await api.resume(taskId, sourceRun.run_id, {
+        expected_revision: sourceRun.state_revision,
+        checkpoint_hash: sourceRun.checkpoint_hash,
         unknown_resolutions,
         ...(acknowledgeProtocolUpgrade ? { quality_protocol_upgrade: true } : {}),
       }, newKey());
@@ -137,12 +137,21 @@ export default function Workbench({ taskId }: { taskId: string }) {
         );
         if (ok) {
           setResumeBusy(false);
-          return void resume(true);
+          return void resume(true, sourceRun, retryStale);
         }
         setActionError("已取消：未采用新质量协议，续跑未创建。");
+      } else if (e instanceof ApiError && e.code === "REVISION_STALE" && retryStale) {
+        // The server rejected before creating a run, so one refresh + retry is
+        // safe. This closes the post-quarantine refresh race without a second
+        // user click pretending nothing happened.
+        const latest = await refresh();
+        if (latest && isRun(latest)) {
+          return void resume(false, latest, false);
+        }
+        setActionError("任务状态已更新，但没有读到最新进度。请点“重试”刷新后再续跑。");
       } else if (e instanceof ApiError && (e.code === "UNKNOWN_CALL" || e.code === "UNKNOWN_QUARANTINE_REQUIRED")) {
-        const stopped = ["paused", "interrupted", "failed"].includes(run.state);
-        setUnresolvedCalls(run.calls.filter((c) =>
+        const stopped = ["paused", "interrupted", "failed"].includes(sourceRun.state);
+        setUnresolvedCalls(sourceRun.calls.filter((c) =>
           c.status === "unknown" || (stopped && c.status === "sent" && !c.finished_at)
         ) as UnknownCall[]);
         setActionError(e.code === "UNKNOWN_QUARANTINE_REQUIRED" && !stopped
@@ -273,7 +282,7 @@ export default function Workbench({ taskId }: { taskId: string }) {
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {canPause && <button className="btn" onClick={() => void pause()} disabled={pausing || Boolean(pauseKey)} aria-busy={pausing}>{pausing ? "正在请求暂停" : "暂停并保留已有内容"}</button>}
-          {canResume && <button className="btn btn-primary" onClick={() => void resume()} disabled={resumeBusy || visibleUnresolvedCalls.length > 0} aria-busy={resumeBusy}>{pendingRetryCalls.length ? `继续生成（含 ${pendingRetryCalls.length} 项重做）` : "继续生成"}</button>}
+          {canResume && <button className="btn btn-primary" onClick={() => void resume()} disabled={resumeBusy || Boolean(quarantineBusy) || visibleUnresolvedCalls.length > 0} aria-busy={resumeBusy || Boolean(quarantineBusy)}>{pendingRetryCalls.length ? `继续生成（含 ${pendingRetryCalls.length} 项重做）` : "继续生成"}</button>}
           {hasDraft && <Link className="btn" href={`/tasks/${taskId}/read?version=${run.version_id}`}>阅读草稿</Link>}
 
           {hasDraft && <button className="btn" onClick={() => setExportOpen(true)}>下载</button>}

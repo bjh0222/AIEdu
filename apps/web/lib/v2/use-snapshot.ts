@@ -9,8 +9,8 @@ export type SnapState = {
   error: string;
   stale: boolean;
   loading: boolean;
-  /** 立即重新读取（忽略 ETag），并恢复轮询。 */
-  refresh: () => Promise<void>;
+  /** 立即重新读取（忽略 ETag），并返回本次读取到的快照。 */
+  refresh: () => Promise<Snapshot | null>;
   /** 让轮询跟随某个 run（续跑后切到新 run）；null 表示该任务的最新 run。 */
   followRun: (runId: string | null) => void;
 };
@@ -36,20 +36,20 @@ export function useSnapshot(taskId: string): SnapState {
     ctl: null as AbortController | null,
     last: null as Snapshot | null,
     generation: 0,
-    tick: null as ((generation: number) => Promise<void>) | null,
+    tick: null as ((generation: number) => Promise<Snapshot | null>) | null,
   });
 
-  const poll = useCallback(async (generation: number): Promise<void> => {
+  const poll = useCallback(async (generation: number): Promise<Snapshot | null> => {
     const p = poller.current;
     p.timer = null;
-    if (!p.alive || generation !== p.generation) return;
+    if (!p.alive || generation !== p.generation) return p.last;
     if (document.visibilityState === "visible") {
       p.ctl?.abort();
       const ctl = new AbortController();
       p.ctl = ctl;
       try {
         const res = await api.snapshot(taskId, p.etag, p.run, ctl.signal);
-        if (!p.alive || generation !== p.generation) return;
+        if (!p.alive || generation !== p.generation) return p.last;
         p.failures = 0;
         setError("");
         setStale(false);
@@ -59,7 +59,7 @@ export function useSnapshot(taskId: string): SnapState {
           setSnapshot(res.data);
         }
       } catch (e) {
-        if (!p.alive || generation !== p.generation || (e instanceof DOMException && e.name === "AbortError")) return;
+        if (!p.alive || generation !== p.generation || (e instanceof DOMException && e.name === "AbortError")) return p.last;
         p.failures += 1;
         setError(explain(e));
         setStale(true); // 保留上次内容，标注“可能已过期”
@@ -67,11 +67,12 @@ export function useSnapshot(taskId: string): SnapState {
       }
       setLoading(false);
     }
-    if (!p.alive || generation !== p.generation || p.failures >= 99) return;
+    if (!p.alive || generation !== p.generation || p.failures >= 99) return p.last;
     const active = !p.last || (isRun(p.last) && ACTIVE.has(p.last.state));
     // 运行中 1.5s；失败后 1.5s·2^n 指数退避，最长 30s；终态不再轮询。
     const delay = p.failures > 0 ? Math.min(30_000, 1500 * 2 ** p.failures) : active ? 1500 : 0;
     if (delay > 0) p.timer = setTimeout(() => void p.tick?.(generation), delay);
+    return p.last;
   }, [taskId]);
 
   const restart = useCallback(() => {
@@ -100,10 +101,13 @@ export function useSnapshot(taskId: string): SnapState {
 
   const refresh = useCallback(async () => {
     const p = poller.current;
+    p.tick = poll;
     p.etag = null;
     p.failures = 0;
-    restart();
-  }, [restart]);
+    if (p.timer) clearTimeout(p.timer);
+    p.generation += 1;
+    return poll(p.generation);
+  }, [poll]);
 
   const followRun = useCallback((runId: string | null) => {
     const p = poller.current;

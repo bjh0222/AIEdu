@@ -8,7 +8,7 @@ import { useToast } from "@/components/ui/Toast";
 import { calibrationText } from "@/lib/v2/status";
 import { synthesis, exportSelection, type SynthesisRead } from "@/lib/v2/synthesis-api";
 
-type Props = { open: boolean; onClose: () => void; artifactId: string; versionId: string; versionLabel: string; revision: number; taskId: string; runId: string; checkpointHash: string; deliveryDecision: Record<string, unknown>; refresh?: () => Promise<void> };
+type Props = { open: boolean; onClose: () => void; artifactId: string; versionId: string; versionLabel: string; revision: number; taskId: string; runId: string; checkpointHash: string; deliveryDecision: Record<string, unknown>; refresh?: () => Promise<unknown> };
 
 const ROLE = { tutorial: "教程", exercise: "练习", answer: "参考答案", paper: "试卷", cheatsheet: "速查", chapter: "章节", book_level: "全书层" } as Record<string, string>;
 const SOFT_ITEM_LABEL: Record<string, string> = {

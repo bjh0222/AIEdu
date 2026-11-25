@@ -271,7 +271,7 @@ test.describe("工作台 AT-11", () => {
       },
     });
     await page.goto(`/tasks/${IDS.task}`);
-    await expect(page.getByRole("heading", { name: "有 1 个调用结果不明" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "有 1 个已发出调用需要先处理" })).toBeVisible();
     await expect(page.getByText("结果不明已超过 6 小时", { exact: false })).toBeVisible();
     await expect(page.getByRole("button", { name: "向供应商核实" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "保留，不重做" })).toBeDisabled();
@@ -344,6 +344,19 @@ test.describe("工作台 AT-11", () => {
         }
         if (p.endsWith("/resume")) {
           resumePosts++;
+          if (resumePosts === 1) {
+            await route.fulfill({
+              status: 409,
+              json: {
+                code: "REVISION_STALE",
+                message: "REVISION_STALE",
+                retryable: true,
+                current_revision: 4,
+                details: { current_revision: 4 },
+              },
+            });
+            return true;
+          }
           await route.fulfill({ json: { run_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", parent_run_id: IDS.run } });
           return true;
         }
@@ -360,7 +373,7 @@ test.describe("工作台 AT-11", () => {
     await expect.poll(() => quarantineBodies.length).toBe(1);
     expect(quarantineBodies[0]["calls"]).toEqual([{ call_id: callId, request_hash: requestHash }]);
     await page.getByRole("button", { name: /继续生成/ }).click();
-    await expect.poll(() => resumePosts).toBe(1);
+    await expect.poll(() => resumePosts).toBe(2);
   });
 });
 
