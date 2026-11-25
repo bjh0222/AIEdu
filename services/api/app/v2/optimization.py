@@ -144,6 +144,263 @@ def original_task_acceptance(context: dict) -> list[dict]:
         "verification_method": "source-bound full original task compliance; model observation, not psychometric certification"}]
 
 
+QUALITY_PROJECTION_METHOD = "aiedu.optimization-quality-projection.v1"
+# Ordered from most faithful to smallest. Every level preserves ALL
+# decisions/results/scores/findings/checks verbatim; levels only bound audit
+# metadata, quote bodies and reason prose. Escalation happens solely when the
+# sourced model context cannot hold the larger projection.
+PROJECTION_LEVELS = ("bounded", "minimal")
+_PROJECTION_LIMITS = {
+    "bounded": {"quote_codepoints": 100, "reason_codepoints": 240,
+                "evidence_rows_failed": 3, "evidence_rows_passed": 1},
+    "minimal": {"quote_codepoints": 0, "reason_codepoints": 120,
+                "evidence_rows_failed": 1, "evidence_rows_passed": 0},
+}
+# Results that are NOT defects: passing rows keep located evidence references
+# (hashes/byte spans) but not their full quote prose. Anything else
+# (violated/suspected/undecidable/error/unknown/missing) keeps bounded quotes.
+_PASS_RESULTS = {"satisfied", "observed", "pass", "passed", "complete",
+                 "not_applicable", "not_run", "no_method"}
+
+
+def _projection_text(value, limit: int):
+    if not isinstance(value, str) or limit <= 0 or len(value) <= limit:
+        return value
+    return value[:limit] + "...[truncated_for_capacity]"
+
+
+def _projection_evidence(rows, *, quote_limit: int, max_rows: int) -> list[dict]:
+    """Keep located identities (hashes/byte spans); bound quote prose."""
+    projected = []
+    for row in rows or []:
+        if not isinstance(row, dict) or len(projected) >= max_rows:
+            continue
+        keep = {k: row[k] for k in ("field", "start_byte", "end_byte", "span_hash",
+                                    "quote_hash", "field_hash", "unit_id", "unit_hash",
+                                    "source_id", "claim_id", "document_id") if k in row}
+        quote = row.get("quote")
+        if isinstance(quote, str) and quote_limit > 0:
+            keep["quote"] = _projection_text(quote, quote_limit)
+        projected.append(keep)
+    return projected
+
+
+def _projection_criteria(rows, limits: dict) -> list[dict]:
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        projected = {k: row[k] for k in ("unit_id", "item_id", "check_id", "ordinal", "result",
+                                         "rating", "processing_status", "criterion_hash", "authority")
+                     if k in row}
+        if row.get("processing_status") != "complete":
+            projected["protocol_errors"] = row.get("protocol_errors") or []
+        clauses = []
+        for clause in row.get("clauses") or []:
+            if not isinstance(clause, dict):
+                continue
+            failed = str(clause.get("result", "")).lower() not in _PASS_RESULTS
+            entry = {"clause_id": clause.get("clause_id"), "result": clause.get("result")}
+            if failed:
+                for key in ("reason", "invalid_or_missing_observation"):
+                    if clause.get(key) is not None:
+                        entry[key] = _projection_text(clause[key], limits["reason_codepoints"])
+                if clause.get("protocol_errors"):
+                    entry["protocol_errors"] = clause["protocol_errors"]
+            if clause.get("evidence"):
+                entry["evidence"] = _projection_evidence(
+                    clause["evidence"], quote_limit=limits["quote_codepoints"],
+                    max_rows=limits["evidence_rows_failed"] if failed else limits["evidence_rows_passed"])
+            clauses.append(entry)
+        projected["clauses"] = clauses
+        out.append(projected)
+    return out
+
+
+def _projection_dimensions(rows, limits: dict) -> list[dict]:
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        failed = str(row.get("result", "")).lower() not in _PASS_RESULTS
+        projected = {k: row[k] for k in ("dimension_id", "unit_id", "name", "result", "score",
+                                         "processing_status", "method_version", "binding_hash",
+                                         "rubric_ref", "profile_ref") if k in row}
+        if failed:
+            for key in ("reason", "limitations", "repair_condition", "validation_errors", "scope"):
+                if row.get(key) is not None:
+                    projected[key] = (_projection_text(row[key], limits["reason_codepoints"])
+                                      if isinstance(row[key], str) else row[key])
+        indicators = []
+        for indicator in row.get("indicators") or []:
+            if not isinstance(indicator, dict):
+                continue
+            ind_failed = failed or str(indicator.get("result", "")).lower() not in _PASS_RESULTS
+            entry = {k: indicator[k] for k in ("indicator_id", "result", "enum_value", "numerator",
+                                               "denominator", "unit", "applicable") if k in indicator}
+            if ind_failed:
+                for key in ("unknown_reason", "processing_status", "validation_errors"):
+                    if indicator.get(key) is not None:
+                        entry[key] = (_projection_text(indicator[key], limits["reason_codepoints"])
+                                      if isinstance(indicator[key], str) else indicator[key])
+            if indicator.get("evidence"):
+                entry["evidence"] = _projection_evidence(
+                    indicator["evidence"], quote_limit=limits["quote_codepoints"],
+                    max_rows=limits["evidence_rows_failed"] if ind_failed else limits["evidence_rows_passed"])
+            indicators.append(entry)
+        if indicators:
+            projected["indicators"] = indicators
+        if failed and row.get("evidence"):
+            projected["evidence"] = _projection_evidence(
+                row["evidence"], quote_limit=limits["quote_codepoints"],
+                max_rows=limits["evidence_rows_failed"])
+        out.append(projected)
+    return out
+
+
+def _projection_preflight(value):
+    """Keep the matrix identity/summary and only the rows that explain skips."""
+    if not isinstance(value, dict):
+        return value
+    rows = [{k: row.get(k) for k in ("check_id", "dimension", "consumer", "decision",
+                                     "applicability_reason", "artifact_role")}
+            for row in value.get("rows") or []
+            if isinstance(row, dict) and (row.get("decision") != "execute"
+                                          or row.get("applicability_reason") != "applicable")]
+    return {"matrix_hash": value.get("matrix_hash"), "method_version": value.get("method_version"),
+            "summary": value.get("summary"), "row_count": len(value.get("rows") or []),
+            "non_execute_rows": rows}
+
+
+def _projection_batches(rows) -> list[dict]:
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        projected = {k: row[k] for k in ("binding_hash", "unit_id", "status",
+                                         "target_dimension_ids") if k in row}
+        if row.get("batch_contract_errors"):
+            projected["batch_contract_errors"] = row["batch_contract_errors"]
+        if row.get("corrections"):
+            projected["correction_count"] = len(row["corrections"])
+        out.append(projected)
+    return out
+
+
+def quality_report_projection(quality: dict, level: str) -> dict:
+    """Bounded C-planner projection of a stored quality report.
+
+    The stored ``tutorial_versions.quality_report`` keeps complete call audits,
+    usage blobs, correction traces and full evidence quotes; feeding it verbatim
+    into the optimization C prompt deterministically exceeded the sourced model
+    context (CALL_CAPACITY_EXCEEDED) on real runs.  This projection is prompt
+    input only -- the stored report, quality_hash and every server-side
+    consumer (regression guards, acceptance, publication) keep the complete
+    report.  All decisions, results, scores, findings, checks and located
+    evidence identities are preserved verbatim; only audit metadata, passing
+    quote prose and over-length reason text are bounded, and the envelope
+    declares exactly what was bounded.
+    """
+    if level not in _PROJECTION_LIMITS:
+        raise DomainError("OPTIMIZATION_PROJECTION_LEVEL_INVALID", 422, level=level)
+    limits = _PROJECTION_LIMITS[level]
+    if not isinstance(quality, dict):
+        return quality
+    projected = dict(quality)
+    assessment = quality.get("automated_assessment")
+    if isinstance(assessment, dict):
+        bounded = dict(assessment)
+        if "criteria" in bounded:
+            bounded["criteria"] = _projection_criteria(bounded["criteria"], limits)
+        if "audits" in bounded:
+            bounded["audits"] = "call_audit_metadata_stripped_for_capacity"
+        if "quality_preflight" in bounded:
+            bounded["quality_preflight"] = _projection_preflight(bounded["quality_preflight"])
+        projected["automated_assessment"] = bounded
+    review = quality.get("diagnostic_review")
+    if isinstance(review, dict):
+        bounded = dict(review)
+        if "dimensions" in bounded:
+            bounded["dimensions"] = _projection_dimensions(bounded["dimensions"], limits)
+        if "batches" in bounded:
+            bounded["batches"] = _projection_batches(bounded["batches"])
+        if "audits" in bounded:
+            bounded["audits"] = "call_audit_metadata_stripped_for_capacity"
+        # Duplicate of the top-level research_evidence copy; keep one.
+        bounded.pop("research_evidence", None)
+        projected["diagnostic_review"] = bounded
+    if "quality_preflight" in projected:
+        projected["quality_preflight"] = _projection_preflight(projected["quality_preflight"])
+    if level == "minimal":
+        evidence = quality.get("research_evidence")
+        if isinstance(evidence, dict):
+            projected["research_evidence"] = {k: evidence[k] for k in
+                ("imported_material_status", "no_imported_material", "research_method_version",
+                 "rubric_refs", "limitations") if k in evidence}
+    return projected
+
+
+def projection_envelope(quality: dict, level: str) -> dict:
+    """Auditable marker for what the C planner saw, never a stored-report edit."""
+    return {"method_version": QUALITY_PROJECTION_METHOD, "level": level,
+            "limits": _PROJECTION_LIMITS[level], "source_report_hash": digest(quality),
+            "authority": ("bounded_planner_prompt_projection; the stored quality_report and "
+                          "quality_hash remain complete and authoritative")}
+
+
+def _projection_recheck_reports(state: dict, level: str) -> list[dict]:
+    """Project preserved rejected full-recheck reports to the same bounds."""
+    rows = []
+    artifacts = state.get("optimization_full_recheck_artifacts") or {}
+    for identity in (state.get("optimization_full_recheck_history") or [])[-2:]:
+        ref = artifacts.get(identity)
+        if not ref:
+            continue
+        report = load(BlobStore().get(ref["blob_hash"]).decode())
+        rows.append({"report_hash": identity, "report": quality_report_projection(report, level)})
+    return rows
+
+
+def fitted_c_payload(profile, system: str, build, output_tokens: int):
+    """Choose the most faithful projection level that fits the sourced capacity.
+
+    Returns ``(payload, level)``.  Unknown capacity keeps the first level and
+    lets ``invoke`` raise CAPACITY_UNKNOWN as before.  If even the smallest
+    honest projection cannot fit, it is returned anyway so ``invoke`` raises an
+    explicit CALL_CAPACITY_EXCEEDED; decisions are never silently dropped to
+    fake a fit.
+    """
+    from .capacity import get_capacity, planned_output_tokens, request_capacity
+    from .inference import request_messages
+    base_url = getattr(profile, "llm_base_url", None)
+    model = getattr(profile, "llm_model", None)
+    capacity = get_capacity(base_url, model) if base_url and model else None
+    fallback = None
+    for level in PROJECTION_LEVELS:
+        payload = build(level)
+        if fallback is None:
+            fallback = payload
+        if capacity is None:
+            return payload, level
+        try:
+            planned = planned_output_tokens(profile, output_tokens, capacity)
+            estimate = request_capacity(
+                request_messages(system, payload, PACKAGE_SCHEMA,
+                                ensure_json_literal=bool(getattr(profile, "llm_json_mode", True))),
+                capacity, planned["reserved_output_tokens"])
+        except DomainError as exc:
+            if exc.code != "CALL_CAPACITY_EXCEEDED":
+                raise
+            continue
+        # Never accept a projection whose real output reserve is clamped below
+        # the caller's declared planning hint: escalate to a smaller input
+        # instead of inviting a truncated package.
+        if estimate["reserved_output_tokens"] < output_tokens:
+            continue
+        return payload, level
+    return fallback, PROJECTION_LEVELS[-1]
+
+
 def validate_policy(value: Any) -> dict:
     """Accept only the frozen policy shape; explicit v2 may raise v1 limits.
 
@@ -764,6 +1021,36 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
         except DomainError as exc:
             _stop(run_id, worker, epoch, exc.code)
             return
+        c_planner_system = SKILL_PROMPT + "\nReturn the C PACKAGE matching data.schema, including the complete nonempty acceptance_criteria list. candidate_schema describes ONLY the later B response; do not generate units/items or return a B candidate. Correct every source-bound package_validation_feedback contract error; never waive or fabricate criteria. Copy schema_version, skill, base_version, base_content_hash and frozen_bindings EXACTLY from the supplied metadata/schema. Never recompute hashes. confirmed_findings may ONLY reference eligible_confirmed_finding_ids; put new model observations into unverified_hypotheses or evidence-based optimizations, never invent confirmed IDs. Keep original global required checks and quality barriers unchanged. Define finite, observable candidate-improvement criteria, not a requirement to obtain unavailable professional certification. Unverifiable claims stay unknown. For mechanically testable criteria optionally add deterministic_test:{method:maximum_codepoints,unit_ids:[...],limit:integer} (Unicode codepoints including Markdown), or {method:required_literals,unit_ids:[...],literals:[...]}. Do not claim these methods certify mathematical truth." + C_REVIEW_SKILL_PROMPT
+
+        def build_planner_payload(level: str) -> dict:
+            payload = {
+                "schema": PACKAGE_SCHEMA, "optimization_skill": {k: OPTIMIZATION_SKILL[k] for k in ("id", "version", "hash")},
+                "base_version": version.id, "base_content_hash": version.content_hash,
+                "quality_report": quality_report_projection(quality, level), "units": units, "round": rounds,
+                "quality_report_projection": projection_envelope(quality, level),
+                "frozen_bindings": _frozen_bindings(state),
+                "import_understanding": state.get("context", {}).get("import_understanding", []),
+                "frozen_A_plan": state["plan"],
+                "frozen_task_contract": {k: state["context"].get(k) for k in
+                    ("raw_input", "hard_constraints", "spec_bindings", "subject_bindings", "generation_scope")},
+                "repair_policy": policy,
+                "eligible_confirmed_finding_ids": [f["finding_id"] for f in old_confirmed],
+                "layout_authority": "plan.units and base unit metadata are frozen; an unbound A suggested title is not permission to rename them",
+                "observed_codepoints": {u["unit_id"]: len(u["body"]) for u in units},
+                "candidate_schema": candidate_schema_for_units(units),
+                "presentation_contracts": presentation_contracts_for_units(units, state["context"]),
+                "mandatory_task_acceptance": original_task_acceptance(state["context"]),
+                "review_skill": {"skill_id": C_REVIEW_SKILL["skill_id"], "version": C_REVIEW_SKILL["version"], "hash": C_REVIEW_SKILL["hash"]},
+                "package_validation_feedback": package_validation_feedback(state, version),
+                "rejected_acceptance_feedback": rejected_acceptance_feedback(state),
+                "rejected_full_rechecks": _projection_recheck_reports(state, level),
+            }
+            if material_evidence is not None:
+                payload["material_evidence"] = material_evidence
+            return payload
+
+        data, projection_level = fitted_c_payload(c_profile, c_planner_system, build_planner_payload, 32768)
         with write() as db:
             obj = job(db, run_id)
             fence(obj, worker, epoch)
@@ -772,34 +1059,10 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
             per_finding = latest.setdefault("optimization_attempts_by_finding", {})
             for attempt_key in attempt_keys:
                 per_finding[attempt_key] = int(per_finding.get(attempt_key, 0)) + 1
+            latest["optimization_prompt_projection"] = projection_envelope(quality, projection_level)
             obj.state_json, obj.state_revision = dump(latest), obj.state_revision + 1
-        data = {
-            "schema": PACKAGE_SCHEMA, "optimization_skill": {k: OPTIMIZATION_SKILL[k] for k in ("id", "version", "hash")},
-            "base_version": version.id, "base_content_hash": version.content_hash,
-            "quality_report": quality, "units": units, "round": rounds,
-            "frozen_bindings": _frozen_bindings(state),
-            "import_understanding": state.get("context", {}).get("import_understanding", []),
-            "frozen_A_plan": state["plan"],
-            "frozen_task_contract": {k: state["context"].get(k) for k in
-                ("raw_input", "hard_constraints", "spec_bindings", "subject_bindings", "generation_scope")},
-            "repair_policy": policy,
-            "eligible_confirmed_finding_ids": [f["finding_id"] for f in old_confirmed],
-            "layout_authority": "plan.units and base unit metadata are frozen; an unbound A suggested title is not permission to rename them",
-            "observed_codepoints": {u["unit_id"]: len(u["body"]) for u in units},
-            "candidate_schema": candidate_schema_for_units(units),
-            "presentation_contracts": presentation_contracts_for_units(units, state["context"]),
-            "mandatory_task_acceptance": original_task_acceptance(state["context"]),
-            "review_skill": {"skill_id": C_REVIEW_SKILL["skill_id"], "version": C_REVIEW_SKILL["version"], "hash": C_REVIEW_SKILL["hash"]},
-            "package_validation_feedback": package_validation_feedback(state, version),
-            "rejected_acceptance_feedback": rejected_acceptance_feedback(state),
-            "rejected_full_rechecks": [{"report_hash": h, "report": load(BlobStore().get(
-                state["optimization_full_recheck_artifacts"][h]["blob_hash"]).decode())}
-                for h in state.get("optimization_full_recheck_history", [])[-2:]],
-        }
-        if material_evidence is not None:
-            data["material_evidence"] = material_evidence
         package, c_audit = invoke(run_id, worker, epoch, state, stage="optimization_prompt",
-            unit_id="optimization", data=data, system=SKILL_PROMPT + "\nReturn the C PACKAGE matching data.schema, including the complete nonempty acceptance_criteria list. candidate_schema describes ONLY the later B response; do not generate units/items or return a B candidate. Correct every source-bound package_validation_feedback contract error; never waive or fabricate criteria. Copy schema_version, skill, base_version, base_content_hash and frozen_bindings EXACTLY from the supplied metadata/schema. Never recompute hashes. confirmed_findings may ONLY reference eligible_confirmed_finding_ids; put new model observations into unverified_hypotheses or evidence-based optimizations, never invent confirmed IDs. Keep original global required checks and quality barriers unchanged. Define finite, observable candidate-improvement criteria, not a requirement to obtain unavailable professional certification. Unverifiable claims stay unknown. For mechanically testable criteria optionally add deterministic_test:{method:maximum_codepoints,unit_ids:[...],limit:integer} (Unicode codepoints including Markdown), or {method:required_literals,unit_ids:[...],literals:[...]}. Do not claim these methods certify mathematical truth." + C_REVIEW_SKILL_PROMPT, role="review", profile=c_profile,
+            unit_id="optimization", data=data, system=c_planner_system, role="review", profile=c_profile,
             provider_factory=provider_factory, entries=spec_entries(state["context"], "generating") + [skill_entry(C_REVIEW_SKILL, "C")],
             output_schema=PACKAGE_SCHEMA, output_tokens=32768,
             key=f"{run_id}:optimization:plan:{rounds}")

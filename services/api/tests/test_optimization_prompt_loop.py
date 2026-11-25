@@ -370,3 +370,90 @@ def test_confirmed_finding_without_acceptance_is_not_washed_out(client, monkeypa
         state = load(job(db, snap["run_id"]).state_json)
     assert state["optimization_stop_reason"] == "regression_or_unresolved"
     assert state.get("best_so_far_version") in (None, snap["version_id"])
+
+
+def test_quality_projection_strips_audit_and_bounds_quotes_but_keeps_decisions():
+    from app.v2.contracts import canonical
+    from app.v2.optimization import quality_report_projection
+    quality = {
+        "quality_status": "needs_review", "tqi_verdict": "needs_review",
+        "findings": [{"finding_id": "f1", "status": "confirmed", "claim": "x"}],
+        "checks": [{"item_id": "C1.coverage", "result": "violated"}],
+        "automated_assessment": {
+            "criteria": [{
+                "unit_id": "u1", "check_id": "C1.coverage", "result": "satisfied",
+                "processing_status": "complete",
+                "audit": {"usage": {"blob": "y" * 200000}, "call_id": "c"},
+                "clauses": [{"clause_id": "requirement", "result": "violated",
+                             "reason": "r" * 5000,
+                             "evidence": [{"field": "body", "start_byte": 1, "end_byte": 5,
+                                           "span_hash": "s" * 64, "quote": "q" * 5000}]}],
+            }],
+            "audits": [{"usage": {"blob": "y" * 200000}}],
+            "quality_preflight": {"matrix_hash": "m", "method_version": "v",
+                "rows": [{"check_id": "c", "decision": "execute", "applicability_reason": "applicable"}]},
+        },
+        "diagnostic_review": {
+            "dimensions": [{"dimension_id": "d1", "unit_id": "u1", "result": "undecidable",
+                            "score": None, "indicators": [{"indicator_id": "i", "result": "undecidable"}],
+                            "evidence": [{"field": "body", "quote": "z" * 9000, "span_hash": "t" * 64}],
+                            "audit": {"usage": {"blob": "y" * 200000}}}],
+            "audits": [{"usage": {"blob": "y" * 200000}}],
+            "research_evidence": {"source_catalog": ["big"]},
+        },
+        "research_evidence": {"source_catalog": [{"a": "b"}], "no_imported_material": True},
+    }
+    projection = quality_report_projection(quality, "minimal")
+    assert projection["quality_status"] == "needs_review" and projection["tqi_verdict"] == "needs_review"
+    assert projection["findings"] == quality["findings"] and projection["checks"] == quality["checks"]
+    criterion = projection["automated_assessment"]["criteria"][0]
+    assert criterion["result"] == "satisfied" and criterion["processing_status"] == "complete"
+    assert "audit" not in criterion
+    clause = criterion["clauses"][0]
+    assert clause["result"] == "violated" and clause["evidence"][0]["span_hash"] == "s" * 64
+    assert "quote" not in clause["evidence"][0]
+    assert len(clause["reason"]) <= 120 + len("...[truncated_for_capacity]")
+    assert projection["automated_assessment"]["audits"] == "call_audit_metadata_stripped_for_capacity"
+    assert projection["diagnostic_review"]["audits"] == "call_audit_metadata_stripped_for_capacity"
+    assert projection["diagnostic_review"]["dimensions"][0]["evidence"][0]["span_hash"] == "t" * 64
+    assert "research_evidence" not in projection["diagnostic_review"]
+    assert len(canonical(projection)) < 20000
+
+
+def test_c_planner_receives_bounded_projection_not_full_report(client, monkeypatch):
+    _, _, snap = task_run(client)
+    from app.models import TutorialVersion
+    from app.v2.contracts import canonical
+    from app.v2.runtime import dump, write
+    unit_id = snap["units"][0]["unit_id"]
+    with write() as db:
+        version = db.get(TutorialVersion, snap["version_id"])
+        version.quality_report = dump({
+            "quality_status": "needs_review",
+            "automated_assessment": {
+                "criteria": [{"unit_id": unit_id, "check_id": "C1.coverage", "result": "satisfied",
+                              "processing_status": "complete", "audit": {"usage": {"blob": "y" * 500000}}}],
+                "audits": [{"usage": {"blob": "y" * 500000}}],
+            },
+        })
+    seen = _run_loop(client, monkeypatch, snap)
+    c_data = seen["data"][0]
+    assert c_data["quality_report_projection"]["method_version"].startswith("aiedu.optimization-quality-projection")
+    assert c_data["quality_report"]["automated_assessment"]["audits"] == "call_audit_metadata_stripped_for_capacity"
+    assert "y" * 1000 not in canonical(c_data["quality_report"]).decode()
+
+
+def test_fitted_payload_escalates_to_smaller_projection(monkeypatch):
+    from app.v2 import capacity as capacity_module
+    from app.v2.optimization import fitted_c_payload
+    fake_capacity = {"context_tokens": 5000, "max_output_tokens": 100, "safety_margin_tokens": 0,
+                     "estimate_method": "test", "source_uri_or_config": "test"}
+    monkeypatch.setattr(capacity_module, "get_capacity", lambda base_url, model: fake_capacity)
+    monkeypatch.setattr(capacity_module, "planned_output_tokens",
+                        lambda profile, requested, cap: {"reserved_output_tokens": requested, "capacity_source": "test"})
+    profile = SimpleNamespace(llm_base_url="https://x", llm_model="m",
+                              llm_output_limit_tokens=None, llm_json_mode=True)
+    build = lambda level: {"level": level, "pad": "x" * (4000 if level == "bounded" else 10)}
+    payload, level = fitted_c_payload(profile, "system", build, 50)
+    assert level == "minimal"
+    assert payload["level"] == "minimal"
