@@ -8,15 +8,37 @@ import ResourceActions from "@/components/library/ResourceActions";
 import ResourceManager from "@/components/library/ResourceManager";
 
 type Profile = { id: string; name: string; model: string; base_url: string; has_key: boolean; thinking?: string | null; reasoning_effort?: string | null; model_family?: string; output_limit_tokens?: number | null };
+type WorkflowRoleKey = "understanding_planning" | "generation_repair" | "quality" | "chat";
+type WorkflowRoleStatus = {
+  configured: boolean;
+  profile_id?: string | null;
+  model?: string | null;
+  model_family?: string | null;
+  mixed?: boolean;
+  source?: string;
+  members?: Record<string, { configured: boolean; profile_id?: string | null; model?: string | null; model_family?: string | null; reason?: string }>;
+};
 type ModelSettings = {
   config: { active_id: string | null; user_profile: string; profiles: Profile[]; max_concurrency?: number; delivery_policy?: { auto_waiver_enabled: boolean; source: string } };
   config_hash: string;
   roles: Record<string, { configured: boolean; model?: string; model_family?: string; reason?: string }>;
   role_assignments?: Record<string, string>;
   role_profiles?: { id: string; name: string; model?: string; model_family?: string }[];
+  workflow_roles?: Record<WorkflowRoleKey, WorkflowRoleStatus>;
+  workflow_role_assignments?: Partial<Record<WorkflowRoleKey, string>>;
 };
-const ROLE_TEXT: Record<string, string> = {
-  generation: "生成", review: "独立检查", blind_solver: "盲解", secondary_review: "二次复核", benchmark_panel: "基准评审面板", benchmark_refiner: "基准量规精炼",
+const WORKFLOW_ROLE_KEYS: WorkflowRoleKey[] = ["understanding_planning", "generation_repair", "quality", "chat"];
+const WORKFLOW_ROLE_TEXT: Record<WorkflowRoleKey, string> = {
+  understanding_planning: "理解与规划",
+  generation_repair: "生成与修复",
+  quality: "质检",
+  chat: "答疑",
+};
+const WORKFLOW_ROLE_HELP: Record<WorkflowRoleKey, string> = {
+  understanding_planning: "理解完整需求，决定章节、题量、难度依据与跨章整合。",
+  generation_repair: "生成正文和题答，并根据质检意见完成整体优化与修复。",
+  quality: "执行独立复核、盲解、逐题检查、量规检查和整改验收。",
+  chat: "用于阅读页围绕当前版本的提问与追问。",
 };
 
 type ProfileForm = { name: string; base_url: string; model: string; api_key: string; model_family: string; thinking: string; reasoning_effort: string; output_limit_tokens: string; reuse_id: string };
@@ -36,8 +58,7 @@ export default function Settings() {
   const [form, setForm] = useState<ProfileForm>(EMPTY_PROFILE);
   const [fetchedModels, setFetchedModels] = useState<string[] | null>(null);
   const [discovering, setDiscovering] = useState(false);
-  const [assignments, setAssignments] = useState<Record<string, string>>({});
-  const [chatRole, setChatRole] = useState("");
+  const [workflowAssignments, setWorkflowAssignments] = useState<Partial<Record<WorkflowRoleKey, string>>>({});
   const [background, setBackground] = useState("");
   const [maxConcurrency, setMaxConcurrency] = useState(5);
   const [busy, setBusy] = useState(false);
@@ -45,7 +66,20 @@ export default function Settings() {
   const [managementRevision, setManagementRevision] = useState(0);
 
   const load = () => {
-    get<ModelSettings>("/model-settings").then((m) => { const all = m.role_assignments ?? {}; setAssignments(Object.fromEntries(Object.entries(all).filter(([role]) => role !== "chat"))); setChatRole(all.chat ?? ""); setModels(m); setBackground(m.config.user_profile ?? ""); setMaxConcurrency(m.config.max_concurrency ?? 5); setBackendDown(false); }).catch((e) => { setBackendDown(true); setError(explain(e)); });
+    get<ModelSettings>("/model-settings").then((m) => {
+      const explicit = m.workflow_role_assignments ?? {};
+      const next: Partial<Record<WorkflowRoleKey, string>> = {};
+      for (const key of WORKFLOW_ROLE_KEYS) {
+        const effective = m.workflow_roles?.[key];
+        const value = explicit[key] ?? (!effective?.mixed ? effective?.profile_id ?? "" : "");
+        if (value) next[key] = value;
+      }
+      setWorkflowAssignments(next);
+      setModels(m);
+      setBackground(m.config.user_profile ?? "");
+      setMaxConcurrency(m.config.max_concurrency ?? 5);
+      setBackendDown(false);
+    }).catch((e) => { setBackendDown(true); setError(explain(e)); });
   };
   useEffect(() => {
     const t = setTimeout(() => { setPrefs(readPrefs()); load(); }, 0);
@@ -87,22 +121,6 @@ export default function Settings() {
       const ok = await writeConfig("profile", value, "模型配置已保存");
       if (ok) { setForm(EMPTY_PROFILE); setFetchedModels(null); } // 密钥保存后立即清空，永不回显
     } catch (err) { setError(explain(err)); }
-  }
-
-  async function saveChatRole(profileId: string) {
-    if (!models || pending || busy) return;
-    setBusy(true); setError("");
-    try {
-      // v2 CAS 写入：action=roles 局部合并，chat:null 表示清除；不触碰其它角色选择。
-      await act("PUT", "/model-settings", {
-        expected_config_hash: models.config_hash,
-        action: "roles",
-        value: { chat: profileId || null },
-      }, { kind: "model_settings", key: newKey() });
-      toast("聊天模型已保存"); load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "聊天模型保存失败。");
-    } finally { setBusy(false); }
   }
 
   async function saveConcurrency() {
@@ -210,29 +228,49 @@ export default function Settings() {
 
               <div style={{ borderTop: "1px solid var(--line)", paddingTop: 16 }}>
                 <h3 className="sub" style={{ marginBottom: 6 }}>接入 AI Edu 任务</h3>
-                <ul>
-                  {Object.entries(models.roles).map(([r, v]) => (
-                    <li key={r} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 0", borderBottom: "1px solid var(--line)" }}>
-                      <span>{ROLE_TEXT[r] ?? r}</span>
-                      <span className="muted">{v.configured ? `${v.model}（${v.model_family}）` : "未配置"}</span>
-                    </li>
-                  ))}
-                </ul>
-                <p className="hint" style={{ marginTop: 6 }}>同族模型可在隔离上下文中复核，但不具备跨模型族独立验证资格；不会自动替换你的选择。</p>
-                <form className="asset-editor" onSubmit={async (e) => { e.preventDefault(); await writeConfig("roles", assignments, "角色分配已保存"); }} style={{ marginTop: 12 }}>
-                  {Object.entries(ROLE_TEXT).map(([role, label]) => <div key={role}><label htmlFor={`role-${role}`}>{label}</label><select id={`role-${role}`} value={assignments[role] ?? ""} onChange={(e) => { const next = { ...assignments }; if (e.target.value) next[role] = e.target.value; else delete next[role]; setAssignments(next); }}><option value="">沿用私有角色配置或保留缺口</option>{(models.role_profiles ?? models.config.profiles).map((p) => <option key={p.id} value={p.id}>{p.name} · {p.model} · {p.model_family}</option>)}</select></div>)}
-                  <button className="btn btn-sm" disabled={busy || Boolean(pending)}>保存角色分配</button>
-                </form>
-                <form className="asset-editor" onSubmit={async (e) => { e.preventDefault(); await saveChatRole(chatRole); }} style={{ marginTop: 12, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
-                  <div className="field">
-                    <label htmlFor="role-chat">阅读页聊天</label>
-                    <select id="role-chat" value={chatRole} onChange={(e) => setChatRole(e.target.value)}>
-                      <option value="">默认主生成模型（deepseek-generation）</option>
-                      {(models.role_profiles ?? models.config.profiles).map((p) => <option key={p.id} value={p.id}>{p.name} · {p.model} · {p.model_family}</option>)}
-                    </select>
-                  </div>
-                  <p className="hint">只修改聊天角色，保留所选配置的完整模型参数；不显示或更改密钥。</p>
-                  <button className="btn btn-sm" disabled={busy || Boolean(pending)}>保存聊天模型</button>
+                <p className="hint" style={{ marginTop: 6 }}>
+                  同一分工下的所有步骤始终使用同一个模型配置。质检与生成若属于同一模型族，系统会保留独立性缺口，不会自动替换你的选择。
+                </p>
+                <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+                  {WORKFLOW_ROLE_KEYS.map((key) => {
+                    const status = models.workflow_roles?.[key];
+                    return (
+                      <div key={key} style={{ display: "grid", gridTemplateColumns: "minmax(110px, 0.8fr) minmax(180px, 1.4fr)", gap: 12, alignItems: "start", padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
+                        <div>
+                          <b>{WORKFLOW_ROLE_TEXT[key]}</b>
+                          <p className="hint" style={{ margin: "3px 0 0" }}>{WORKFLOW_ROLE_HELP[key]}</p>
+                        </div>
+                        <div>
+                          {status?.mixed ? <p className="err" style={{ marginTop: 0 }}>当前各步骤使用了不同配置，请重新选择统一模型。</p>
+                            : status?.configured ? <p className="muted" style={{ marginTop: 0 }}>{status.model}（{status.model_family}）</p>
+                              : <p className="muted" style={{ marginTop: 0 }}>未配置</p>}
+                          <select
+                            aria-label={WORKFLOW_ROLE_TEXT[key]}
+                            value={workflowAssignments[key] ?? ""}
+                            onChange={(e) => {
+                              const next = { ...workflowAssignments };
+                              if (e.target.value) next[key] = e.target.value;
+                              else delete next[key];
+                              setWorkflowAssignments(next);
+                            }}
+                          >
+                            <option value="">请选择模型配置</option>
+                            {(models.role_profiles ?? models.config.profiles).map((p) => (
+                              <option key={p.id} value={p.id}>{p.name} · {p.model} · {p.model_family}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <form className="asset-editor" onSubmit={async (e) => {
+                  e.preventDefault();
+                  await writeConfig("workflow_roles", Object.fromEntries(WORKFLOW_ROLE_KEYS.map((key) => [
+                    key, workflowAssignments[key] || null,
+                  ])), "模型分工已保存");
+                }} style={{ marginTop: 12 }}>
+                  <button className="btn btn-sm" disabled={busy || Boolean(pending)}>保存模型分工</button>
                 </form>
                 <form onSubmit={(e) => { e.preventDefault(); void saveConcurrency(); }} style={{ marginTop: 12, borderTop: "1px solid var(--line)", paddingTop: 12, display: "grid", gap: 8 }}>
                   <div className="field">

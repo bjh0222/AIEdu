@@ -171,6 +171,10 @@ test.describe("工作台 AT-11", () => {
         "checking_perturbation": { calls: 3, elapsed_seconds: 30, tokens_known: 10, token_unknown_calls: 0 },
         "criterion_contract_correcting": { calls: 1, elapsed_seconds: 20, tokens_known: 10, token_unknown_calls: 0 },
       },
+      workflow_distribution: {
+        understanding_planning: { calls: 2, elapsed_seconds: 21, wall_seconds: 22, tokens_known: 10, token_unknown_calls: 0 },
+        quality: { calls: 4, elapsed_seconds: 50, wall_seconds: 18, tokens_known: 10, token_unknown_calls: 0 },
+      },
       retry_source_counts: { ancestor_resume: 9, initial: 1 },
     } });
     await mockBackend(page, { snapshot: () => snap });
@@ -179,6 +183,8 @@ test.describe("工作台 AT-11", () => {
     await expect(usage).toContainText("研究与证据 6 次");
     await expect(usage).toContainText("质量检查 3 次");
     await expect(usage).toContainText("质检与整改 1 次");
+    await expect(usage).toContainText("理解与规划 2 次 / 墙钟 22.0 秒 / 模型累计 21.0 秒");
+    await expect(usage).toContainText("质检 4 次 / 墙钟 18.0 秒 / 模型累计 50.0 秒");
     await expect(usage).not.toContainText("research_scope_review_proposition_2");
     await expect(usage).not.toContainText("checking_perturbation");
   });

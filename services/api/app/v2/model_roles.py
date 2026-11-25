@@ -10,6 +10,19 @@ from ..model_settings import read_config, profile_settings, runtime_settings
 from .contracts import DomainError
 
 
+WORKFLOW_ROLE_GROUPS = {
+    "understanding_planning": ("understanding", "planning"),
+    "generation_repair": ("generation", "repair"),
+    "quality": ("review", "blind_solver", "secondary_review"),
+    "chat": ("chat",),
+}
+WORKFLOW_ROLE_FOR_MEMBER = {
+    member: group
+    for group, members in WORKFLOW_ROLE_GROUPS.items()
+    for member in members
+}
+
+
 def qualified_family(value):
     """Reject missing/placeholder labels; never infer a family from an alias.
 
@@ -47,35 +60,113 @@ def role_config():
     return profiles, roles
 
 
+def workflow_role(role):
+    """Return the public four-part workflow group for an internal role."""
+    return WORKFLOW_ROLE_FOR_MEMBER.get(role)
+
+
+def workflow_assignments(config=None):
+    """Read explicit workflow choices without mutating the compatibility roles."""
+    value = (config if config is not None else read_config()).get("workflow_roles")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _resolve_saved_profile(role, profiles, roles):
+    """Resolve one internal role while retaining its exact selection source."""
+    config = read_config()
+    groups = workflow_assignments(config)
+    group = workflow_role(role)
+    scoped = bool(os.getenv("AIEDU_SCOPED_ROLE_PROFILE"))
+    if scoped and roles.get(role) in profiles:
+        return roles[role], "scoped", group, profiles
+    if group and group in groups:
+        profile_id = groups[group]
+        if profile_id not in profiles:
+            raise DomainError("MODEL_ROLE_UNCONFIGURED", 422, role=role,
+                              workflow_role=group, profile_id=profile_id)
+        return profile_id, "workflow", group, profiles
+    if roles.get(role) in profiles:
+        return roles[role], "role", group, profiles
+    if role in {"generation", "repair", "understanding", "planning", "knowledge", "chat"} \
+            and roles.get("generation") in profiles:
+        return roles["generation"], "generation_fallback", group, profiles
+    return None, "unconfigured", group, profiles
+
+
 def for_role(role, independent_of=()):
     profiles, roles = role_config()
-    if role in {"repair","understanding","planning","knowledge"} and role not in roles and "generation" in roles:
-        role = "generation"
-    if roles.get(role) in profiles:
-        profile = profile_settings(profiles[roles[role]])
-    elif role in {"generation", "repair", "understanding", "planning", "knowledge"}:
+    profile_id, source, group, _ = _resolve_saved_profile(role, profiles, roles)
+    if profile_id in profiles:
+        profile = profile_settings(profiles[profile_id])
+    elif source == "generation_fallback" or role in {
+            "generation", "repair", "understanding", "planning", "knowledge", "chat"}:
         profile = runtime_settings()
+        profile_id = "environment" if profile.llm_configured else None
     else:
         profile = None
     if profile is None or not profile.llm_configured:
-        raise DomainError("MODEL_ROLE_UNCONFIGURED", 422, role=role)
+        raise DomainError("MODEL_ROLE_UNCONFIGURED", 422, role=role, workflow_role=group)
     family = qualified_family(getattr(profile, "llm_model_family", None))
     excluded = {qualified_family(x) for x in independent_of}
     if independent_of and (family is None or None in excluded or family in excluded):
         raise DomainError("MODEL_FAMILY_NOT_INDEPENDENT", 422, role=role)
+    # Snapshot these on the immutable settings object so the request manifest
+    # records the route used for that exact call, even if settings change later.
+    profile.llm_internal_role = role
+    profile.llm_workflow_role = group
+    profile.llm_profile_id = profile_id
+    profile.llm_role_source = source
     return profile
 
 
 def public_roles():
     result = {}
-    for role in ("generation", "review", "blind_solver", "secondary_review", "benchmark_panel", "benchmark_refiner", "chat"):
+    for role in ("generation", "understanding", "planning", "repair", "review", "blind_solver",
+                 "secondary_review", "benchmark_panel", "benchmark_refiner", "chat"):
         try:
             profile = for_role(role)
             result[role] = {"configured": True, "model": profile.llm_model,
                             "model_family": getattr(profile, "llm_model_family", "unknown"),
                             "output_limit_tokens": getattr(profile, "llm_output_limit_tokens", None),
                             "thinking": profile.llm_thinking, "reasoning_effort": profile.llm_reasoning_effort,
+                            "profile_id": getattr(profile, "llm_profile_id", None),
+                            "workflow_role": getattr(profile, "llm_workflow_role", None),
                             "scoped_role_profile": os.getenv("AIEDU_SCOPED_ROLE_PROFILE")}
         except DomainError as exc:
             result[role] = {"configured": False, "reason": exc.code}
+    return result
+
+
+def public_workflow_roles():
+    """Four user-facing partitions with their complete effective member audit."""
+    profiles, roles = role_config()
+    explicit = workflow_assignments()
+    result = {}
+    for group, members in WORKFLOW_ROLE_GROUPS.items():
+        member_rows = {}
+        for member in members:
+            try:
+                profile = for_role(member)
+                member_rows[member] = {
+                    "configured": True,
+                    "profile_id": getattr(profile, "llm_profile_id", None),
+                    "model": profile.llm_model,
+                    "model_family": getattr(profile, "llm_model_family", "unknown"),
+                }
+            except DomainError as exc:
+                member_rows[member] = {"configured": False, "reason": exc.code}
+        configured = [row for row in member_rows.values() if row.get("configured")]
+        identities = {(row.get("profile_id"), row.get("model"), row.get("model_family"))
+                      for row in configured}
+        common = next(iter(identities)) if len(identities) == 1 else (None, None, None)
+        result[group] = {
+            "configured": len(configured) == len(members),
+            "profile_id": common[0],
+            "model": common[1],
+            "model_family": common[2],
+            "mixed": len(identities) > 1,
+            "source": "explicit" if group in explicit else ("single_effective" if identities
+                                                               and len(identities) == 1 else "mixed_or_missing"),
+            "members": member_rows,
+        }
     return result

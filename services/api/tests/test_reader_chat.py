@@ -146,3 +146,31 @@ def test_v2_model_settings_can_save_chat_role(client):
     }, headers={**ORIGIN, "X-CSRF-Token": csrf, "Idempotency-Key": "chat-role-key-2"})
     assert response.status_code == 200, response.text
     assert "chat" not in read_config().get("model_roles", {})
+
+
+def test_v2_workflow_chat_role_is_used_by_reader_chat(client, monkeypatch):
+    save_profile(client, "generation", "generation-model")
+    save_profile(client, "chat-profile", "chat-model")
+    captured: dict = {}
+    mock_complete(monkeypatch, captured)
+    session = client.post("/api/v2/session", headers=ORIGIN)
+    csrf = session.json()["csrf_token"]
+    headers = {**ORIGIN, "X-CSRF-Token": csrf}
+    models = client.get("/api/v2/model-settings", headers=headers).json()
+    saved = client.put("/api/v2/model-settings", json={
+        "expected_config_hash": models["config_hash"],
+        "action": "workflow_roles",
+        "value": {
+            "understanding_planning": None,
+            "generation_repair": None,
+            "quality": None,
+            "chat": "chat-profile",
+        },
+    }, headers={**headers, "Idempotency-Key": "workflow-chat-role"})
+    assert saved.status_code == 200, saved.text
+
+    response = v2_chat(client, chat_payload(), key="workflow-chat-call")
+    assert response.status_code == 200, response.text
+    assert captured["model"] == "chat-model"
+    assert response.json()["model_call"]["profile_id"] == "chat-profile"
+    assert response.json()["model_call"]["workflow_role"] == "chat"

@@ -134,6 +134,17 @@
             ],
             "title": "Failure Diagnostics"
           },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
           "model": {
             "anyOf": [
               {
@@ -165,6 +176,17 @@
             ],
             "title": "Price"
           },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
           "provider_request_id": {
             "anyOf": [
               {
@@ -191,6 +213,28 @@
             "title": "Retry Source",
             "type": "string"
           },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "role_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Source"
+          },
           "stage": {
             "anyOf": [
               {
@@ -201,6 +245,17 @@
               }
             ],
             "title": "Stage"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
           },
           "status": {
             "title": "Status",
@@ -232,6 +287,17 @@
               }
             ],
             "title": "Usage"
+          },
+          "workflow_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Role"
           }
         },
         "required": [

@@ -260,7 +260,11 @@ def invoke(run_id, worker, epoch, state, *, stage, unit_id, data, system, role="
               "thinking": getattr(profile, "llm_thinking", None), "reasoning_effort": getattr(profile, "llm_reasoning_effort", None),
               "json_mode": getattr(profile, "llm_json_mode", True)}
     manifest = {"schema_version": "aiedu.prompt-manifest.v1", "context_hash": state["context"]["context_hash"],
-                "plan_hash": state["plan"]["plan_hash"], "unit_id": unit_id, "stage": stage, "role": role, "entries": entries or []}
+                "plan_hash": state["plan"]["plan_hash"], "unit_id": unit_id, "stage": stage, "role": role,
+                "workflow_role": getattr(profile, "llm_workflow_role", None),
+                "profile_id": getattr(profile, "llm_profile_id", None),
+                "role_source": getattr(profile, "llm_role_source", None),
+                "entries": entries or []}
     req = request_hash(manifest, messages, profile.llm_base_url, profile.llm_model, params, output_schema or {})
     # Reuse only a successful, durable result with IDENTICAL request identity in
     # this root's ancestry. Failed/late/unknown results are never reused/retried.

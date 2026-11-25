@@ -415,6 +415,7 @@ function UsagePanel({ run }: { run: RunSnapshot }) {
     price_missing_calls?: number;
     retry_source_counts?: Record<string, number>;
     stage_distribution?: Record<string, { calls?: number; elapsed_seconds?: number; tokens_known?: number; token_unknown_calls?: number }>;
+    workflow_distribution?: Record<string, { calls?: number; elapsed_seconds?: number; wall_seconds?: number | null; tokens_known?: number; token_unknown_calls?: number }>;
   } | undefined;
   const groupedStages = new Map<string, { calls: number; elapsed: number }>();
   for (const [stage, value] of Object.entries(metrics?.stage_distribution ?? {})) {
@@ -426,6 +427,8 @@ function UsagePanel({ run }: { run: RunSnapshot }) {
     groupedStages.set(key, current);
   }
   const stageRows = [...groupedStages.entries()];
+  const workflowRows = Object.entries(metrics?.workflow_distribution ?? {})
+    .filter(([, value]) => (value.calls ?? 0) > 0);
   const retryRows = Object.entries(metrics?.retry_source_counts ?? {}).filter(([, value]) => value > 0);
 
   const budget = run.budget as Record<string, unknown>;
@@ -437,6 +440,7 @@ function UsagePanel({ run }: { run: RunSnapshot }) {
         <dt>Token</dt><dd>{run.demo ? "演示（不调用模型）" : tokens === null ? "待核实" : `${tokens.toLocaleString("zh-CN")}${anyUnknownUsage ? "（含待核实）" : ""}`}</dd>
         <dt>费用</dt><dd>{callCostsText(calls, run.demo)}{!run.cost_final && !run.demo ? "；总费用未确认" : ""}</dd>
         <dt>阶段分布</dt><dd>{stageRows.length ? stageRows.map(([stage, value]) => `${stage} ${value.calls} 次 / ${seconds(value.elapsed)}`).join("；") : "—"}</dd>
+        <dt>分工耗时</dt><dd>{workflowRows.length ? workflowRows.map(([role, value]) => `${workflowRoleText(role)} ${value.calls} 次 / 墙钟 ${seconds(value.wall_seconds)} / 模型累计 ${seconds(value.elapsed_seconds)}`).join("；") : "—"}</dd>
         <dt>重试来源</dt><dd>{retryRows.length ? retryRows.map(([source, value]) => `${source === "initial" ? "首次" : source === "stage_reattempt" ? "阶段重试" : source === "ancestor_resume" ? "祖先续跑" : source === "explicit_retry" ? "显式重试" : source} ${value}`).join("；") : "—"}</dd>
         <dt>费用上限</dt><dd>{limitText(budget.amount)}</dd>
         <dt>调用次数上限</dt><dd>{budget.calls === null || budget.calls === undefined ? "不限" : String(budget.calls)}</dd>
@@ -447,6 +451,14 @@ function UsagePanel({ run }: { run: RunSnapshot }) {
           : "调用结果已记录；仍缺提供方价格或费用回执，不能确定总费用。"}费用更新不会改动已冻结的正文。</p>}
     </>
   );
+}
+
+function workflowRoleText(role: string): string {
+  if (role === "understanding_planning") return "理解与规划";
+  if (role === "generation_repair") return "生成与修复";
+  if (role === "quality") return "质检";
+  if (role === "chat") return "答疑";
+  return "历史未记录分工";
 }
 
 function usageStageGroup(stage: string): string {

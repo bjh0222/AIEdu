@@ -161,13 +161,16 @@ def compatibility():
 @router.get("/model-settings")
 def models():
     from ..model_settings import public_config,read_config
-    from ..v2.model_roles import public_roles,role_config
+    from ..v2.model_roles import public_roles,public_workflow_roles,role_config,workflow_assignments
     config = public_config()
     saved = read_config()
     available,assignments = role_config()
+    workflows = workflow_assignments(saved)
     choices = [{"id":p["id"],"name":p.get("name",p["id"]),"model":p.get("model"),"model_family":p.get("model_family","unknown")} for p in available.values()]
-    return {"config":config,"config_hash":digest({"config":config,"roles":assignments,"choices":choices,"revision":saved.get("v2_revision",0)}),
-            "roles":public_roles(),"role_assignments":assignments,"role_profiles":choices}
+    return {"config":config,"config_hash":digest({"config":config,"roles":assignments,"workflow_roles":workflows,
+                                                   "choices":choices,"revision":saved.get("v2_revision",0)}),
+            "roles":public_roles(),"role_assignments":assignments,"role_profiles":choices,
+            "workflow_roles":public_workflow_roles(),"workflow_role_assignments":workflows}
 
 
 class ConfigWrite(Contract):
@@ -223,6 +226,20 @@ def configure_models(payload:ConfigWrite,key=Depends(action_key)):
                 if roles[k] is None:
                     merged.pop(k, None)
             config["model_roles"] = merged
+        elif payload.action == "workflow_roles":
+            from ..v2.model_roles import WORKFLOW_ROLE_GROUPS
+            available,_ = role_config()
+            choices = payload.value
+            if set(choices) - set(WORKFLOW_ROLE_GROUPS):
+                raise DomainError("MODEL_ROLE_INVALID",422)
+            if any(value is not None and value not in available for value in choices.values()):
+                raise DomainError("MODEL_ROLE_INVALID",422)
+            merged = {**config.get("workflow_roles", {}),
+                      **{key: value for key, value in choices.items() if value is not None}}
+            for key, value in choices.items():
+                if value is None:
+                    merged.pop(key, None)
+            config["workflow_roles"] = merged
         elif payload.action == "concurrency":
             value = payload.value.get("max_concurrency")
             if type(value) is not int or not 1 <= value <= 5:

@@ -8,30 +8,29 @@ from sqlalchemy.orm import Session
 
 from ..llm.provider import OpenAICompatibleProvider
 from ..llm.service import AIService, AIServiceError
-from ..model_settings import profile_settings, read_config, runtime_settings
 from ..models import ChatMessage, LearningGoal, Tutorial
-from ..v2.model_roles import for_role, role_config
+from ..v2.contracts import DomainError
+from ..v2.model_roles import for_role
 from . import goals as goals_service
 from .utils import goal_dict, jload
 
 
 def _bind_chat_role(ai: AIService) -> str:
-    """Bind the saved reader-chat role, or fall back explicitly to the main generation role."""
-    saved_chat = read_config().get("model_roles", {}).get("chat")
-    profiles, _roles = role_config()
-    if saved_chat:
-        if saved_chat not in profiles:
-            raise HTTPException(status_code=422, detail={"code": "MODEL_ROLE_INVALID", "message": "聊天模型配置不存在"})
-        ai.provider = OpenAICompatibleProvider(profile_settings(profiles[saved_chat]))
-        return str(saved_chat)
+    """Bind the explicit reader-chat workflow choice, then the model-role fallback."""
     try:
-        if runtime_settings().llm_configured:
-            profile = for_role("generation")
-            ai.provider = OpenAICompatibleProvider(profile)
-            return "generation"
-    except Exception:
+        profile = for_role("chat")
+        ai.provider = OpenAICompatibleProvider(profile)
+        ai.role_profile_id = getattr(profile, "llm_profile_id", None)
+        return str(ai.role_profile_id or "chat")
+    except DomainError as exc:
+        if exc.code == "MODEL_ROLE_UNCONFIGURED":
+            raise HTTPException(status_code=422, detail={
+                "code": "MODEL_ROLE_INVALID", "message": "聊天模型配置不存在",
+            }) from exc
         ai.provider = None
-    return ""
+        raise HTTPException(status_code=422, detail={
+            "code": "MODEL_ROLE_INVALID", "message": "聊天模型配置不可用",
+        }) from exc
 
 
 def chat(db: Session, payload, ai: AIService) -> dict:
@@ -127,6 +126,8 @@ def chat(db: Session, payload, ai: AIService) -> dict:
         "model_call": None if ai.is_demo else {
             "provider": "openai-compatible",
             "model": ai.provider.model if ai.provider else "",
+            "profile_id": getattr(ai, "role_profile_id", None),
+            "workflow_role": "chat",
             "usage": dict(ai.usage_last),
         },
     }

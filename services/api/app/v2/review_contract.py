@@ -560,16 +560,36 @@ def summarize_calls(calls: list[dict[str, Any]]) -> dict[str, Any]:
     started_or_settled = 0
     retry_sources: dict[str, int] = {}
     stages: dict[str, dict[str, Any]] = {}
+    workflows: dict[str, dict[str, Any]] = {}
     elapsed_total = 0.0
     for call in calls:
         stage = str(call.get("stage") or "unclassified")
         bucket = stages.setdefault(stage, {"calls": 0, "tokens_known": 0,
                                            "token_unknown_calls": 0,
                                            "elapsed_seconds": 0.0})
+        workflow = str(call.get("workflow_role") or "unclassified")
+        workflow_bucket = workflows.setdefault(workflow, {
+            "calls": 0, "current_run_calls": 0, "tokens_known": 0,
+            "token_unknown_calls": 0, "elapsed_seconds": 0.0,
+            "first_started_at": None, "last_finished_at": None,
+        })
         bucket["calls"] += 1
+        workflow_bucket["calls"] += 1
+        current_run = call.get("current_run") is not False
+        if current_run:
+            workflow_bucket["current_run_calls"] += 1
+        started_at = call.get("started_at")
+        if current_run and type(started_at) in {int, float} and math.isfinite(started_at) and started_at >= 0:
+            prior = workflow_bucket["first_started_at"]
+            workflow_bucket["first_started_at"] = started_at if prior is None else min(prior, started_at)
+        finished_at = call.get("finished_at")
+        if current_run and type(finished_at) in {int, float} and math.isfinite(finished_at) and finished_at >= 0:
+            prior = workflow_bucket["last_finished_at"]
+            workflow_bucket["last_finished_at"] = finished_at if prior is None else max(prior, finished_at)
         elapsed = call.get("elapsed_seconds")
         if type(elapsed) in {int, float} and math.isfinite(elapsed) and elapsed >= 0:
             bucket["elapsed_seconds"] += float(elapsed)
+            workflow_bucket["elapsed_seconds"] += float(elapsed)
             elapsed_total += float(elapsed)
         usage = call.get("usage")
         total = usage.get("total_tokens") if isinstance(usage, dict) else None
@@ -578,9 +598,11 @@ def summarize_calls(calls: list[dict[str, Any]]) -> dict[str, Any]:
             if type(total) in {int, float} and math.isfinite(total) and total >= 0:
                 token_total += int(total)
                 bucket["tokens_known"] += int(total)
+                workflow_bucket["tokens_known"] += int(total)
             else:
                 token_unknown += 1
                 bucket["token_unknown_calls"] += 1
+                workflow_bucket["token_unknown_calls"] += 1
             price = call.get("price")
             amount = price.get("amount", price.get("total")) if isinstance(price, dict) else None
             currency = price.get("currency") if isinstance(price, dict) else None
@@ -597,8 +619,14 @@ def summarize_calls(calls: list[dict[str, Any]]) -> dict[str, Any]:
         retry_sources[source] = retry_sources.get(source, 0) + 1
     for bucket in stages.values():
         bucket["elapsed_seconds"] = round(bucket["elapsed_seconds"], 3)
+    for bucket in workflows.values():
+        bucket["elapsed_seconds"] = round(bucket["elapsed_seconds"], 3)
+        started_at, finished_at = bucket.pop("first_started_at"), bucket.pop("last_finished_at")
+        bucket["wall_seconds"] = (round(max(0, finished_at - started_at), 3)
+                                  if type(started_at) in {int, float}
+                                  and type(finished_at) in {int, float} else None)
     return {
-        "method_version": "run-accounting-summary.v1",
+        "method_version": "run-accounting-summary.v2",
         "calls": len(calls),
         "calls_started_or_settled": started_or_settled,
         "tokens_known": token_total,
@@ -608,4 +636,5 @@ def summarize_calls(calls: list[dict[str, Any]]) -> dict[str, Any]:
         "elapsed_seconds": round(elapsed_total, 3),
         "retry_source_counts": retry_sources,
         "stage_distribution": dict(sorted(stages.items())),
+        "workflow_distribution": dict(sorted(workflows.items())),
     }

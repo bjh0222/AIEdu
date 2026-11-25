@@ -86,10 +86,16 @@ class CallSnapshot(Output):
     request_hash: str
     model: str | None = None
     stage: str | None = None
+    role: str | None = None
+    workflow_role: str | None = None
+    profile_id: str | None = None
+    role_source: str | None = None
     provider_request_id: str | None = None
     failure_code: str | None = None
     failure_diagnostics: dict[str, Any] | None = None
     elapsed_seconds: float | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
     supersedes_call_id: str | None = None
     current_run: bool = True
     retry_source: Literal["initial", "stage_reattempt", "ancestor_resume", "explicit_retry"] = "initial"

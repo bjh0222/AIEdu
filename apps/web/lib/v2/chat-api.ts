@@ -34,6 +34,8 @@ export type ChatSendResult = {
   model_call?: {
     provider: string;
     model: string;
+    profile_id?: string | null;
+    workflow_role?: string | null;
     call_id?: string | null;
     usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; usage_source?: string };
   } | null;

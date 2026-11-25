@@ -42,7 +42,7 @@ def capabilities(domain_key: str = "general", scene: str = "knowledge_tutorial",
     except (OSError, ValueError, TypeError):
         material_policy = {"resource_policy_status": "unavailable", "resource_policy_reason": "RESOURCE_POLICY_INVALID"}
     from ..v2.profiles import coverage_catalog, domain_profile
-    from ..v2.model_roles import public_roles
+    from ..v2.model_roles import public_roles, public_workflow_roles
     preview = compile_plan({"domain_key": domain_key, "runtime_target": runtime_target,
                             "spec_bindings": [{"scene": scene, "artifact_role": "tutorial"}]})
     return {"schema_version": "aiedu.task-run.v2", "scenes": sorted(SCENES), "obsidian_delivery": False,
@@ -58,7 +58,8 @@ def capabilities(domain_key: str = "general", scene: str = "knowledge_tutorial",
             "scope": {"domain_key": domain_key, "scene": scene, "runtime_target": runtime_target},
             "generation": {"available": True, "requires_paid_permit": True, "demo_requires_explicit_choice": True},
             "quality_profile": domain_profile(domain_key, scene), "scoped_check_plan": preview,
-            "role_configuration": public_roles(), "benchmark_build_status": "scope_specific_see_report",
+            "role_configuration": public_roles(), "workflow_roles": public_workflow_roles(),
+            "benchmark_build_status": "scope_specific_see_report",
             "benchmark_capabilities":{"controlled":"three_deterministic_families","semantic":"requires_independent_role_preflight",
                 "sealed":"new_build_only_single_consume","calibration":"not_calibrated"},
             "materials":{"supported":["txt","md","csv","pdf_text","docx_text","epub_text"],

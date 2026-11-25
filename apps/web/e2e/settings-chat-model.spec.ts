@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-test("settings persists the reader chat model through the model settings API", async ({ page }: { page: Page }) => {
+test("settings persists four user-facing workflow model choices", async ({ page }: { page: Page }) => {
   const requests: Record<string, unknown>[] = [];
   await page.route("**/api/v2/**", async (route) => {
     const path = new URL(route.request().url()).pathname.replace("/api/v2", "");
@@ -12,27 +12,53 @@ test("settings persists the reader chat model through the model settings API", a
     }
     if (path === "/model-settings") return route.fulfill({ json: {
       config: { active_id: "generation", user_profile: "", profiles: [
-        { id: "generation", name: "主生成", model: "deepseek-generation", has_key: true, model_family: "deepseek" },
-        { id: "chat-profile", name: "聊天配置", model: "chat-model", has_key: true, model_family: "chat-family" },
+        { id: "planner", name: "GLM plan", model: "glm-5.3-flash", has_key: true, model_family: "glm" },
+        { id: "generation", name: "DeepSeek", model: "DeepSeek-V4.1-Flash-HS", has_key: true, model_family: "deepseek" },
+        { id: "quality", name: "Qwen", model: "qwen3.8-flash", has_key: true, model_family: "qwen" },
+        { id: "chat-profile", name: "GLM chat", model: "glm-5.3-flash", has_key: true, model_family: "glm" },
       ] },
       config_hash: "fixture-hash",
-      roles: { generation: { configured: true, model: "deepseek-generation", model_family: "deepseek" } },
-      role_assignments: { generation: "generation" },
+      roles: {},
+      role_assignments: {},
       role_profiles: [
-        { id: "generation", name: "主生成", model: "deepseek-generation", model_family: "deepseek" },
-        { id: "chat-profile", name: "聊天配置", model: "chat-model", model_family: "chat-family" },
+        { id: "planner", name: "GLM plan", model: "glm-5.3-flash", model_family: "glm" },
+        { id: "generation", name: "DeepSeek", model: "DeepSeek-V4.1-Flash-HS", model_family: "deepseek" },
+        { id: "quality", name: "Qwen", model: "qwen3.8-flash", model_family: "qwen" },
+        { id: "chat-profile", name: "GLM chat", model: "glm-5.3-flash", model_family: "glm" },
       ],
+      workflow_role_assignments: {
+        understanding_planning: "planner",
+        generation_repair: "generation",
+        quality: "quality",
+        chat: "chat-profile",
+      },
+      workflow_roles: {
+        understanding_planning: { configured: true, profile_id: "planner", model: "glm-5.3-flash", model_family: "glm", mixed: false },
+        generation_repair: { configured: true, profile_id: "generation", model: "DeepSeek-V4.1-Flash-HS", model_family: "deepseek", mixed: false },
+        quality: { configured: true, profile_id: "quality", model: "qwen3.8-flash", model_family: "qwen", mixed: false },
+        chat: { configured: true, profile_id: "chat-profile", model: "glm-5.3-flash", model_family: "glm", mixed: false },
+      },
     } });
     return route.fulfill({ json: {}, status: 404 });
   });
   await page.goto("/settings");
-  await expect(page.getByLabel("阅读页聊天")).toBeVisible();
-  const options = await page.getByLabel("阅读页聊天").locator("option").allTextContents();
-  expect(options[0]).toContain("默认主生成模型");
-  await page.getByLabel("阅读页聊天").selectOption("chat-profile");
-  await page.getByRole("button", { name: "保存聊天模型" }).click();
+  for (const label of ["理解与规划", "生成与修复", "质检", "答疑"]) {
+    await expect(page.getByRole("combobox", { name: label, exact: true })).toBeVisible();
+  }
+  await expect(page.getByText(/模型 ?A|模型 ?B|模型 ?C/)).toHaveCount(0);
+  await page.getByRole("combobox", { name: "质检", exact: true }).selectOption("generation");
+  await page.getByRole("button", { name: "保存模型分工" }).click();
   await expect.poll(() => requests.length).toBe(1);
-  expect(requests).toEqual([{ expected_config_hash: "fixture-hash", action: "roles", value: { chat: "chat-profile" } }]);
+  expect(requests).toEqual([{
+    expected_config_hash: "fixture-hash",
+    action: "workflow_roles",
+    value: {
+      understanding_planning: "planner",
+      generation_repair: "generation",
+      quality: "generation",
+      chat: "chat-profile",
+    },
+  }]);
 });
 
 test("delivery waiver preference is server-persisted through the CAS settings action", async ({ page }: { page: Page }) => {
