@@ -199,6 +199,31 @@ def finish_candidate(run_id, worker, epoch, state, version, units, new_units, qu
     if regressions:
         _persist_artifact(run_id, worker, epoch, {"base_version": version.id,
             "candidate_version": new_version, "regressions": regressions}, "optimization_regression", b_audit)
+        # A diagnostic regression rejects this candidate, but it is also useful
+        # source-bound feedback for the next bounded generation cycle. The
+        # optimization loop already carries rejected full-recheck reports to C;
+        # preserve the candidate as rejected and let that loop decide whether
+        # its finite round/attempt budgets allow another correction.
+        if state.get("execution_policy", {}).get("criterion_assessment") and prior_observations is None:
+            candidate_hash = digest([(u["unit_id"], unit_content_identity(u)) for u in new_units])
+            with write() as db:
+                obj = job(db, run_id)
+                fence(obj, worker, epoch)
+                current = load(obj.state_json)
+                previous = current.setdefault("rejected_candidate_hashes", [])
+                if candidate_hash not in previous:
+                    previous.append(candidate_hash)
+                    current["last_rejected_candidate_hash"] = candidate_hash
+                    current.setdefault("rejected_candidate_regressions", []).append({
+                        "candidate_hash": candidate_hash,
+                        "base_version": version.id,
+                        "candidate_version": new_version,
+                        "regressions": deepcopy(regressions),
+                        "authority": "unpublished_candidate_observation_not_confirmed_fact",
+                    })
+                    current["optimization_rounds"] = rounds + 1
+                    obj.state_json, obj.state_revision = dump(current), obj.state_revision + 1
+                    return True
         _stop(run_id, worker, epoch, "diagnostic_regression")
         return False
     old_violations = {c["item_id"] for c in quality.get("checks", []) if c.get("result") == "violated"}

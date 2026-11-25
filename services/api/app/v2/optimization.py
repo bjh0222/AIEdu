@@ -361,6 +361,30 @@ def _projection_recheck_reports(state: dict, level: str) -> list[dict]:
     return rows
 
 
+def rejected_regression_feedback(state: dict, limit: int = 4) -> list[dict]:
+    """Return bounded prior candidate regressions as optimization feedback.
+
+    These are observations of unpublished candidates, not confirmed defects in
+    the saved best version. Keep only stable diagnostic identities and verdict
+    movement so the next C pass can preserve every previously satisfied score.
+    """
+    rows = []
+    for row in (state.get("rejected_candidate_regressions") or [])[-limit:]:
+        if not isinstance(row, dict):
+            continue
+        rows.append({
+            "candidate_hash": row.get("candidate_hash"),
+            "candidate_version": row.get("candidate_version"),
+            "authority": "unpublished_candidate_observation_not_confirmed_fact",
+            "regressions": [{
+                key: regression.get(key) for key in
+                ("unit_id", "ordinal", "dimension_id", "check_id", "binding_hash", "before", "after", "reason")
+                if regression.get(key) is not None
+            } for regression in row.get("regressions", []) if isinstance(regression, dict)],
+        })
+    return rows
+
+
 def fitted_c_payload(profile, system: str, build, output_tokens: int):
     """Choose the most faithful projection level that fits the sourced capacity.
 
@@ -1117,6 +1141,7 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
                 "review_skill": {"skill_id": C_REVIEW_SKILL["skill_id"], "version": C_REVIEW_SKILL["version"], "hash": C_REVIEW_SKILL["hash"]},
                 "package_validation_feedback": package_validation_feedback(state, version),
                 "rejected_acceptance_feedback": rejected_acceptance_feedback(state),
+                "rejected_candidate_regressions": rejected_regression_feedback(state),
                 "rejected_full_rechecks": _projection_recheck_reports(state, level),
             }
             if material_evidence is not None:

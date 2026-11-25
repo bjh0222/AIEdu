@@ -142,6 +142,24 @@ def test_per_question_regression_guard_uses_stable_slot_not_fresh_UUID():
     assert diagnostic_regressions(before, after) == []
 
 
+def test_rejected_regression_feedback_is_bounded_and_marked_unconfirmed():
+    from app.v2.optimization import rejected_regression_feedback
+    state = {"rejected_candidate_regressions": [{
+        "candidate_hash": f"candidate-{i}", "candidate_version": f"version-{i}",
+        "authority": "must be replaced by fixed contract",
+        "regressions": [{
+            "unit_id": "u", "dimension_id": "d", "binding_hash": "b",
+            "before": "satisfied", "after": "violated", "reason": "score_lost",
+            "large_unneeded_payload": "x" * 1000,
+        }],
+    } for i in range(6)]}
+    rows = rejected_regression_feedback(state)
+    assert [row["candidate_hash"] for row in rows] == [f"candidate-{i}" for i in range(2, 6)]
+    assert all(row["authority"] == "unpublished_candidate_observation_not_confirmed_fact" for row in rows)
+    assert set(rows[0]["regressions"][0]) == {
+        "unit_id", "dimension_id", "binding_hash", "before", "after", "reason"}
+
+
 def test_progress_identity_includes_hidden_document_end_answers_not_UUID():
     from app.v2.optimization import unit_content_identity
     original = {"unit_id": "u", "body": "题面", "items": [{"item_id": "old", "content_hash": "oldhash",
@@ -188,3 +206,49 @@ def test_rejected_assessment_keeps_best_and_continues_only_generation_cycle(clie
         else:
             assert saved["last_rejected_candidate_hash"] == digest([(u["unit_id"], unit_content_identity(u)) for u in units])
             assert saved["optimization_rounds"] == 1
+
+
+@pytest.mark.parametrize("fixed_recheck", [False, True])
+def test_diagnostic_regression_continues_only_generation_cycle(client, monkeypatch, fixed_recheck):
+    from test_task_run_v2 import task_run
+    from test_optimization_prompt_loop import _prepare
+    from app.models import TutorialVersion
+    from app.v2.runtime import job, load, materialize, write
+    from app.v2.optimization_recheck import finish_candidate
+    from app.v2.contracts import digest
+    from app.v2.optimization import unit_content_identity
+    _, _, snap = task_run(client)
+    _prepare(client, snap)
+    with write() as db:
+        obj = job(db, snap["run_id"])
+        state = load(obj.state_json)
+        state["execution_policy"] = {"criterion_assessment": True}
+        version = db.get(TutorialVersion, snap["version_id"])
+        units = materialize(version)["units"]
+    base = {"diagnostic_review": {"dimensions": [{
+        "unit_id": units[0]["unit_id"], "dimension_id": "explanation_and_representation",
+        "binding_hash": "binding", "result": "satisfied", "score": 2,
+    }]}, "checks": [], "findings": []}
+    rejected = deepcopy(base)
+    rejected["diagnostic_review"]["dimensions"][0].update(result="violated", score=1)
+    monkeypatch.setattr("app.v2.optimization._persist_artifact", lambda *a, **k: None)
+    continued = finish_candidate(
+        snap["run_id"], "fixture", 1, state, version, units, units, base, rejected,
+        {}, {}, {}, {}, [], "new-version", 0,
+        prior_observations=[] if fixed_recheck else None,
+    )
+    assert continued is (not fixed_recheck)
+    with write() as db:
+        saved = load(job(db, snap["run_id"]).state_json)
+        assert saved["version_id"] == snap["version_id"]
+        if fixed_recheck:
+            assert saved["optimization_stop_reason"] == "diagnostic_regression"
+            assert not saved.get("rejected_candidate_regressions")
+        else:
+            assert saved["last_rejected_candidate_hash"] == digest(
+                [(u["unit_id"], unit_content_identity(u)) for u in units])
+            assert saved["optimization_rounds"] == 1
+            feedback = saved["rejected_candidate_regressions"][-1]
+            assert feedback["regressions"][0]["unit_id"] == units[0]["unit_id"]
+            assert feedback["regressions"][0]["dimension_id"] == "explanation_and_representation"
+            assert feedback["authority"].endswith("not_confirmed_fact")
