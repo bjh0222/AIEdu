@@ -110,9 +110,97 @@ def test_executed_unknown_and_negative_are_complete_without_certification():
         assert b["complete"] and b["rows"][0]["result"] == value
 
 
+def test_item_not_applicable_is_normalized_to_grounded_undecidable():
+    """A Q4 item cannot opt out of transfer; preserve the abstention honestly."""
+    request = req()
+    bound = bind_observations(
+        output(request, result="not_applicable"), [request], review_fields(data()), {}, "u")
+    assert bound["complete"]
+    assert bound["rows"][0]["result"] == "undecidable"
+    assert [c["result"] for c in bound["rows"][0]["clauses"]] == ["undecidable", "undecidable"]
+    change = bound["normalization"]["criterion_semantic_normalizations"][1]
+    assert change["clause_id"] == "transfer"
+    assert change["before"] == "not_applicable"
+    assert change["after"] == "undecidable"
+
+
+def test_item_response_schema_excludes_not_applicable_but_unit_schema_allows_it():
+    def result_enums(value):
+        found = []
+        if isinstance(value, dict):
+            if isinstance(value.get("result"), dict) and "enum" in value["result"]:
+                found.append(value["result"]["enum"])
+            for child in value.values():
+                found.extend(result_enums(child))
+        elif isinstance(value, list):
+            for child in value:
+                found.extend(result_enums(child))
+        return found
+
+    item_schema = response_contract([req()], review_fields(data()))
+    assert result_enums(item_schema)
+    assert all("not_applicable" not in values for values in result_enums(item_schema))
+
+    unit = req("Q6.exercise", None, {"bindings": "来源绑定", "support": "专业支持"})
+    unit_schema = response_contract([unit], review_fields(data()))
+    assert any("not_applicable" in values for values in result_enums(unit_schema))
+
+
+def test_ungraded_unit_criteria_ignore_stray_rating_without_changing_clause_observation():
+    request = req("A.blueprint.fixture", None, {"quantity": "题量必须为5"})
+    bound = bind_observations(output(request, rating=2), [request], review_fields(data()), {}, "u")
+    assert bound["complete"]
+    assert bound["rows"][0]["rating"] is None
+    assert bound["rows"][0]["result"] == "satisfied"
+
+
 def test_duplicate_requested_identity_is_rejected_before_model_work():
     with pytest.raises(DomainError, match="CRITERION_REQUEST_DUPLICATE"):
         bind_observations(output(), [req(), req()], review_fields(data()), {}, "u")
+
+
+def test_single_position_anchored_request_id_copy_error_is_recovered_and_audited():
+    first = req("Q1.exercise", "i", {"premises": "题设成立", "solvability": "题目可解"})
+    second = req("Q1.exercise", "j", {"premises": "题设成立", "solvability": "题目可解"})
+    first["request_id"], second["request_id"] = "r1", "r2"
+    observed = {"assessments": [
+        output(first, rating=None)["assessments"][0],
+        output(second, rating=None)["assessments"][0],
+    ]}
+    for clause in observed["assessments"][1]["clauses"]:
+        clause["evidence"] = [{"field": "item:j:stem_markdown",
+                               "quote": data()["fields"]["item:j:stem_markdown"]}]
+    observed["assessments"][0]["request_id"] = "r1-copy-error"
+    bound = bind_observations(observed, [first, second], review_fields(data()), {}, "u")
+    assert bound["complete"]
+    recovery = bound["normalization"]["request_id_recovery"]
+    assert recovery["position"] == 0
+    assert recovery["returned_request_id"] == "r1-copy-error"
+    assert recovery["request_id"] == "r1"
+
+
+def test_request_id_recovery_never_accepts_ambiguous_extra_rows():
+    first = req("Q1.exercise", "i", {"premises": "题设成立", "solvability": "题目可解"})
+    second = deepcopy(first) | {"request_id": "r2", "item_id": "j", "ordinal": 2}
+    first["request_id"] = "r1"
+    row1 = output(first, rating=None)["assessments"][0]
+    row2 = output(second, rating=None)["assessments"][0]
+    row1["request_id"], row2["request_id"] = "wrong-a", "wrong-b"
+    bound = bind_observations({"assessments": [row1, row2]}, [first, second], review_fields(data()), {}, "u")
+    assert not bound["complete"]
+    assert bound["protocol_errors"] == ["unrequested_assessment"]
+
+
+def test_single_domain_dimension_clause_id_copy_error_is_recovered_and_audited():
+    request = req("I.math_logic.premises.exercise", "i", {"dimension": "核对定义域与题设"})
+    request["criterion"]["rating_scale"] = {"0": "缺陷", "1": "部分", "2": "完整"}
+    observed = output(request, result="satisfied", rating=2)
+    observed["assessments"][0]["clauses"][0]["clause_id"] = request["check_id"]
+    bound = bind_observations(observed, [request], review_fields(data()), {}, "u")
+    assert bound["complete"]
+    recovery = bound["normalization"]["dimension_clause_recovery"]
+    assert recovery["changes"][0]["clause_id"] == "dimension"
+    assert recovery["changes"][0]["returned_clause_id"] == request["check_id"]
 
 
 def test_server_evidence_id_replaces_model_quote_and_binds_exact_span():
@@ -170,6 +258,84 @@ def test_frozen_unknown_binding_still_rejects_positive_verdict_without_evidence(
     bound = bind_observations(out, [request], review_fields(data()), {}, "u")
     assert not bound["complete"]
     assert "content_evidence_required" in bound["rows"][0]["clauses"][2]["protocol_errors"]
+
+
+def _frozen_source_request(source_id="6c9e531c-53ca-4910-82cd-aa8ed8fb6377"):
+    contract = {"name": "Knowledge relation 甲 -> 乙", "target": "unit",
+        "clauses": {"relation": "Verify the actual content implements the frozen procedure_condition relation.",
+            "condition": "Verify the procedure condition in actual content.",
+            "evidence": f"Use only the frozen evidence binding: {source_id}."},
+        "pass_condition": "The relation and boundary must be located in actual content.",
+        "source_ref": "frozen:A-teaching-arrangement:v6", "version": "aiedu.criterion-assessment.v1",
+        "check_id": "A.knowledge.source"}
+    contract["criterion_hash"] = digest(contract)
+    request = {"request_id": "s", "check_id": contract["check_id"], "item_id": None,
+        "ordinal": None, "criterion": contract}
+    observed = {"assessments": [{"request_id": "s", "rating": None, "clauses": [
+        {"clause_id": "relation", "result": "satisfied", "reason": "正文实现了冻结关系的具体理由。",
+         "evidence": [{"field": "unit:body", "quote": data()["fields"]["unit:body"]}]},
+        {"clause_id": "condition", "result": "satisfied", "reason": "正文满足冻结条件的说明。",
+         "evidence": [{"field": "unit:body", "quote": data()["fields"]["unit:body"]}]},
+        {"clause_id": "evidence", "result": "satisfied", "reason": "来源 ID 与冻结绑定精确一致。",
+         "evidence": [{"field": "context:sources", "quote": source_id}]},
+    ]}]}
+    d = data() | {"sources": [{"source_id": source_id, "title": "冻结来源"}]}
+    return request, observed, d
+
+
+def test_frozen_source_binding_accepts_exact_context_provenance_without_weakening_content():
+    request, observed, d = _frozen_source_request()
+    fields = review_fields(d)
+    bound = bind_observations(observed, [request], fields, {}, "u")
+    assert bound["complete"]
+    assert bound["rows"][0]["clauses"][2]["evidence"][0]["field"] == "context:sources"
+
+    observed["assessments"][0]["clauses"][2]["evidence"][0]["quote"] = fields["context:sources"]
+    full_source = bind_observations(observed, [request], fields, {}, "u")
+    assert full_source["complete"]
+
+    observed["assessments"][0]["clauses"][2]["evidence"][0]["quote"] = "冻结来源"
+    source_span = bind_observations(observed, [request], fields, {}, "u")
+    assert source_span["complete"]
+
+    observed["assessments"][0]["clauses"][2]["evidence"][0]["quote"] = "wrong-source"
+    invalid = bind_observations(observed, [request], fields, {}, "u")
+    assert not invalid["complete"]
+    assert "invalid_evidence_quote" in invalid["rows"][0]["clauses"][2]["protocol_errors"]
+
+    request, observed, d = _frozen_source_request()
+    observed["assessments"][0]["clauses"][0]["evidence"] = observed["assessments"][0]["clauses"][2]["evidence"]
+    content_only = bind_observations(observed, [request], review_fields(d), {}, "u")
+    assert not content_only["complete"]
+    assert "content_evidence_required" in content_only["rows"][0]["clauses"][0]["protocol_errors"]
+
+
+@pytest.mark.parametrize(
+    "check_id,metadata_clause,field",
+    [
+        ("G4.evidence_boundaries", "unknown", "context:task"),
+        ("Q6.exercise", "bindings", "context:sources"),
+    ],
+)
+def test_metadata_boundary_clauses_accept_context_evidence_only_for_their_scope(
+        check_id, metadata_clause, field):
+    other_clause = "support"
+    request = req(check_id, None, {other_clause: "正文支持", metadata_clause: "元数据边界"})
+    fields = review_fields(data())
+    observed = output(request, rating=None)
+    clauses = observed["assessments"][0]["clauses"]
+    next(c for c in clauses if c["clause_id"] == metadata_clause)["evidence"] = [
+        {"field": field, "quote": fields[field]}
+    ]
+    bound = bind_observations(observed, [request], fields, {}, "u")
+    assert bound["complete"]
+
+    next(c for c in clauses if c["clause_id"] == other_clause)["evidence"] = [
+        {"field": field, "quote": fields[field]}
+    ]
+    weakened = bind_observations(observed, [request], fields, {}, "u")
+    assert not weakened["complete"]
+    assert "content_evidence_required" in weakened["rows"][0]["clauses"][0]["protocol_errors"]
 
 
 def test_frozen_unknown_abstention_keeps_reason_and_context_evidence_requirements():

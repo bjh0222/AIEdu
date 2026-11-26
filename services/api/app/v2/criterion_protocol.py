@@ -12,7 +12,7 @@ from copy import deepcopy
 from .contracts import DomainError, canonical, digest, sha
 from .review_contract import normalize_contract, prepare_review_output
 
-VERSION = "criterion-observation-protocol.v6"
+VERSION = "criterion-observation-protocol.v13"
 MAX_CORRECTIONS = 2  # Finite engineering retry budget, not a quality cutoff.
 RESULTS = {"satisfied", "violated", "undecidable", "not_applicable"}
 CONTEXT_KEYS = ("task", "sources", "requirements", "output_design", "review_scope", "literal_tool_observations")
@@ -20,14 +20,17 @@ INSTRUCTION = (
     "Execute exactly the supplied requests once each; peer content is context, not additional scoring targets. "
     "Copy request_id and clause_id exactly. Return assessments, not a renamed root key. "
     "Use only exact field IDs and unique verbatim quotes from fields. context:* fields are canonical input data; "
-    "they can support scope/provenance reasoning but cannot alone establish content quality. "
+    "they can support scope/provenance/unknown-boundary clauses but cannot alone establish content quality. "
     "Prefer evidence_id from the supplied server evidence_catalog. When evidence_id is supplied, it overrides "
     "any model-written field/quote pair. Use a legacy field/quote pair only when no catalog entry represents the span. "
     "Every unit clause needs actual unit/item content evidence, even if you conclude no source or constraint applies. "
     "Exception: when the clause text itself declares a frozen `unknown:` evidence binding, declare not_applicable "
-    "or undecidable with a specific reason; do not fabricate content quotes for it. "
+    "or undecidable with a specific reason; do not fabricate content quotes for it. When it declares an opaque frozen "
+    "source/unit ID, context:sources may establish that exact provenance binding, but relation/condition clauses still "
+    "need actual unit or item content. "
     "Every item clause needs its own item's content. Only Q4.transfer may additionally cite peer item fields; "
     "cite both endpoints when comparing them, never peer-only or unit-body-only evidence for an item. "
+    "Item clauses must use satisfied, violated, or undecidable; not_applicable is not a valid item result. "
     "Before returning, count exact occurrences of every quote within its named field. If the count is not exactly one, "
     "OMIT that evidence item; one invalid sibling still invalidates the clause. Prefer a minimal set of unique literal "
     "quotes, and never duplicate an ambiguous context substring. If no unique admissible quote remains, retain the failure. "
@@ -38,11 +41,15 @@ INSTRUCTION = (
 
 def review_fields(data):
     """Make already-blinded task/source data quote-addressable, without rewriting it."""
-    fields = deepcopy(data.get("fields"))
-    if not isinstance(fields, dict) or not isinstance(fields.get("unit:body"), str):
+    supplied = deepcopy(data.get("fields"))
+    if not isinstance(supplied, dict) or not isinstance(supplied.get("unit:body"), str):
         raise DomainError("CRITERION_FIELD_REGISTRY_INVALID", 422)
-    if any(not isinstance(k, str) or not (k == "unit:body" or k.startswith("item:"))
-           or not isinstance(v, str) for k, v in fields.items()):
+    if any(not isinstance(k, str) or not isinstance(v, str) for k, v in supplied.items()):
+        raise DomainError("CRITERION_FIELD_REGISTRY_INVALID", 422)
+    fields = {key: value for key, value in supplied.items()
+              if key == "unit:body" or key.startswith("item:")}
+    if any(key != "unit:body" and not key.startswith(("item:", "context:", "source:"))
+           for key in supplied):
         raise DomainError("CRITERION_FIELD_REGISTRY_INVALID", 422)
     for key in CONTEXT_KEYS:
         if key in data:
@@ -53,6 +60,11 @@ def review_fields(data):
     for index, source in enumerate(sources):
         if isinstance(source, dict) and isinstance(source.get("text"), str):
             fields[f"source:{index}:text"] = source["text"]
+    # An already-expanded registry is accepted only byte-for-byte. A caller
+    # cannot turn model metadata into a forged context/source field.
+    if any(key.startswith(("context:", "source:")) and fields.get(key) != value
+           for key, value in supplied.items()):
+        raise DomainError("CRITERION_FIELD_REGISTRY_INVALID", 422)
     return fields
 
 
@@ -84,7 +96,67 @@ def _matches(values, key, identity):
     return [v for v in values if isinstance(v, dict) and v.get(key) == identity]
 
 
+def recover_single_miskeyed_request_id(rows, requests):
+    """Align one copied request UUID only when all other batch positions match."""
+    if len(requests) < 2 or len(rows) != len(requests) or any(not isinstance(row, dict) for row in rows):
+        return rows, None
+    expected = [request["request_id"] for request in requests]
+    returned = [row.get("request_id") for row in rows]
+    if any(not isinstance(value, str) for value in returned):
+        return rows, None
+    missing = [value for value in expected if value not in returned]
+    extra = [value for value in returned if value not in expected]
+    if len(missing) != 1 or len(extra) != 1 or len(set(returned)) != len(returned):
+        return rows, None
+    index = expected.index(missing[0])
+    if returned[index] != extra[0] or any(
+            position != index and returned[position] != expected[position]
+            for position in range(len(expected))):
+        return rows, None
+    aligned = deepcopy(rows)
+    aligned[index]["request_id"] = missing[0]
+    return aligned, {
+        "method_version": "single-miskeyed-request-id-recovery.v1",
+        "position": index, "returned_request_id": extra[0],
+        "request_id": missing[0], "raw_output_hash": digest(rows),
+    }
+
+
+def recover_single_dimension_clause_id(rows, requests):
+    """Recover a one-row domain dimension whose clause_id copies its check_id."""
+    by_id = {request["request_id"]: request for request in requests}
+    changes = []
+    aligned = deepcopy(rows)
+    for row in aligned:
+        if not isinstance(row, dict):
+            continue
+        request_id = row.get("request_id")
+        if not isinstance(request_id, str):
+            continue
+        request = by_id.get(request_id)
+        clauses = row.get("clauses")
+        if request is None or list(request["criterion"].get("clauses") or {}) != ["dimension"]:
+            continue
+        if not isinstance(clauses, list) or len(clauses) != 1 or not isinstance(clauses[0], dict):
+            continue
+        clause = clauses[0]
+        if clause.get("clause_id") == request["check_id"]:
+            changes.append({
+                "request_id": request["request_id"], "position": 0,
+                "returned_clause_id": clause["clause_id"],
+                "clause_id": "dimension",
+            })
+            clause["clause_id"] = "dimension"
+    if not changes:
+        return rows, None
+    return aligned, {"method_version": "single-dimension-clause-id-recovery.v1",
+                     "changes": changes, "raw_output_hash": digest(rows)}
+
+
 _FROZEN_UNKNOWN_BINDING = re.compile(r"^Use only the frozen evidence binding: unknown:")
+_FROZEN_SOURCE_BINDING = re.compile(
+    r"^Use only the frozen evidence binding: ([A-Za-z0-9][A-Za-z0-9:_-]{1,200})\."
+)
 
 
 def frozen_unknown_binding(request, clause_id):
@@ -101,6 +173,28 @@ def frozen_unknown_binding(request, clause_id):
     return isinstance(text, str) and bool(_FROZEN_UNKNOWN_BINDING.match(text))
 
 
+def frozen_source_binding(request, clause_id):
+    """Return the exact opaque source/unit binding declared by a frozen clause."""
+    clauses = (request.get("criterion") or {}).get("clauses") or {}
+    text = clauses.get(clause_id)
+    match = _FROZEN_SOURCE_BINDING.match(text) if isinstance(text, str) else None
+    if not match or match.group(1).startswith("unknown:"):
+        return None
+    return match.group(1)
+
+
+def _metadata_evidence_allowed(request, clause_id, evidence):
+    """Only explicitly metadata-shaped clauses may use context provenance."""
+    if request.get("item_id"):
+        return False
+    if clause_id == "bindings":
+        return any(e["field"] == "context:sources" or e["field"].startswith("source:")
+                   for e in evidence)
+    if clause_id == "unknown":
+        return any(e["field"].startswith(("context:", "source:")) for e in evidence)
+    return False
+
+
 def _rating(record, request, result):
     value = record.get("rating")
     scale = request["criterion"].get("rating_scale") or {}
@@ -109,6 +203,11 @@ def _rating(record, request, result):
     elif scale:
         upper = len(scale) - 1
     else:
+        # A-derived unit targets have no rating meaning. A stray numeric score
+        # is ignored rather than turned into a missing observation; frozen
+        # generic checks still reject invented scores.
+        if request["check_id"].startswith("A."):
+            return None, True, result
         return None, value is None, result if value is None else "undecidable"
     if value is None and result == "undecidable":
         return None, True, result  # A grounded abstention is complete execution.
@@ -134,12 +233,27 @@ def bind_observations(output, requests, fields, audit, unit_id, catalog=None):
     # leaves unknown shapes as explicit failures rather than crashing.
     prepared, normalization = prepare_review_output(output, catalog)
     raw = _rows(prepared)
+    raw, request_id_recovery = recover_single_miskeyed_request_id(raw, requests)
+    raw, dimension_clause_recovery = recover_single_dimension_clause_id(raw, requests)
+    if dimension_clause_recovery is not None:
+        prepared = {**prepared, "assessments": raw}
+        normalization = {**normalization, "dimension_clause_recovery": dimension_clause_recovery} \
+            if isinstance(normalization, dict) else {
+                "previous": normalization, "dimension_clause_recovery": dimension_clause_recovery,
+            }
+    if request_id_recovery is not None:
+        prepared = {**prepared, "assessments": raw}
+        normalization = {**normalization, "request_id_recovery": request_id_recovery} \
+            if isinstance(normalization, dict) else {
+                "previous": normalization, "request_id_recovery": request_id_recovery,
+            }
     errors = []
     if not isinstance(prepared, dict) or not isinstance(prepared.get("assessments"), list):
         errors.append("assessments_array_required")
     if any(not isinstance(r, dict) or not isinstance(r.get("request_id"), str) or r["request_id"] not in ids for r in raw):
         errors.append("unrequested_assessment")
     rows = []
+    contract_normalizations = []
     for request in requests:
         matches = _matches(raw, "request_id", request["request_id"])
         record = matches[0] if len(matches) == 1 else {}
@@ -165,6 +279,17 @@ def bind_observations(output, requests, fields, audit, unit_id, catalog=None):
                     evidence.append(bound)
             item_id = request.get("item_id")
             declared = value.get("result")
+            # An item-level N/A is outside the frozen result domain. Preserve
+            # the model's abstention as undecidable without rewriting raw bytes.
+            if item_id and declared == "not_applicable":
+                contract_normalizations.append({
+                    "method_version": "item-result-domain-normalization.v1",
+                    "request_id": request["request_id"],
+                    "clause_id": clause_id,
+                    "before": declared,
+                    "after": "undecidable",
+                })
+                declared = "undecidable"
             # A frozen `unknown:` evidence binding cannot carry content quotes;
             # a declared abstention there is complete execution, not a missing
             # observation. Positive/negative verdicts still need real evidence.
@@ -184,7 +309,13 @@ def bind_observations(output, requests, fields, audit, unit_id, catalog=None):
             elif grounded_abstention:
                 pass
             elif not any(e["field"] == "unit:body" or e["field"].startswith("item:") for e in evidence):
-                faults.append("content_evidence_required")
+                source_binding = frozen_source_binding(request, clause_id)
+                source_bound = any(e["field"] == "context:sources"
+                                   and source_binding
+                                   and source_binding in fields.get("context:sources", "")
+                                   for e in evidence)
+                if not source_bound and not _metadata_evidence_allowed(request, clause_id, evidence):
+                    faults.append("content_evidence_required")
             reason = value.get("reason")
             if not isinstance(reason, str) or len(reason.strip()) < 8:
                 faults.append("specific_reason_required")
@@ -207,6 +338,13 @@ def bind_observations(output, requests, fields, audit, unit_id, catalog=None):
             "result": result, "rating": rating, "clauses": clauses, "protocol_errors": row_errors,
             "processing_status": "complete" if complete else "invalid_or_missing_observation", "audit": deepcopy(audit),
             "authority": "isolated_ai_observation_not_professional_certification"})
+    if contract_normalizations:
+        if isinstance(normalization, dict):
+            normalization = deepcopy(normalization)
+            normalization["criterion_semantic_normalizations"] = contract_normalizations
+        else:
+            normalization = {"previous": normalization,
+                             "criterion_semantic_normalizations": contract_normalizations}
     return {"method_version": VERSION, "rows": rows, "complete": not errors and all(r["processing_status"] == "complete" for r in rows),
         "protocol_errors": errors, "fields_hash": digest(fields), "request_set_hash": digest(requests),
         "output_hash": digest(output), "normalization": normalization, "unit_id": unit_id}
@@ -245,6 +383,8 @@ def correction_payload(data, original_output, bound, *, attempt):
     # binder applies; a wrapped original output must not silently lose its
     # declared-result locks for the correction attempt.
     normalized_rows = _rows(normalize_contract(original_output)[0])
+    normalized_rows, _ = recover_single_miskeyed_request_id(normalized_rows, requests)
+    normalized_rows, _ = recover_single_dimension_clause_id(normalized_rows, requests)
     locks = []
     for row in bound["rows"]:
         if row["request_id"] not in incomplete:
@@ -291,6 +431,8 @@ def persistent_result_locks(bound, output):
             # carries a declared verdict. Preserve that verdict; conflicting
             # duplicates remain an execution defect with no invented lock.
             declared = next(iter(declared_results)) if len(declared_results) == 1 else None
+            if row.get("item_id") and declared == "not_applicable":
+                declared = "undecidable"
             if isinstance(declared, str) and declared in RESULTS:
                 locks.setdefault(row["request_id"], {})[clause["clause_id"]] = {
                     "result": declared,
@@ -475,13 +617,14 @@ def response_contract(requests, fields):
     alternatives = []
     for request in requests:
         clauses = []
+        result_values = sorted(RESULTS - ({"not_applicable"} if request.get("item_id") else set()))
         for clause_id in request["criterion"]["clauses"]:
             # A frozen unknown binding is provable only by abstention; forcing
             # minItems 1 here would invite fabricated quotes.
             min_evidence = 0 if frozen_unknown_binding(request, clause_id) else 1
             clauses.append({"type": "object", "additionalProperties": False,
             "required": ["clause_id", "result", "reason", "evidence"], "properties": {
-                    "clause_id": {"const": clause_id}, "result": {"enum": sorted(RESULTS)},
+                    "clause_id": {"const": clause_id}, "result": {"enum": result_values},
                     "reason": {"type": "string", "minLength": 8}, "evidence": {
                         "type": "array", "minItems": min_evidence, "items": {"type": "object", "additionalProperties": False,
                             "oneOf": [
