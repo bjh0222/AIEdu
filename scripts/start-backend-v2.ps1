@@ -16,12 +16,27 @@ $env:AIEDU_ALLOW_PAID = if ($AllowPaid) { '1' } else { '0' }
 $env:AIEDU_ENABLE_LEGACY_API = '0'
 $env:AIEDU_START_WORKER = '1'
 # Never reuse the old instance/port or its database. Defaults are repository-external.
-if ($AllowedHosts) { $env:AIEDU_V2_ALLOWED_HOSTS = $AllowedHosts } else { Remove-Item Env:AIEDU_V2_ALLOWED_HOSTS -ErrorAction SilentlyContinue }
-if ($AllowedOrigins) { $env:AIEDU_V2_ALLOWED_ORIGIN_HOSTS = $AllowedOrigins } else { Remove-Item Env:AIEDU_V2_ALLOWED_ORIGIN_HOSTS -ErrorAction SilentlyContinue }
+# 参数未提供时继承用户级环境变量（setx AIEDU_V2_ALLOWED_HOSTS 等），不清除——
+# 否则任何不带参数的重载都会把 tailnet 放行丢掉。当前 shell 环境缺失时再从注册表用户级读取，
+# 兼容在 setx 之前启动的陈旧 shell 里执行本脚本的情况。
+if (-not $env:AIEDU_V2_ALLOWED_HOSTS) {
+    $u = [Environment]::GetEnvironmentVariable("AIEDU_V2_ALLOWED_HOSTS", "User")
+    if ($u) { $env:AIEDU_V2_ALLOWED_HOSTS = $u }
+}
+if (-not $env:AIEDU_V2_ALLOWED_ORIGIN_HOSTS) {
+    $u3 = [Environment]::GetEnvironmentVariable("AIEDU_V2_ALLOWED_ORIGIN_HOSTS", "User")
+    if ($u3) { $env:AIEDU_V2_ALLOWED_ORIGIN_HOSTS = $u3 }
+}
+if (-not $env:CORS_ORIGINS) {
+    $u2 = [Environment]::GetEnvironmentVariable("CORS_ORIGINS", "User")
+    if ($u2) { $env:CORS_ORIGINS = $u2 }
+}
+if ($AllowedHosts) { $env:AIEDU_V2_ALLOWED_HOSTS = $AllowedHosts }
 if ($AllowedOrigins) {
+    $env:AIEDU_V2_ALLOWED_ORIGIN_HOSTS = $AllowedOrigins
     $extraCors = ($AllowedOrigins -split ',' | ForEach-Object { "https://$($_.Trim())" }) -join ','
     $env:CORS_ORIGINS = "http://127.0.0.1:3000,http://localhost:3000,http://127.0.0.1:3001,http://localhost:3001,app://obsidian.md,capacitor://localhost,$extraCors"
-} else { Remove-Item Env:CORS_ORIGINS -ErrorAction SilentlyContinue }
+}
 if ($env:DATABASE_URL -and $env:DATABASE_URL.Replace('\','/').Contains('/dsh/ai-edu/')) {
     throw 'Refusing the legacy workspace database'
 }
