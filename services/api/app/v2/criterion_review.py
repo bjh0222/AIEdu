@@ -229,18 +229,19 @@ def evaluate_criteria(run_id, worker, epoch, state, units, version_id, provider_
         if not requests:
             return [], [], 0
         from .review_contract import build_evidence_catalog
-        evidence_catalog = build_evidence_catalog(
-            fields, max_entries=320, max_span_chars=280)
         bundle = blind_bundle(state, unit, semantic[0])
         teaching_requirements = (bundle["task"].get("teaching_requirements")
                                  if isinstance(bundle.get("task"), dict) else None)
         # Do not include unit metadata/difficulty_basis from the generator.
         data = {"task": bundle["task"], "sources": bundle["sources"], "requests": requests, "review_scope": bundle.get("review_scope"),
                 "fields": fields, "unit_title": unit["title"], "output_design": unit.get("output_design"),
-                "evidence_catalog": evidence_catalog,
                 "literal_tool_observations": [r for r in (literal_evidence or {}).get("items", []) if r.get("unit_id") == unit["unit_id"]],
                 "requirements": unit.get("teaching_arrangement", {}).get("acceptance_criteria", []),
                 "teaching_requirements": teaching_requirements}
+        from .criterion_protocol import review_fields
+        data["fields"] = review_fields(data)
+        data["evidence_catalog"] = build_evidence_catalog(
+            data["fields"], max_entries=320, max_span_chars=280)
         schema = {"assessments": [{"request_id": "copy supplied ID", "clauses": [{"clause_id": "every supplied clause ID",
             "result": "satisfied|violated|undecidable|not_applicable", "reason": "specific content-based reason",
             "evidence": [{"evidence_id": "preferred server evidence ID"}]}],

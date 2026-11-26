@@ -49,7 +49,8 @@ def test_failed_first_batch_stops_remaining_calls_and_later_unit_waves(monkeypat
     def invoke(*args, **kw):
         calls.append(kw)
         assert kw["output_tokens"] == 32768
-        assert kw["data"]["fields"] == {"unit:body": "Complete body"}
+        assert kw["data"]["fields"]["unit:body"] == "Complete body"
+        assert {"context:requirements", "context:review_scope"} <= set(kw["data"]["fields"])
         raise DomainError(failure, 502)
     monkeypatch.setattr("app.v2.generation_tools.generation_with_sources", invoke)
     checks = [{"item_id": f"science.c{i}", "decision_type": "semantic", "verifier_binding": "fixture",

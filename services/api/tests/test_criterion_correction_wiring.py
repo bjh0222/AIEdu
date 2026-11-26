@@ -37,7 +37,7 @@ def test_consumer_preserves_primary_request_and_only_corrects_missing_execution(
         assert f"# assessment-review.v{C_REVIEW_SKILL['version']}" in kw["system"]
         if len(calls) == 1:
             assert kw["stage"] == "criterion_assessing" and kw["role"] == "review"
-            assert set(d["fields"]) == {"unit:body"}  # Old cache identity is intact.
+            assert {"unit:body", "context:task", "context:sources"} <= set(d["fields"])
             original.update(assessments=[response(d["requests"][0], d["fields"], "violated")])
             return original, {"call_id": "settled-original"}, {"calls": []}
         assert kw["stage"] == "criterion_contract_correcting" and kw["role"] == "review"
