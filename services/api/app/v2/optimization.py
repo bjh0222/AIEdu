@@ -14,7 +14,7 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import GenerationJob, Tutorial, TutorialVersion
 from .contracts import DomainError, canonical, digest, sha
-from .quality import dependency_closure, POLICY, progress_fingerprint
+from .quality import finding_layer_enabled, dependency_closure, POLICY, progress_fingerprint
 from .runtime import cas, dump, fence, job, load, materialize, publish, write
 from .storage import BlobStore
 from .tasks import receipt, remember
@@ -703,6 +703,16 @@ def fitted_c_payload(profile, system: str, build, output_tokens: int):
             continue
         return payload, level
     return fallback, PROJECTION_LEVELS[-1]
+
+
+def enabled_confirmed_findings(plan: dict, findings: list[dict]) -> list[dict]:
+    """S10: only enabled-layer confirmed findings may drive optimization/repair.
+
+    Disabled-layer defects stay recorded in the report; they never consume
+    attempts, rounds or provider calls. Unbound findings stay eligible so no
+    defect can silently disappear from the repair loop.
+    """
+    return [f for f in findings if f.get("status") == "confirmed" and finding_layer_enabled(plan, f)]
 
 
 def validate_policy(value: Any) -> dict:
@@ -1397,7 +1407,9 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
         except DomainError as exc:
             _stop(run_id, worker, epoch, exc.code)
             return
-        old_confirmed = [f for f in quality.get("findings", []) if f.get("status") == "confirmed"]
+        # S10: only enabled-layer findings drive repair/optimization spend;
+        # disabled-layer defects stay recorded but never consume attempts.
+        old_confirmed = enabled_confirmed_findings(state["check_plan"], quality.get("findings", []))
         attempt_keys = [f.get("normalized_claim_hash") or f["finding_id"] for f in old_confirmed] or ["candidate:" + version.id]
         prior_attempts = state.get("optimization_attempts_by_finding", {})
         if any(int(prior_attempts.get(k, 0)) >= policy["max_attempts_per_finding"] for k in attempt_keys):

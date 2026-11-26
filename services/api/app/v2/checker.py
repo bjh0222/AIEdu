@@ -229,7 +229,12 @@ def scope_review(result, generation, review):
 
 def evaluate(run_id, worker, epoch, state, units, version_id, provider_factory=None, *, _serial=False, _l4=True):
     result = _evaluate_core(run_id, worker, epoch, state, units, version_id, provider_factory, _serial=_serial, _l4=_l4)
-    if _l4 and state["context"].get("research_rubrics"):
+    # S10: difficulty and research-rubric reviews belong to the optional
+    # quality_specific layer. Legacy runs without a frozen policy keep the
+    # previous behavior; correctness rows are never gated by this switch.
+    from .quality import frozen_quality_layers
+    quality_specific_on = (frozen_quality_layers(state) or {}).get("quality_specific", False) is True
+    if _l4 and quality_specific_on and state["context"].get("research_rubrics"):
         from .import_profiles import review_research_rubrics
         result["diagnostic_review"] = review_research_rubrics(run_id, worker, epoch, state, units, version_id, provider_factory)
         _apply_research_review(result, state, units, version_id)
@@ -260,7 +265,8 @@ def evaluate(run_id, worker, epoch, state, units, version_id, provider_factory=N
         # learner to refute a false statement; do not auto-sign the whole item.
         result["automated_assessment"] = evaluate_criteria(run_id, worker, epoch, state, units, version_id,
             provider_factory, literal_evidence=result.get("mathematical_evidence"))
-        result["difficulty_review"] = evaluate_difficulty(run_id, worker, epoch, state, units, version_id, provider_factory)
+        if quality_specific_on:
+            result["difficulty_review"] = evaluate_difficulty(run_id, worker, epoch, state, units, version_id, provider_factory)
         from .assessment_binding import criterion_check_results
         from .derivation import derive_assessment_checks
         criterion_checks = criterion_check_results(result["automated_assessment"], state, units, version_id)
@@ -379,7 +385,11 @@ def _evaluate_core(run_id, worker, epoch, state, units, version_id, provider_fac
         from .checker_batch import evaluate_batch
         return evaluate_batch(run_id, worker, epoch, state, units, version_id,
                               provider_factory, baseline, generation, review, _l4)
+    from .quality import frozen_quality_layers, layer_enabled
+    layers = frozen_quality_layers(state)
     for item in state["check_plan"]["check_items"]:
+        if not layer_enabled(item, layers):
+            continue  # honest policy state is recorded by the frozen reducer
         from .derivation import is_derived_target
         if item["decision_type"] == "deterministic" or item.get("verifier_binding") == "research_rubric.v1" or (
                 is_derived_target(state, item)) or (

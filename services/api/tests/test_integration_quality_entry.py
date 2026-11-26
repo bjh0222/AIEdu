@@ -54,6 +54,8 @@ def test_demo_and_legacy_do_not_opt_in(client, monkeypatch, mode, policy):
 
 
 def test_explicit_legacy_policy_opt_out_remains_false(client, monkeypatch):
+    """S10: the frontend no longer exposes Criterion Review; the internal
+    execution-policy field stays an explicit opt-out for isolated pipelines."""
     run = queued(client, monkeypatch, mode="configured", policy=False)
     state, _ = state_of(run["run_id"])
     assert state["execution_policy"]["criterion_assessment"] is False

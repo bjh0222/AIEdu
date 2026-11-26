@@ -121,12 +121,18 @@ def requests_for_unit(state, unit):
     quality_refs = requirements.get("global_targets", {}).get(
         "quality_target_contracts", [])
     unit_targets = requirements.get("unit_targets", {})
+    from .quality import frozen_quality_layers, layer_enabled
+    layers = frozen_quality_layers(state)
+    # Disabled layers never generate criterion requests; the downstream binding
+    # revalidates against this same selector, so no disabled row can flow back.
     semantic = [c for c in state.get("check_plan", {}).get("check_items", []) if c["decision_type"] != "deterministic"
         and not is_derived_target(state, c)
         and not c["item_id"].startswith("Q5.") and applies(c, unit, state.get("context", {}))
         # These dimensions have dedicated consumers; generic clauses cannot
         # substitute for executing their frozen rubric/runtime contract.
-        and c["verifier_binding"] not in {"ps51_sandbox.v1", "target_runtime.v1", "research_rubric.v1"}]
+        and c["verifier_binding"] not in {"ps51_sandbox.v1", "target_runtime.v1", "research_rubric.v1"}
+        and layer_enabled(c, layers)]
+    completeness_on = layers is None or layers.get("completeness", True) is True
     requests, matched_quality = [], set()
     for check in semantic:
         contract = check.get("criterion_contract") or criterion(check)
@@ -163,21 +169,21 @@ def requests_for_unit(state, unit):
 
     for ref in quality_refs:
         key = (ref["profile_id"], ref["rule_id"], ref["criterion_hash"])
-        if key in matched_quality:
+        if key in matched_quality or not completeness_on:
             continue
         add_a_row("quality", ref,
             f"Quality target {ref['profile_id']} / {ref['rule_id']}",
                 {"target": ref["criterion"]},
             ref.get("pass_condition")
             or "Independent evidence must support every applicable clause or the result remains undecidable.")
-    for link in unit_targets.get("knowledge_chain", []):
+    for link in ([] if not completeness_on else unit_targets.get("knowledge_chain", [])):
         add_a_row("knowledge", link,
             f"Knowledge relation {link['source_concept']} -> {link['target_concept']}",
             {"relation": f"Verify the actual content implements the frozen {link['relation']} relation.",
              "condition": link.get("condition") or "No extra condition declared.",
              "evidence": f"Use only the frozen evidence binding: {link['evidence_ref']}."},
             "The relation and any declared boundary must be located in actual content or remain undecidable.")
-    for blueprint in unit_targets.get("question_blueprint", []):
+    for blueprint in ([] if not completeness_on else unit_targets.get("question_blueprint", [])):
         add_a_row("blueprint", blueprint,
             f"Question blueprint {blueprint['group']}",
             {"group": blueprint["group"], "target": blueprint["target"],
@@ -185,14 +191,14 @@ def requests_for_unit(state, unit):
              "quantity": str(blueprint["quantity"]),
              "answer_requirement": blueprint["answer_requirement"]},
             "The actual items must implement this exact target, form, quantity and coupled answer requirement.")
-    for misconception in unit_targets.get("misconceptions", []):
+    for misconception in ([] if not completeness_on else unit_targets.get("misconceptions", [])):
         add_a_row("misconception", misconception,
             f"Misconception boundary {misconception.get('blueprint_group') or 'general'}",
             {"plausible_idea": misconception["plausible_idea"],
              "failure_boundary": misconception["failure_boundary"],
              "contrast": misconception["contrast_or_counterexample"]},
             "Actual content must locate the failure boundary and a discriminating contrast where applicable.")
-    for criterion_text in unit_targets.get("acceptance_criteria", []):
+    for criterion_text in ([] if not completeness_on else unit_targets.get("acceptance_criteria", [])):
         add_a_row("acceptance", {"criterion": criterion_text},
             "Frozen unit acceptance criterion",
             {"criterion": criterion_text},
@@ -229,6 +235,10 @@ def evaluate_criteria(run_id, worker, epoch, state, units, version_id, provider_
         if not requests:
             return [], [], 0
         from .review_contract import build_evidence_catalog
+        if not semantic:
+            # Requests may still carry frozen A rows; blind_bundle only needs a
+            # stable plan-item shape for the unused check block.
+            semantic = [{"item_id": "A.review-context", "pass_condition": "", "decision_type": "semantic_rubric"}]
         bundle = blind_bundle(state, unit, semantic[0])
         teaching_requirements = (bundle["task"].get("teaching_requirements")
                                  if isinstance(bundle.get("task"), dict) else None)

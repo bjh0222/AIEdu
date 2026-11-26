@@ -17,7 +17,88 @@ POLICY = {"policy_version": "aiedu.repair.v1", "enabled": True,
           "max_attempts_per_finding": 3, "max_repair_rounds_per_run": 5}
 
 
-def compile_plan(task: dict, network_policy: dict | None = None) -> dict:
+QUALITY_LAYER_METHOD_VERSION = "quality-layers.v1"
+QUALITY_LAYERS = ("correctness", "completeness", "quality_specific")
+
+
+def normalize_quality_layers(value) -> dict | None:
+    """Freeze the explicit layer policy; absent input keeps legacy behavior.
+
+    ``correctness`` is forced: sending ``false`` is an explicit contract error,
+    never a silent re-enable.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise DomainError("QUALITY_LAYER_POLICY_INVALID", 422)
+    unknown = sorted(str(key) for key in value if key not in QUALITY_LAYERS)
+    if unknown:
+        raise DomainError("QUALITY_LAYER_POLICY_INVALID", 422, keys=unknown)
+    for key, enabled in value.items():
+        if type(enabled) is not bool:
+            raise DomainError("QUALITY_LAYER_POLICY_INVALID", 422, key=key)
+    if value.get("correctness") is False:
+        raise DomainError("QUALITY_LAYER_POLICY_INVALID", 422, reason="correctness_layer_is_forced")
+    return {"method_version": QUALITY_LAYER_METHOD_VERSION, "correctness": True,
+            "completeness": value.get("completeness", True),
+            "quality_specific": value.get("quality_specific", False)}
+
+
+def quality_layer_for(item: dict) -> str:
+    """Frozen S10 mapping. Unknown rows default to completeness (safe: on)."""
+    item_id = item.get("item_id", "")
+    if item.get("system") == "discipline":
+        return "correctness" if item.get("decision_type") == "atomic_claim" else "quality_specific"
+    if item_id in {"C1.coverage", "C2.structure", "C3.correctness", "C5.materials",
+                   "C6.context_integrity", "G4.evidence_boundaries"}:
+        return "correctness"
+    if item_id.startswith(("S.layout.", "M.items.", "P.execution.")) or re.match(r"^Q[126]\.", item_id):
+        return "correctness"
+    if (item_id in {"C4.constraints", "G1.semantic_alignment", "G2.knowledge_integration"}
+            or item_id.startswith(("S.format.", "Q3."))):
+        return "completeness"
+    if item_id.startswith(("G3.", "Q4.", "Q5.", "R.", "I.")):
+        return "quality_specific"
+    return "completeness"
+
+
+def layer_enabled(item: dict, layers: dict | None) -> bool:
+    """Legacy/unknown rows stay enabled; hard baselines ignore layer policy."""
+    if not layers:
+        return True
+    if item.get("hard_baseline"):
+        return True
+    return layers.get(item.get("quality_layer", ""), True) is True
+
+
+def frozen_quality_layers(state: dict) -> dict | None:
+    """start_run freezes the same policy into execution_policy and check_plan;
+    read either, preferring the execution policy."""
+    layers = (state.get("execution_policy") or {}).get("quality_layers")
+    if isinstance(layers, dict):
+        return layers
+    layers = (state.get("check_plan") or {}).get("quality_layers")
+    return layers if isinstance(layers, dict) else None
+
+
+def disabled_layer_check(item: dict) -> dict:
+    """Honest policy-skipped state; never rendered as satisfied."""
+    return {"item_id": item["item_id"], "result": "not_applicable",
+            "reason": "quality_layer_disabled_by_policy",
+            "quality_layer": item.get("quality_layer"),
+            "method_version": item.get("verifier_binding", QUALITY_LAYER_METHOD_VERSION)}
+
+
+def finding_layer_enabled(plan: dict, finding: dict) -> bool:
+    """Unbound findings stay visible; disabled layers never drive repair spend."""
+    layers = plan.get("quality_layers") if isinstance(plan, dict) else None
+    if not layers:
+        return True
+    item = next((i for i in plan.get("check_items", []) if i["item_id"] == finding.get("item_id")), None)
+    return True if item is None else layer_enabled(item, layers)
+
+
+def compile_plan(task: dict, network_policy: dict | None = None, quality_layers: dict | None = None) -> dict:
     items, conflicts = [], list(task.get("task_intent", {}).get("conflicts", []))
     declared_task_domains = sorted(task_domains(task))
 
@@ -262,6 +343,12 @@ def compile_plan(task: dict, network_policy: dict | None = None) -> dict:
                 "legacy_research_rubric_scope_derived_from_unique_task_domain"
                 if legacy_scope_derived else "research_rubric_task_scope"
             )
+    # Quality-layer annotations are part of the plan itself, so the
+    # check_plan_hash binds the executed strategy (quality-layers.v1).
+    for item in items:
+        layer = quality_layer_for(item)
+        item["quality_layer"] = layer
+        item["hard_baseline"] = layer == "correctness"
     from .check_criteria import bind_criteria, VERSION
     bind_criteria(items)
     if derivation_targets:
@@ -295,6 +382,8 @@ def compile_plan(task: dict, network_policy: dict | None = None) -> dict:
     plan = {"schema_version": "aiedu.check-plan.v2", "assessment_contract": VERSION, "check_items": items, "conflicts": conflicts,
             "spec_hash": digest(bindings), "constraints_hash": digest(task.get("hard_constraints", [])),
             "research_policy": deepcopy(research), "derivation_contract": derivation_contract}
+    if quality_layers is not None:
+        plan["quality_layers"] = deepcopy(quality_layers)
     plan["check_plan_hash"] = digest(plan)
     return plan
 
@@ -317,6 +406,19 @@ def finding(item: dict, plan: dict, unit: dict, version_id: str, start: int, end
 
 
 def reduce_quality(plan: dict, checks: list[dict], findings: list[dict], calibration="not_calibrated") -> dict:
+    # Disabled-layer rows are normalized to an honest policy-skipped state here:
+    # the single reducer owns the "not passed, skipped by policy" semantics so
+    # no dispatch path can render a disabled check as satisfied.
+    layers = plan.get("quality_layers")
+    if layers:
+        disabled = {i["item_id"]: i for i in plan.get("check_items", []) if not layer_enabled(i, layers)}
+        present = {c.get("item_id") for c in checks}
+        for c in checks:
+            if c.get("item_id") in disabled and c.get("result") not in {"satisfied", "violated"}:
+                c.update(result="not_applicable", reason="quality_layer_disabled_by_policy")
+        for item_id, item in disabled.items():
+            if item_id not in present:
+                checks.append(disabled_layer_check(item))
     by_id = {c["item_id"]: c for c in checks}
     reasons, completed, violations = [], 0, []
     for item in plan.get("check_items", []):
@@ -359,6 +461,9 @@ def deterministic_checks(plan: dict, units: list[dict], version_id: str, materia
     ids = [u["unit_id"] for u in units]
     stale_units = [u["unit_id"] for u in units if u.get("content_hash") != sha(u["body"])]
     for item in plan["check_items"]:
+        if not layer_enabled(item, plan.get("quality_layers")):
+            checks.append(disabled_layer_check(item))
+            continue
         method = item["verifier_binding"]
         if method == "coverage.v1":
             passed = bool(units) and all(u.get("body", "").strip() for u in units)

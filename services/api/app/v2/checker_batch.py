@@ -260,14 +260,21 @@ def checklist_inputs(state, unit, eligible):
 
 
 def semantic_check_items(state):
-    """Items for the legacy batch checklist; criterion rows have a dedicated consumer."""
+    """Items for the legacy batch checklist; criterion rows have a dedicated consumer.
+
+    Layer-disabled semantic items never dispatch; the frozen reducer records
+    their honest not_applicable/quality_layer_disabled_by_policy state.
+    """
     from .derivation import is_derived_target
+    from .quality import frozen_quality_layers, layer_enabled
+    layers = frozen_quality_layers(state)
     skip_criterion = state.get("execution_policy", {}).get("criterion_assessment", False)
     return [i for i in state["check_plan"]["check_items"]
             if i["decision_type"] != "deterministic"
             and not is_derived_target(state, i)
             and i.get("verifier_binding") not in {"research_rubric.v1", "ps51_sandbox.v1", "target_runtime.v1"}
-            and not (skip_criterion and i.get("verifier_binding") == "criterion_review.v1")]
+            and not (skip_criterion and i.get("verifier_binding") == "criterion_review.v1")
+            and layer_enabled(i, layers)]
 
 
 def preflight_checklists(run_id, state, units, review):
@@ -393,6 +400,13 @@ def evaluate_batch(run_id, worker, epoch, state, units, version_id, provider_fac
                 "matched_domains": decision.get("matched_domains", []),
                 "quality_matrix_hash": baseline.get("quality_preflight", {}).get("matrix_hash"),
             } if value == "not_applicable" else {})}
+    # Layer-disabled rows never dispatched; record their honest policy state.
+    from .quality import disabled_layer_check, frozen_quality_layers, layer_enabled
+    layers = frozen_quality_layers(state)
+    for item in state["check_plan"]["check_items"]:
+        if (item["decision_type"] != "deterministic" and not layer_enabled(item, layers)
+                and item["item_id"] not in checks):
+            checks[item["item_id"]] = disabled_layer_check(item)
     unique = {f["normalized_claim_hash"]: f for f in findings}
     result = reduce_quality(state["check_plan"], list(checks.values()), list(unique.values()))
     result.update(material_coverage=baseline.get("material_coverage"), item_quality=baseline.get("item_quality"),

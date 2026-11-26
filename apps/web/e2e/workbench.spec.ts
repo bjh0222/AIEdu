@@ -9,8 +9,10 @@ const item = (i: number, over: Record<string, unknown> = {}) => ({
 
 test("材料本地读取失败：释放提交状态且不创建任务", async ({ page }) => {
   const calls = await mockBackend(page);
+  // S10: 用户端无演示入口，paid 关闭时无法开始；本测试关注本地读取失败，
+  // 因此显式开启 paid 能力，其余断言（零 POST、释放提交状态）不变。
   await page.route("**/api/v2/capabilities", (route) => route.fulfill({ json: {
-    scenes: ["exercise"], paid_calls_enabled: false, taxonomy: [],
+    scenes: ["exercise"], paid_calls_enabled: true, taxonomy: [],
     materials: { resource_policy_status: "ready" },
   } }));
   await page.goto("/new");

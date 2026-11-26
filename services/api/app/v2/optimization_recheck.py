@@ -290,9 +290,14 @@ def finish_candidate(run_id, worker, epoch, state, version, units, new_units, qu
             "network_sources": len(network_trace.get("receipts", [])),
             "professional_progress": "not_run", "new_deterministic_regressions": False})
         obj.state_json, obj.state_revision = dump(current), obj.state_revision + 1
+    # S10: difficulty review only exists when the frozen quality_specific
+    # layer is enabled; legacy runs without a frozen policy keep old behavior.
+    from .quality import frozen_quality_layers
+    quality_specific_on = (frozen_quality_layers(state) or {}).get("quality_specific", False) is True
+    diagnostic_keys = ("difficulty_review",) if quality_specific_on else ()
     diagnostic_failures = (any(r.get("result") == "violated" for r in (checked.get("diagnostic_review") or {}).get("dimensions", [])) or
         any((checked.get(key) or {}).get("result") not in {"satisfied", "not_applicable"}
-            for key in ("difficulty_review", "automated_assessment") if state.get("execution_policy", {}).get("criterion_assessment")))
+            for key in diagnostic_keys + ("automated_assessment",) if state.get("execution_policy", {}).get("criterion_assessment")))
     if not unresolved_old and not package.get("confirmed_findings") and not diagnostic_failures:
         _stop(run_id, worker, epoch, "optimization_completed_uncalibrated")
         return False

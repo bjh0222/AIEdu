@@ -64,9 +64,12 @@ def criterion_check_results(report, state, units, version_id):
     misleading generic "no verifier" marker.
     """
     from .checker import applies
+    from .quality import disabled_layer_check, frozen_quality_layers, layer_enabled
+    layers = frozen_quality_layers(state)
     criterion_items = {item["item_id"]: item for item in state.get("check_plan", {}).get("check_items", [])
                        if item.get("verifier_binding") == "criterion_review.v1"}
     check_ids = list(criterion_items)
+    disabled_ids = {item_id for item_id, item in criterion_items.items() if not layer_enabled(item, layers)}
     applicable = {
         item_id: [unit["unit_id"] for unit in units
                   if applies(item, unit, state.get("context", {}))]
@@ -83,6 +86,7 @@ def criterion_check_results(report, state, units, version_id):
             if isinstance(report, dict) else None,
         }
         for item_id, matched in applicable.items() if not matched
+        and item_id not in disabled_ids
     }
     outcome, errors = consume(report, "automated_assessment", state, units, version_id)
     if errors or outcome not in RESULTS:
@@ -98,6 +102,11 @@ def criterion_check_results(report, state, units, version_id):
         if isinstance(row, dict) and row.get("check_id") in check_ids:
             grouped.setdefault(row["check_id"], []).append(row.get("result"))
     for item_id in check_ids:
+        if item_id in disabled_ids:
+            # Requests_for_unit never issued this row; keep the honest
+            # policy-skipped state instead of a misleading missing-row unknown.
+            reduced[item_id] = disabled_layer_check(criterion_items[item_id])
+            continue
         if not applicable[item_id]:
             continue
         results = grouped.get(item_id, [])

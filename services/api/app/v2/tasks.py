@@ -14,7 +14,7 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import GenerationJob, GoalMaterial, LearningGoal, Tutorial, TutorialVersion
 from .contracts import DomainError, digest, sha
-from .quality import compile_plan, reduce_quality
+from .quality import compile_plan, frozen_quality_layers, normalize_quality_layers, reduce_quality
 from .runtime import cas, dump, job, load, materialize, normalize_stopped_run_calls, write
 from .storage import CallDispatch, ExportSet
 from .resolver import bind_specs, build_units, resolve_task
@@ -255,6 +255,9 @@ def start_run(task_id, payload, key, automatic=False, envelope=None):
             if not chunks:
                 raise DomainError("MATERIAL_INCOMPLETE")
         requested_policy = context.get("execution_policy", {})
+        # S10: quality_layers is validated and frozen at start; absent keeps the
+        # legacy all-on behavior for existing tasks.
+        quality_layers = normalize_quality_layers(requested_policy.get("quality_layers"))
         research_enabled = context.get("research_request", {}).get("enabled") is True
         requested_planning_sources = requested_policy.get("planning_source_tools", True)
         planning_sources = requested_planning_sources
@@ -281,7 +284,7 @@ def start_run(task_id, payload, key, automatic=False, envelope=None):
         units = [] if adaptive else build_units(context, chunks, demo=payload.mode == "demo")
         plan = {"schema_version": "aiedu.plan.v1", "units": units, "network_policy": network_policy}
         plan["plan_hash"] = digest(plan)
-        frozen = {"context": context, "plan": plan, "check_plan": compile_plan(context, network_policy), "mode": payload.mode,
+        frozen = {"context": context, "plan": plan, "check_plan": compile_plan(context, network_policy, quality_layers=quality_layers), "mode": payload.mode,
                   "artifact_id": artifact_id, "version_id": None, "stages": {}, "stop_reason": None,
                   "intent_pending": (adaptive or automatic or requested_policy.get("structured_arrangement", False)) and payload.mode == "configured", "automatic": automatic,
                   "budget": {"calls": None, "tokens": None, "amount": None, "seconds": None}}
@@ -310,6 +313,7 @@ def start_run(task_id, payload, key, automatic=False, envelope=None):
                                       "network_stop_policy": "stop_after_budget_or_no_new_cached_evidence",
                                       "planning_source_tools": payload.mode == "configured" and planning_sources,
                                       "criterion_assessment": payload.mode == "configured" and bool(requested_policy.get("criterion_assessment", True)),
+                                      "quality_layers": deepcopy(quality_layers) if quality_layers is not None else None,
                                       "task_adaptive_format": adaptive}
         frozen["execution_policy"]["quality_loop"] = bool(frozen.get("optimization_policy"))
         if envelope is not None:
@@ -651,7 +655,8 @@ def resume(run_id, payload, key):
                 "disabled_behavior": "all_public_web_tools_are_off",
             }}
             new_state["plan"]["plan_hash"] = digest(new_state["plan"])
-            new_state["check_plan"] = compile_plan(new_state["context"], new_state["plan"]["network_policy"])
+            new_state["check_plan"] = compile_plan(new_state["context"], new_state["plan"]["network_policy"],
+                quality_layers=frozen_quality_layers(new_state))
             new_state.update(intent_pending=True, stages={}, replan_from_version_id=state.get("version_id"))
             for field in ("intent_call", "review_only_source_version", "optimization_request", "best_so_far_version",
                           "optimization_rounds", "optimization_stop_reason", "repair_rounds", "repair_stop_reason",
@@ -676,7 +681,8 @@ def resume(run_id, payload, key):
             new_state["review_only_source_version"] = previous_version.id
         if payload.refresh_check_plan:
             new_state["check_plan"] = compile_plan(
-                new_state["context"], new_state.get("plan", {}).get("network_policy"))
+                new_state["context"], new_state.get("plan", {}).get("network_policy"),
+                quality_layers=frozen_quality_layers(new_state))
             new_state["check_plan_amendment"] = {
                 "method_version": "explicit-fixed-recheck.v1",
                 "parent_run_id": run_id, "source_version_id": previous_version.id,

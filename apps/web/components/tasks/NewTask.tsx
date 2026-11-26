@@ -6,7 +6,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type Capabilities } from "@/lib/v2/api";
 import { ApiError, UnknownOutcomeError, explain, getReceipt, newKey, act } from "@/lib/v2/client";
 
-type Mode = "configured" | "demo";
 type Conflict = { code?: string; artifact_role?: string; scene?: string; [k: string]: unknown };
 
 const SCENE_TEXT: Record<string, string> = {
@@ -26,7 +25,6 @@ export default function NewTask() {
   // 2026-11-22 轮3：需求框在任何触发下都不自动填充；仅保留灰色占位提示。
   const [text, setText] = useState("");
   const [title, setTitle] = useState("");
-  const [mode, setMode] = useState<Mode>("configured");
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [capsError, setCapsError] = useState("");
   const [domain, setDomain] = useState("");
@@ -38,7 +36,8 @@ export default function NewTask() {
   const [conflicts, setConflicts] = useState<{ taskId: string; list: Conflict[] } | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [qualityLoop, setQualityLoop] = useState(true);
-  const [criterionAssessment, setCriterionAssessment] = useState(true);
+  const [completeness, setCompleteness] = useState(true);
+  const [qualitySpecific, setQualitySpecific] = useState(false);
   const [research, setResearch] = useState(true);
   const [callBudget, setCallBudget] = useState<number | null>(null);
   const keyRef = useRef<string>("");
@@ -49,21 +48,25 @@ export default function NewTask() {
   }, []);
 
   const paidOk = caps?.paid_calls_enabled ?? false;
-  const effectiveMode: Mode = paidOk ? mode : "demo";
   const materialsReady = caps?.materials.resource_policy_status === "ready";
-  const canStart = !!caps && text.trim().length > 0 && !busy && !unknownKey && (files.length === 0 || materialsReady)
-    && (effectiveMode === "demo" || !qualityLoop || callBudget === null || Number.isInteger(callBudget) && callBudget > 0);
+  // S10: 用户端只有真实生成。paid_calls_enabled=false 时显示无法开始，
+  // 不再自动降级 demo；demo 只保留给 AI 测试/基准/内部验证。
+  const canStart = !!caps && paidOk && text.trim().length > 0 && !busy && !unknownKey
+    && (files.length === 0 || materialsReady)
+    && (!qualityLoop || callBudget === null || Number.isInteger(callBudget) && callBudget > 0);
   const scenes = useMemo(() => caps?.scenes.filter((s) => s !== "exam") ?? [], [caps]);
 
   function bodyOf() {
-    const body: Record<string, unknown> = { raw_input: text, mode: effectiveMode };
+    const body: Record<string, unknown> = { raw_input: text, mode: "configured" };
     if (title.trim()) body.title = title.trim();
     if (domain) body.domain_key = domain;
     if (scope) body.generation_scope = scope;
     if (scene) body.spec_bindings = [{ artifact_role: scene === "exam_paper" ? "paper" : scene === "exercise" ? "exercise" : "tutorial", scene }];
-    if (effectiveMode === "configured") {
-      body.execution_policy = { structured_arrangement: true, quality_loop: qualityLoop, criterion_assessment: criterionAssessment,
+    {
+      body.execution_policy = { structured_arrangement: true, quality_loop: qualityLoop,
         task_adaptive_format: true,
+        // 三层质检：correctness 强制 true；completeness 默认开；quality_specific 默认关。
+        quality_layers: { correctness: true, completeness, quality_specific: qualitySpecific },
         ...(qualityLoop ? { optimization_policy: { policy_version: "aiedu.repair.v2", enabled: true,
           max_attempts_per_finding: 6, max_repair_rounds_per_run: 8, root_call_budget: callBudget } } : {}) };
       if (research) {
@@ -141,7 +144,7 @@ export default function NewTask() {
       return;
     }
     const confirmed = await api.confirm(created.task_id, { expected_revision: revision, context_hash: patched.context_hash! }, `${k}:confirm`);
-    await api.startRun(created.task_id, { expected_revision: confirmed.input_revision ?? revision, confirmed_context_hash: confirmed.context_hash!, mode: effectiveMode }, `${k}:run`);
+    await api.startRun(created.task_id, { expected_revision: confirmed.input_revision ?? revision, confirmed_context_hash: confirmed.context_hash!, mode: "configured" }, `${k}:run`);
     router.push(`/tasks/${created.task_id}`);
   }
 
@@ -221,17 +224,15 @@ export default function NewTask() {
         </details>
 
         <fieldset style={{ border: 0, padding: 0, margin: 0 }} className="field">
-          <legend className="label" style={{ fontWeight: 600, marginBottom: 6 }}>生成方式</legend>
-          <div className="seg" role="group" aria-label="生成方式">
-            <button type="button" aria-pressed={effectiveMode === "configured"} disabled={!paidOk} onClick={() => setMode("configured")}>真实生成</button>
-            <button type="button" aria-pressed={effectiveMode === "demo"} onClick={() => setMode("demo")}>演示（不调用模型）</button>
-          </div>
+          <legend className="label" style={{ fontWeight: 600, marginBottom: 6 }}>质检与优化</legend>
           {caps && !paidOk && (
-            <p className="hint">后端没有开启真实模型调用，所以只能演示。演示产物会明确标注“演示”，不是真实模型输出。</p>
+            <p className="hint" role="note">无法开始：后端没有开启真实模型调用。演示入口已移除，不会自动降级为演示。</p>
           )}
-          {effectiveMode === "configured" && <>
-            <label><input type="checkbox" checked={qualityLoop} onChange={(e) => setQualityLoop(e.target.checked)} /> 生成后执行质检与整体优化</label>
-            <label><input type="checkbox" checked={criterionAssessment} onChange={(e) => setCriterionAssessment(e.target.checked)} /> 启用 Criterion 评估</label>
+          <>
+            <label><input type="checkbox" checked disabled /> 正确性检查（必开，不可关闭）</label>
+            <label><input type="checkbox" checked={completeness} onChange={(e) => setCompleteness(e.target.checked)} /> 完整性检查（关闭后仍执行确定性硬底线检查）</label>
+            <label><input type="checkbox" checked={qualitySpecific} onChange={(e) => setQualitySpecific(e.target.checked)} /> 质量专项检查</label>
+            <label><input type="checkbox" checked={qualityLoop} onChange={(e) => setQualityLoop(e.target.checked)} /> 定向整改与优化</label>
             {qualityLoop && <div className="field">
               <label htmlFor="call-budget">整条任务模型调用上限</label>
               <input id="call-budget" type="number" min={1} step={1} placeholder="不限" value={callBudget === null ? "" : callBudget} onChange={(e) => setCallBudget(Number.isNaN(e.target.valueAsNumber) ? null : e.target.valueAsNumber)} />
@@ -239,7 +240,7 @@ export default function NewTask() {
             </div>}
             <label><input type="checkbox" checked={research} onChange={(e) => setResearch(e.target.checked)} /> 联网查阅教育文献，建立任务适用的逐维量规</label>
             <p className="hint">{research ? "研究会增加模型调用；仅把需求主题用于公共教育检索，不发送附件原文。" : "按已绑定的评价体系质检。"}</p>
-          </>}
+          </>
         </fieldset>
 
         {conflicts && (

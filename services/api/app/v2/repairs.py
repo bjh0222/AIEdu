@@ -65,7 +65,7 @@ def _zero_new_claims(before, after, category):
 
 
 def auto_repair(run_id, worker, epoch, provider_factory=None):
-    from .optimization import effective_repair_policy
+    from .optimization import effective_repair_policy, enabled_confirmed_findings
     seen = set()
     with SessionLocal() as db:
         state = load(job(db, run_id).state_json)
@@ -85,7 +85,10 @@ def auto_repair(run_id, worker, epoch, provider_factory=None):
             _stop(run_id, worker, epoch, "no_progress")
             return
         seen.add(fingerprint)
-        eligible = [f for f in quality.get("findings", []) if f["status"] == "confirmed" and f.get("acceptance_assertion")]
+        # S10: repairs only process enabled-layer findings; disabled-layer
+        # defects stay recorded and never consume a repair round.
+        eligible = [f for f in enabled_confirmed_findings(state["check_plan"], quality.get("findings", []))
+                    if f.get("acceptance_assertion")]
         if not eligible:
             return
         if state["mode"] == "demo":
