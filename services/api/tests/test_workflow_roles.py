@@ -146,3 +146,21 @@ def test_workflow_metrics_keep_wall_time_and_provider_time_separate():
     assert quality["wall_seconds"] == 10.0
     assert quality["elapsed_seconds"] == 16.0
     assert quality["tokens_known"] == 18
+
+
+def test_workflow_target_models_have_explicit_conservative_capacities():
+    from app.v2.capacity import get_capacity, planned_output_tokens
+
+    base_url = "http://47.118.177.109:8080/v1"
+    for model in ("DeepSeek-V4.1-Flash-HS", "qwen3.8-flash"):
+        capacity = get_capacity(base_url, model)
+        assert capacity["context_tokens"] == 1000000
+        assert capacity["max_output_tokens"] == 131072
+        assert "not an upstream capacity certification" in capacity["source_uri_or_config"]
+        planned = planned_output_tokens(
+            type("Profile", (), {"llm_base_url": base_url, "llm_model": model,
+                                 "llm_output_limit_tokens": None})(),
+            None,
+            capacity,
+        )
+        assert planned["reserved_output_tokens"] == 131072

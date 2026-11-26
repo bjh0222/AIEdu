@@ -64,7 +64,11 @@
     ".next-optC/types/**/*.ts",
     ".next-optC/dev/types/**/*.ts",
     "e2e/results/optMain/.next/types/**/*.ts",
-    "e2e/results/optMain/.next/dev/types/**/*.ts"
+    "e2e/results/optMain/.next/dev/types/**/*.ts",
+    ".next-workflow/types/**/*.ts",
+    ".next-workflow/dev/types/**/*.ts",
+    ".next-render-fix/types/**/*.ts",
+    ".next-render-fix/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

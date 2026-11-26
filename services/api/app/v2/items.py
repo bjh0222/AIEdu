@@ -134,6 +134,9 @@ def render_unit_items(items, unit, answers_only=False, *, projection_version=3):
                     lines.extend([f"**{item['ordinal']}.** {item['stem_markdown'].strip()}", ""])
                     if kind == "判断题":
                         lines.extend(["- [ ]" if projection_version == 1 else "- [ ] 待判断", ""])
+                    elif projection_version == 3:
+                        gap = 2 if kind == "选择题" else 3 if kind in {"拔高题", "综合题"} else 1
+                        lines.extend([""] * (gap - 1))
                     else:
                         lines.extend([""]*(2 if kind == "选择题" else 3))
     lines.extend(["### 参考答案", ""])

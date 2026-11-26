@@ -333,7 +333,8 @@ def render(items, unit, answers_only=False):
         if unit.get("method_overview"):
             lines.extend([unit["method_overview"].strip(), ""])
         for item in items:
-            lines.extend([f"**{item['ordinal']}.** {item['stem_markdown'].strip()}", ""])
+            gap = ["", "", ""] if item.get("question_form") == "constructed_response" else [""]
+            lines.extend([f"**{item['ordinal']}.** {item['stem_markdown'].strip()}", *gap])
     if not answers_only and unit["output_design"].get("answer_placement") == "document_end":
         return "\n".join(lines)
     lines.extend(["### 参考答案", ""])
