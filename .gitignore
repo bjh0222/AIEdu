@@ -19,3 +19,5 @@ services/api/tests/.sqlite-tmp/
 *.log
 apps/web/test-results*/
 apps/web/playwright-report*/
+**/.next-workflow/
+**/.next-render-fix/
