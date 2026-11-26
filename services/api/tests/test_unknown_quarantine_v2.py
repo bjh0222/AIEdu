@@ -114,7 +114,7 @@ def test_foreign_run_and_non_unknown_are_not_isolated(client):
     with write() as db:
         db.get(CallDispatch, payload["calls"][0]["call_id"]).status = "sent"
         job(db, run_id).status = "paused"
-    with pytest.raises(DomainError, match="CALL_NOT_UNKNOWN"):
+    with pytest.raises(DomainError, match="CALL_SENT_RECEIPT_PRESENT"):
         quarantine_unknown(run_id, QuarantineUnknown(**payload), "sent")
 
 
