@@ -193,6 +193,20 @@ export default function Reader({ taskId }: { taskId: string }) {
     return () => vv.removeEventListener("resize", update);
   }, []);
 
+  // 2026-11-27 真机反馈 T3：手机档选中正文文字立即拉起问答框（引用由 ReaderChat 现有 selectionchange 捕获）。
+  useEffect(() => {
+    if (tier !== "phone") return;
+    const capture = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+      const node = sel.getRangeAt(0).commonAncestorContainer;
+      const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as Element);
+      if (el?.closest(".prose")) setChatSheetOpen(true);
+    };
+    document.addEventListener("selectionchange", capture);
+    return () => document.removeEventListener("selectionchange", capture);
+  }, [tier]);
+
   // 2026-11-27 手机问答 sheet：Esc 关闭 + 打开期间锁定页面滚动。
   useEffect(() => {
     if (tier !== "phone" || !chatSheetOpen) return;
@@ -271,7 +285,7 @@ export default function Reader({ taskId }: { taskId: string }) {
             {units.map((u) => (
               <li key={u.unit_id}>
                 <button className="btn btn-quiet btn-sm" style={{ width: "100%", justifyContent: "flex-start" }} aria-pressed={u.unit_id === unit?.unit_id}
-                  onClick={() => { setUnitId(u.unit_id); setAnswersOpen(false); window.scrollTo({ top: 0 }); }}>
+                  onClick={() => { setUnitId(u.unit_id); setAnswersOpen(false); setDrawer(null); window.scrollTo({ top: 0 }); }}>
                   {u.unit_id === unit?.unit_id ? "● " : "○ "}{u.title || ROLE[u.artifact_role] || u.artifact_role}
                 </button>
               </li>
@@ -492,6 +506,7 @@ function DocumentAnswersGate({ source }: { source: string }) {
     </div>
   );
 }
+
 
 
 

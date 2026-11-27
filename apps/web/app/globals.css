@@ -44,9 +44,10 @@
 }
 
 html[data-theme="dark"] {
-  --bg: #12171d;
+  /* 2026-11-27 真机反馈 T4：深色背景与手机状态栏黑色一致 */
+  --bg: #000000;
   --surface: #1a2129;
-  --sunk: #0e1318;
+  --sunk: #05080b;
   --line: #2c3641;
   --line-strong: #44515f;
   --control: #6b7886;
@@ -124,13 +125,10 @@ h3.sub { font-size: 15px; line-height: 1.4; font-weight: 600; }
 .tabbar { display: none; }
 @media (max-width: 767px) {
   .app { grid-template-columns: minmax(0, 1fr); }
-  .sidebar { position: fixed; inset: auto 0 0; height: calc(84px + env(safe-area-inset-bottom)); padding: 0 12px env(safe-area-inset-bottom); border: 0; border-top: 1px solid var(--line); z-index: 40; background: var(--surface); gap: 0; }
-  .sidebar > .brand, .sidebar > .nav { display: none; }
-  .external-nav { gap: 0; margin: 0; }
-  .external-nav a { min-height: 42px; padding: 4px 10px; }
-  .external-nav img { width: 22px; height: 22px; }
-  .main { padding: 16px 16px calc(168px + env(safe-area-inset-bottom)); }
-  .tabbar { display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; inset: auto 0 calc(84px + env(safe-area-inset-bottom)) 0; z-index: 40; background: var(--surface); border-top: 1px solid var(--line-strong); }
+  /* 2026-11-27 真机反馈 T5：底部合成一栏——旧侧栏（品牌行/折叠钮/外链条）整体移除，仅保留文字 tabbar 落底 */
+  .sidebar { display: none; }
+  .main { padding: 16px 16px calc(60px + env(safe-area-inset-bottom)); }
+  .tabbar { display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; inset: auto 0 0 0; z-index: 40; background: var(--surface); border-top: 1px solid var(--line-strong); padding-bottom: env(safe-area-inset-bottom); }
   .tabbar a { min-height: 56px; display: grid; place-items: center; text-decoration: none; color: var(--ink-2); font-size: 12px; border-top: 3px solid transparent; }
   .tabbar a[aria-current="page"] { color: var(--primary); border-top-color: var(--primary); font-weight: 600; }
 }
@@ -652,17 +650,27 @@ dialog.dlg::backdrop { background: rgba(10, 16, 22, 0.45); }
 /* P2：横向滚动容器防穿透 + 右缘渐隐提示（手机档；数学块不放提示以保护复制按钮） */
 @media (max-width: 767px) {
   .table-scroll, .code-scroll, .math-block, .mermaid-figure { overscroll-behavior-x: contain; }
-  .prose .table-scroll, .prose .code-scroll { position: relative; }
-  .prose .table-scroll::after, .prose .code-scroll::after {
-    content: ""; position: absolute; top: 0; right: 0; bottom: 0; width: 28px;
-    background: linear-gradient(to left, var(--bg), transparent);
-    pointer-events: none;
-  }
+
   .prose code { font-size: 13px; }
 }
 
+/* 2026-11-27 真机反馈 T2：手机端表格紧凑化，常见 3 列表尽量一屏放下 */
+@media (max-width: 767px) {
+  .prose table { font-size: 13px; }
+  .prose th, .prose td { padding: 0.4em 0.55em; }
+  .prose th { white-space: normal; }
+}
+
+/* 2026-11-27 真机反馈 T4a：手机阅读顶栏缩窄约一半 */
+@media (max-width: 767px) {
+  .reader-top { margin: -16px -16px 12px; padding: 4px 10px; }
+  .reader-back { min-width: 28px; min-height: 28px; font-size: 15px; padding: 0 7px; }
+  .reader-phone-title { font-size: 13.5px; }
+  .reader-top .btn { min-height: 28px; padding: 0 9px; font-size: 12.5px; }
+}
 /* 触控目标统一 44px（粗指针，含手机与触屏平板） */
 @media (pointer: coarse) {
   .copy-btn { min-height: 44px; }
 }
+
 
