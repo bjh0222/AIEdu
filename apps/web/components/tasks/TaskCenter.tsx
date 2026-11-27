@@ -72,7 +72,7 @@ export default function TaskCenter() {
         <div>
           <h1 className="title">任务</h1>
         </div>
-        <div className="row-actions"><Link className="btn" href="/library?tab=trash">回收站</Link><Link className="btn btn-primary" href="/new">新建任务</Link></div>
+        <div className="row-actions"><Link className="btn" href="/library?tab=trash">回收站</Link><Link className="btn" href="/import">导入外部任务</Link><Link className="btn btn-primary" href="/new">新建任务</Link></div>
       </div>
 
       {error && (

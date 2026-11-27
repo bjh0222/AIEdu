@@ -117,7 +117,14 @@ export default function Reader({ taskId }: { taskId: string }) {
   const showDocumentAnswers = documentAnswers !== null && isLastUnit;
   const bodyText = split.body;
   const headings = useMemo(() => extractHeadings(bodyText), [bodyText]);
+  const assetMap = useMemo(() => new Map(
+    ((unit as { assets?: { original_ref?: string; blob_hash?: string | null }[] } | undefined)?.assets ?? [])
+      .filter((asset): asset is { original_ref: string; blob_hash: string } =>
+        Boolean(asset.original_ref && asset.blob_hash))
+      .map((asset) => [asset.original_ref, `/api/v2/external-assets/${asset.blob_hash}`]),
+  ), [unit]);
   const wikiTargets = useMemo(() => {
+
     const m = new Map<string, string>();
     for (const h of headings) m.set(h.text, h.id);
     units.forEach((u) => { if (u.unit_id !== unit?.unit_id) m.set(u.unit_id, `unit-${u.unit_id}`); });
@@ -307,7 +314,7 @@ export default function Reader({ taskId }: { taskId: string }) {
               {units.length === 0 && read && <p className="muted">这个版本没有可显示的内容。</p>}
               {unit ? (
                 <>
-                  <Prose key={`${unit.unit_id}-${read?.version_id}`} source={bodyText} headings={headings} wikiTargets={wikiTargets} pins={renderPins} onPinClick={gotoPin} />
+                  <Prose key={`${unit.unit_id}-${read?.version_id}`} source={bodyText} headings={headings} wikiTargets={wikiTargets} assets={assetMap} pins={renderPins} onPinClick={gotoPin} />
                   {split.answers && (
                     <div className="answer-gate">
                       <button className="answer-toggle" aria-expanded={answersOpen} aria-controls="answers" onClick={() => setAnswersOpen(!answersOpen)}>
@@ -429,9 +436,3 @@ function DocumentAnswersGate({ source }: { source: string }) {
     </div>
   );
 }
-
-
-
-
-
-

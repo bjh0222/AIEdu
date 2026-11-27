@@ -178,6 +178,7 @@ export const REASON_TEXT: Record<string, string> = {
   LOCATION_OR_SCHEMA_INVALID: "检查器给出的位置或格式无效",
   model_candidate_is_not_professional_certification: "模型意见不等于专业认证",
   external_defect_verified: "已由外部证据核实",
+  external_import_no_model_calls: "外部 Markdown 导入完成；本次仅做规则解析，未调用模型",
 };
 export function reasonText(code?: string | null): string {
   if (!code) return "";

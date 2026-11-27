@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, Response, UploadFile
 
 from ..config import settings
 from ..db import SessionLocal
@@ -12,11 +12,13 @@ from ..model_settings import configured_concurrency
 from ..models import GenerationJob, GoalMaterial, LearningGoal, TutorialVersion
 from ..schemas import ChatRequest
 from ..v2 import exports, tasks
+from ..v2.external_imports import ImportedFile, asset_response, import_markdown
 from ..v2.contracts import (Confirmation, DeliveryWaiverRequest, DomainError, ExportRequest, InputPatch, Pause,
                             QuarantineUnknown, RepairRequest, Resume, StartRun, TaskInput, TaskStart,
                             UserReview, digest, sha)
 from ..v2.quality import POLICY, SCENES, compile_plan
 from ..v2.runtime import cas, dump, job, load, materialize, write
+from ..v2.storage import BlobStore
 from ..v2.security import action_key, create_session, owner
 from ..v2.storage import CallDispatch
 from ..v2.responses import DraftSnapshot, RunSnapshot, TaskPage, VersionPage
@@ -112,6 +114,49 @@ def input_patch(task_id: str, payload: InputPatch, key=Depends(action_key)):
 @secured.post("/tasks/{task_id}/confirm")
 def confirm(task_id: str, payload: Confirmation, key=Depends(action_key)):
     return tasks.mutate_input(task_id, payload, key, confirmation=True)
+
+
+@secured.post("/external-imports", status_code=201)
+async def external_import(files: list[UploadFile] = File(...), ai_assist: bool = Form(False), key=Depends(action_key)):
+    """Owner Markdown import: deterministic structure, immutable bytes, no model calls."""
+    from pathlib import PurePath
+    markdown_files: list[UploadFile] = []
+    for item in files:
+        raw_name = item.filename or ""
+        if "/" in raw_name or "\\" in raw_name or any(ord(c) < 32 for c in raw_name):
+            raise DomainError("INVALID_EXTERNAL_FILENAME", 422)
+        suffix = PurePath(raw_name).suffix.lower()
+        if suffix in {".md", ".markdown"}:
+            markdown_files.append(item)
+            continue
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}:
+            raise DomainError("UNSUPPORTED_EXTERNAL_ASSET", 422, filename=raw_name)
+    if len(markdown_files) != 1:
+        raise DomainError("ONE_EXTERNAL_MARKDOWN_REQUIRED", 422, count=len(markdown_files))
+    ordered = [markdown_files[0], *[item for item in files if item is not markdown_files[0]]]
+    data = []
+    for item in ordered:
+        raw = await item.read()
+        if len(raw) > settings.material_max_bytes:
+            raise DomainError("EXTERNAL_IMPORT_TOO_LARGE", 413, limit_bytes=settings.material_max_bytes)
+        data.append(ImportedFile(filename=item.filename or "material.md", data=raw))
+        await item.close()
+    return import_markdown(data[0], data[1:], key, ai_assist=ai_assist)
+
+
+@secured.get("/external-assets/{blob_hash}")
+def external_asset(blob_hash: str):
+    import re
+    if not re.fullmatch(r"[0-9a-f]{64}", blob_hash):
+        raise DomainError("INVALID_BLOB_HASH", 422)
+    data = BlobStore().get(blob_hash)
+    if data.startswith(b"\x89PNG\r\n\x1a\n"): media_type = "image/png"
+    elif data.startswith(b"\xff\xd8\xff"): media_type = "image/jpeg"
+    elif data.startswith(b"GIF87a") or data.startswith(b"GIF89a"): media_type = "image/gif"
+    elif data[:4] in {b"RIFF"} and data[8:12] == b"WEBP": media_type = "image/webp"
+    elif data.lstrip()[:5].lower() in {b"<svg ", b"<?xml"}: media_type = "image/svg+xml"
+    else: raise DomainError("EXTERNAL_ASSET_TYPE_UNKNOWN", 422)
+    return asset_response(data, media_type)
 
 
 @secured.post("/tasks/{task_id}/materials", status_code=201)

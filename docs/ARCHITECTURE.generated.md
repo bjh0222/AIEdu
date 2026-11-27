@@ -4,7 +4,7 @@
 # 架构事实（自动生成）
 
 
-## 路由（210 条 = 路径 × 方法，19 组资源）
+## 路由（212 条 = 路径 × 方法，19 组资源）
 
 ### assessments（1 条）
 
@@ -210,7 +210,7 @@
 | GET | `/api/tutorials/{tutorial_id}/sections/{section_id}` |
 | POST | `/api/tutorials/{tutorial_id}/sections/{section_id}/regenerate` |
 
-### v2（70 条）
+### v2（72 条）
 
 | 方法 | 路径 |
 |---|---|
@@ -226,6 +226,8 @@
 | GET | `/api/v2/evaluation-frameworks` |
 | POST | `/api/v2/evaluation-frameworks/math/install` |
 | GET | `/api/v2/export-sets/{bundle_id}/files/{file_id}` |
+| GET | `/api/v2/external-assets/{blob_hash}` |
+| POST | `/api/v2/external-imports` |
 | POST | `/api/v2/findings/{finding_id}/evidence` |
 | POST | `/api/v2/findings/{finding_id}/repairs` |
 | POST | `/api/v2/findings/{finding_id}/user-reviews` |
@@ -344,8 +346,9 @@
 
 `context_layers`、`prompts`、`provider`、`service`
 
-## 前端页面（9 个）
+## 前端页面（10 个）
 
+- `/import`
 - `/legacy/[kind]`
 - `/legacy`
 - `/library`

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { VersionRead } from "@/lib/v2/api";
+import Prose from "@/components/reader/Prose";
 import { sendReaderChat, type ChatContextUnit, type ChatMessageView, type ChatScope } from "@/lib/v2/chat-api";
 
 type ChatSession = {
@@ -180,7 +181,9 @@ export default function ReaderChat({ taskId, read, currentUnitId, open, onOpenCh
             style={{ borderColor: m.role === "user" ? "var(--primary)" : "var(--line)", padding: 7, fontSize: 12 }} aria-label={m.role === "user" ? "用户消息" : "模型回答"}>
             <b className="muted" style={{ fontSize: 12 }}>{m.role === "user" ? "我" : "助手"}</b>
             {m.quote && <p className="hint" style={{ marginTop: 4 }}>已捕获引用</p>}
-            <div style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{m.content}</div>
+            {m.role === "assistant"
+              ? <div className="chat-prose" style={{ marginTop: 4 }}><Prose source={m.content} /></div>
+              : <div style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{m.content}</div>}
           </article>
         ))}
         {busy && <p className="hint" role="status">正在请求模型…</p>}
@@ -207,6 +210,3 @@ export default function ReaderChat({ taskId, read, currentUnitId, open, onOpenCh
     </aside>
   );
 }
-
-
-

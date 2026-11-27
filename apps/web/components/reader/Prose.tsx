@@ -311,10 +311,13 @@ function TexMath({ tex, display }: { tex: string; display: boolean }) {
   );
 }
 
+export type ProseAssetMap = Map<string, string>;
+
 export type ProseProps = {
   source: string;
   /** 把 [[wikilink]] 目标（unit_id/标题）映射到同一版本内的页内锚点。 */
   wikiTargets?: Map<string, string>;
+  assets?: ProseAssetMap;
   pins?: Pin[];
   onPinClick?: (n: number) => void;
   headings?: Heading[];
@@ -327,7 +330,7 @@ function stripFrontmatter(source: string): string {
   return m[0].replace(/[^\n]/g, " ");
 }
 
-export default function Prose({ source, wikiTargets, pins = [], onPinClick, headings }: ProseProps) {
+export default function Prose({ source, wikiTargets, assets, pins = [], onPinClick, headings }: ProseProps) {
   const transformed = useMemo(() => {
     const wiki = resolveWikiLinks(stripFrontmatter(source), wikiTargets ?? new Map());
     const latex = projectLatexDelimiters(wiki.text);
@@ -441,11 +444,18 @@ export default function Prose({ source, wikiTargets, pins = [], onPinClick, head
         return <span>{children}</span>;
       },
       // 不加载外部图片（隐私与安全）：显示替代文字。
-      img: ({ alt }) => <span className="img-blocked">（图片未加载{alt ? `：${alt}` : ""}）</span>,
+      img: ({ alt, src, ...rest }) => {
+        void rest;
+        const original = typeof src === "string" ? src : "";
+        const mapped = assets?.get(original) ?? assets?.get(decodeURIComponent(original));
+        // eslint-disable-next-line @next/next/no-img-element -- imported immutable assets are same-origin and already hashed
+        if (mapped) return <img src={mapped} alt={alt ?? ""} loading="lazy" />;
+        return <span className="img-blocked">（图片未加载{alt ? `：${alt}` : ""}）</span>;
+      },
       input: ({ checked, type, node }) => (type === "checkbox" ? <ReadingCheckbox key={`${source}:${node?.position?.start.offset ?? 0}`} initialChecked={Boolean(checked)} /> : null),
       mark: ({ children }) => <mark>{children}</mark>,
     };
-  }, [byLine, source]);
+  }, [assets, byLine, source]);
 
   useEffect(() => {
     const el = ref.current;

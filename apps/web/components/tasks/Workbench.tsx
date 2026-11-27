@@ -273,7 +273,7 @@ export default function Workbench({ taskId }: { taskId: string }) {
       <div className="crumbs"><Link href="/">任务</Link><span aria-hidden="true">/</span><span aria-current="page">{title}</span></div>
       <div className="page-head">
         <div style={{ minWidth: 0 }}>
-          <h1 className="title">{title}{run.demo && <> <span className="demo-tag">演示</span></>}</h1>
+          <h1 className="title">{title}{run.stop_reason === "external_import_no_model_calls" ? <> <span className="demo-tag">外部导入</span></> : run.demo && <> <span className="demo-tag">演示</span></>}</h1>
           <div className="axes" style={{ marginTop: 10 }} role="group" aria-label="任务状态（运行、交付两个独立维度）">
             <span className="axis"><span className="axis-name">运行</span><BadgeView b={rb} axis="运行状态" /></span>
             <span className="axis"><span className="axis-name">交付</span><BadgeView b={db} axis="交付状态" /></span>
@@ -501,4 +501,3 @@ function usageStageGroup(stage: string): string {
   if (stage === "exporting" || stage === "postprocess") return "整理与导出";
   return "其它";
 }
-

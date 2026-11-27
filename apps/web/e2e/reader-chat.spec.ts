@@ -29,7 +29,7 @@ test("reader sidebars collapse and chat context scope is assembled", async ({ pa
     chatRequests.push(route.request().postDataJSON() as Record<string, unknown>);
     return route.fulfill({ json: {
       user: { id: "u", role: "user", content: "x" },
-      assistant: { id: "a", role: "assistant", content: "基于当前章节的助手回答。" },
+      assistant: { id: "a", role: "assistant", content: "## 已知事实与缺口\n\n基于当前章节的助手回答。" },
       demo: false,
       model_call: { provider: "openai-compatible", model: "fixture-model", usage: { total_tokens: 1, usage_source: "provider" } },
     } });
@@ -77,6 +77,7 @@ test("reader sidebars collapse and chat context scope is assembled", async ({ pa
 
   await page.getByLabel("聊天输入").fill("当前章节的重点是什么？");
   await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.locator(".chat-prose h2").first()).toHaveText("已知事实与缺口");
   await expect(page.getByText("基于当前章节的助手回答。").first()).toBeVisible();
   expect(chatRequests[0]).toMatchObject({ context_scope: "current_unit" });
   expect((chatRequests[0].context_units as { unit_id: string; body: string }[]).map((u) => u.unit_id)).toEqual(["unit-1"]);
@@ -85,6 +86,7 @@ test("reader sidebars collapse and chat context scope is assembled", async ({ pa
   await page.getByRole("button", { name: "整篇" }).click();
   await page.getByLabel("聊天输入").fill("整篇的核心主线是什么？");
   await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.locator(".chat-prose h2").first()).toHaveText("已知事实与缺口");
   await expect(page.getByText("基于当前章节的助手回答。").first()).toBeVisible();
   expect(chatRequests[1]).toMatchObject({ context_scope: "whole_document" });
   expect((chatRequests[1].context_units as unknown[]).length).toBe(3);
@@ -104,6 +106,7 @@ test("reader sidebars collapse and chat context scope is assembled", async ({ pa
   await page.getByRole("button", { name: "章节 2", exact: true }).click();
   await page.getByLabel("聊天输入").fill("结合引用说明");
   await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.locator(".chat-prose h2").first()).toHaveText("已知事实与缺口");
   await expect(page.getByText("基于当前章节的助手回答。").first()).toBeVisible();
   expect(chatRequests[2]).toMatchObject({
     context_scope: "selected_units",
@@ -111,9 +114,3 @@ test("reader sidebars collapse and chat context scope is assembled", async ({ pa
   });
   expect((chatRequests[2].context_units as { unit_id: string }[]).map((u) => u.unit_id)).toEqual(["unit-2"]);
 });
-
-
-
-
-
-
