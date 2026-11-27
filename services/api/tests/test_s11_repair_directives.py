@@ -168,6 +168,22 @@ def test_deterministic_assertion_runs_before_semantic_recheck():
     assert exc.value.code == "REPAIR_DETERMINISTIC_ASSERTION_FAILED"
 
 
+def test_directive_requires_both_mechanical_and_criterion_assertions():
+    from app.v2.repair_directives import directive_recheck_results, normalize_directives
+
+    package, _ = normalize_directives(_package())
+    checked = {
+        "optimization_acceptance": {
+            "criteria": [{"item_id": "C3.correctness", "result": "undecidable"}],
+        },
+    }
+    rows = directive_recheck_results(package, checked, _units("corrected"), set())
+    assert rows[0]["result"] == "undecidable"
+    checked["optimization_acceptance"]["criteria"][0]["result"] = "satisfied"
+    rows = directive_recheck_results(package, checked, _units("corrected"), set())
+    assert rows[0]["result"] == "satisfied"
+
+
 def test_scope_merge_reuses_unaffected_rows_and_reruns_changed_scope():
     from app.v2.recheck_scope import merge_reports
 

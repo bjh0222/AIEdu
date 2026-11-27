@@ -68,6 +68,11 @@ def criterion_check_results(report, state, units, version_id):
     layers = frozen_quality_layers(state)
     criterion_items = {item["item_id"]: item for item in state.get("check_plan", {}).get("check_items", [])
                        if item.get("verifier_binding") == "criterion_review.v1"}
+    aggregate_items = {
+        item["item_id"]: item
+        for item in state.get("check_plan", {}).get("check_items", [])
+        if item.get("verifier_binding") == "criterion_aggregate.v1"
+    }
     check_ids = list(criterion_items)
     disabled_ids = {item_id for item_id, item in criterion_items.items() if not layer_enabled(item, layers)}
     applicable = {
@@ -89,42 +94,183 @@ def criterion_check_results(report, state, units, version_id):
         and item_id not in disabled_ids
     }
     outcome, errors = consume(report, "automated_assessment", state, units, version_id)
-    if errors or outcome not in RESULTS:
+    assessment_valid = not errors and outcome in RESULTS
+    if not assessment_valid:
         reduced.update({
             item_id: {"item_id": item_id, "result": "undecidable",
                       "reason": "ASSESSMENT_BINDING_INCOMPLETE", "binding_errors": errors,
                       "method_version": "assessment-input-binding.v1"}
             for item_id in check_ids if applicable[item_id]
         })
-        return reduced
-    grouped = {}
-    for row in report.get("criteria", []):
-        if isinstance(row, dict) and row.get("check_id") in check_ids:
-            grouped.setdefault(row["check_id"], []).append(row.get("result"))
-    for item_id in check_ids:
-        if item_id in disabled_ids:
-            # Requests_for_unit never issued this row; keep the honest
-            # policy-skipped state instead of a misleading missing-row unknown.
-            reduced[item_id] = disabled_layer_check(criterion_items[item_id])
+    if assessment_valid:
+        grouped = {}
+        for row in report.get("criteria", []):
+            if isinstance(row, dict) and row.get("check_id") in check_ids:
+                grouped.setdefault(row["check_id"], []).append(row.get("result"))
+        for item_id in check_ids:
+            if item_id in disabled_ids:
+                # Requests_for_unit never issued this row; keep the honest
+                # policy-skipped state instead of a misleading missing-row unknown.
+                reduced[item_id] = disabled_layer_check(criterion_items[item_id])
+                continue
+            if not applicable[item_id]:
+                continue
+            results = grouped.get(item_id, [])
+            if not results:
+                reduced[item_id] = {"item_id": item_id, "result": "undecidable",
+                                    "reason": "ASSESSMENT_ROWS_MISSING", "method_version": "assessment-input-binding.v1"}
+                continue
+            elif "violated" in results:
+                result = "violated"
+            elif "undecidable" in results:
+                result = "undecidable"
+            elif results and all(value == "not_applicable" for value in results):
+                result = "not_applicable"
+            else:
+                result = "satisfied"
+            reduced[item_id] = {"item_id": item_id, "result": result,
+                                "method_version": "assessment-input-binding.v1",
+                                "matched_unit_ids": applicable[item_id]}
+    report_rows = [
+        row for row in report.get("criteria", [])
+        if isinstance(row, dict) and isinstance(row.get("check_id"), str)
+    ]
+    for item_id, item in aggregate_items.items():
+        if not layer_enabled(item, layers):
+            reduced[item_id] = disabled_layer_check(item)
             continue
-        if not applicable[item_id]:
+        if item_id == "A.quality_targets":
+            scoped = [row for row in report_rows if row["check_id"].startswith("A.quality")]
+        else:
+            scoped = [
+                row for row in report_rows
+                if row["check_id"].startswith("A.") and not row["check_id"].startswith("A.quality")
+            ]
+        if not scoped:
+            reduced[item_id] = {
+                "item_id": item_id,
+                "result": "not_applicable" if assessment_valid else "undecidable",
+                "reason": "no_enabled_A_targets",
+                "method_version": "assessment-input-binding.v1",
+            }
             continue
-        results = grouped.get(item_id, [])
-        if not results:
-            reduced[item_id] = {"item_id": item_id, "result": "undecidable",
-                                "reason": "ASSESSMENT_ROWS_MISSING", "method_version": "assessment-input-binding.v1"}
-        elif "violated" in results:
-            result = "violated"
-        elif "undecidable" in results:
+        values = [row.get("result") for row in scoped]
+        if not assessment_valid:
             result = "undecidable"
-        elif results and all(value == "not_applicable" for value in results):
+        elif "violated" in values:
+            result = "violated"
+        elif "undecidable" in values:
+            result = "undecidable"
+        elif all(value == "not_applicable" for value in values):
             result = "not_applicable"
         else:
             result = "satisfied"
-        reduced[item_id] = {"item_id": item_id, "result": result,
-                            "method_version": "assessment-input-binding.v1",
-                            "matched_unit_ids": applicable[item_id]}
+        reduced[item_id] = {
+            "item_id": item_id,
+            "result": result,
+            "method_version": "assessment-input-binding.v1",
+            "matched_unit_ids": sorted({
+                row.get("unit_id") for row in scoped if row.get("unit_id")
+            }),
+        }
     return reduced
+
+
+def difficulty_check_results(report, state, units, version_id):
+    from .checker import applies
+    from .quality import disabled_layer_check, frozen_quality_layers, layer_enabled
+
+    layers = frozen_quality_layers(state)
+    items = {
+        item["item_id"]: item
+        for item in state.get("check_plan", {}).get("check_items", [])
+        if item.get("item_id", "").startswith("Q5.")
+    }
+    if not items:
+        return {}
+    outcome, errors = consume(report, "difficulty_review", state, units, version_id)
+    rows = report.get("items", []) if isinstance(report, dict) else []
+    reduced = {}
+    for item_id, item in items.items():
+        if not layer_enabled(item, layers):
+            reduced[item_id] = disabled_layer_check(item)
+            continue
+        applicable_ids = {
+            unit["unit_id"] for unit in units
+            if applies(item, unit, state.get("context", {}))
+        }
+        if not applicable_ids:
+            reduced[item_id] = {
+                "item_id": item_id,
+                "result": "not_applicable",
+                "reason": "no_items_in_declared_scope",
+                "method_version": "assessment-input-binding.v1",
+            }
+            continue
+        values = [
+            row.get("result") for row in rows
+            if isinstance(row, dict) and row.get("unit_id") in applicable_ids
+        ]
+        if errors or outcome not in RESULTS or not values:
+            result = "undecidable"
+        elif "violated" in values:
+            result = "violated"
+        elif "undecidable" in values:
+            result = "undecidable"
+        elif all(value == "not_applicable" for value in values):
+            result = "not_applicable"
+        else:
+            result = "satisfied"
+        reduced[item_id] = {
+            "item_id": item_id,
+            "result": result,
+            "method_version": "assessment-input-binding.v1",
+            "matched_unit_ids": sorted(applicable_ids),
+            "binding_errors": errors,
+        }
+    return reduced
+
+
+def diagnostic_profile_check_results(report, state, units):
+    from .quality import disabled_layer_check, frozen_quality_layers, layer_enabled
+
+    item = next(
+        (row for row in state.get("check_plan", {}).get("check_items", [])
+         if row.get("item_id") == "P.import_profile"),
+        None,
+    )
+    if item is None:
+        return {}
+    layers = frozen_quality_layers(state)
+    if not layer_enabled(item, layers):
+        return {item["item_id"]: disabled_layer_check(item)}
+    if not state.get("context", {}).get("import_understanding"):
+        return {item["item_id"]: {
+            "item_id": item["item_id"],
+            "result": "not_applicable",
+            "reason": "no_bound_import_profiles",
+            "method_version": "bound-rubric-model-review.v2",
+        }}
+    rows = (report or {}).get("dimensions", [])
+    if not isinstance(report, dict) or not isinstance(rows, list):
+        result = "undecidable"
+    else:
+        values = [row.get("result") for row in rows if isinstance(row, dict)]
+        result = (
+            "violated" if "violated" in values
+            else "undecidable" if not values or "undecidable" in values
+            else "not_applicable" if all(value == "not_applicable" for value in values)
+            else "satisfied"
+        )
+    return {item["item_id"]: {
+        "item_id": item["item_id"],
+        "result": result,
+        "method_version": "bound-rubric-model-review.v2",
+        "matched_unit_ids": sorted({
+            row.get("unit_id") for row in rows
+            if isinstance(row, dict) and row.get("unit_id")
+        }),
+    }}
 
 
 def _difficulty(report, state, units):

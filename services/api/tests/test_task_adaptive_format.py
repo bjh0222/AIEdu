@@ -217,6 +217,41 @@ def test_A_plans_cross_chapter_synthesis_and_whole_summary_as_B_units():
     assert strict["units"][3]["teaching_arrangement"]["artifact_role"] == "book_level"
 
 
+def test_A_material_mapping_selects_task_scope_not_the_whole_file():
+    ctx = context() | {
+        "raw_input": "写三种方法的教程，最后比较三种方法并总结全书",
+        "requested_artifacts": ["tutorial"],
+        "material_ids": ["book"],
+    }
+    value = teaching(tutorial_design(), titles=("目标章",))
+    unit = value["content"]["units"][0]
+    unit.update(artifact_role="chapter", material_mapping=["book:6", "book:7"],
+                required_sections=["章末摘要"], summary_heading="章末摘要")
+    chunks = [{"source_id": "book", "chunk_id": f"book:{index}"} for index in range(12)]
+    built = apply_design(ctx, {"units": []}, value, chunks)
+    assert built["units"][0]["material_chunk_ids"] == ["book:6", "book:7"]
+    assert built["material_scope"]["mapped_chunk_ids"] == ["book:6", "book:7"]
+    assert set(built["material_scope"]["out_of_scope_chunk_ids"]) == {
+        f"book:{index}" for index in range(12) if index not in {6, 7}
+    }
+
+
+def test_source_level_material_mapping_keeps_all_source_chunks():
+    ctx = context() | {
+        "raw_input": "写三种方法的教程，最后比较三种方法并总结全书",
+        "requested_artifacts": ["tutorial"],
+        "material_ids": ["book"],
+    }
+    value = teaching(tutorial_design(), titles=("全书",))
+    unit = value["content"]["units"][0]
+    unit.update(artifact_role="chapter", material_mapping=["book"],
+                required_sections=["章末摘要"], summary_heading="章末摘要")
+    chunks = [{"source_id": "book", "chunk_id": f"book:{index}"} for index in range(12)]
+    built = apply_design(ctx, {"units": []}, value, chunks)
+    assert set(built["units"][0]["material_chunk_ids"]) == {f"book:{index}" for index in range(12)}
+    assert built["material_scope"]["out_of_scope_chunk_ids"] == []
+
+
 def test_integration_plan_is_required_for_multi_unit_tutorial():
     ctx = context() | {"raw_input": "写三种方法的教程，最后比较三种方法并总结全书",
                        "requested_artifacts": ["tutorial"]}

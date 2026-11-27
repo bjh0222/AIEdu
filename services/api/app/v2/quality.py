@@ -45,13 +45,17 @@ def normalize_quality_layers(value) -> dict | None:
 
 
 def quality_layer_for(item: dict) -> str:
-    """Frozen S10 mapping. Unknown rows default to completeness (safe: on)."""
+    """Frozen S10 mapping. Unknown rows default to the optional layer."""
     item_id = item.get("item_id", "")
     if item.get("system") == "discipline":
         return "correctness" if item.get("decision_type") == "atomic_claim" else "quality_specific"
     if item_id in {"C1.coverage", "C2.structure", "C3.correctness", "C5.materials",
                    "C6.context_integrity", "G4.evidence_boundaries"}:
         return "correctness"
+    if item_id == "A.completeness":
+        return "completeness"
+    if item_id in {"A.quality_targets", "P.import_profile"}:
+        return "quality_specific"
     if item_id.startswith(("S.layout.", "M.items.", "P.execution.")) or re.match(r"^Q[126]\.", item_id):
         return "correctness"
     if (item_id in {"C4.constraints", "G1.semantic_alignment", "G2.knowledge_integration"}
@@ -59,16 +63,17 @@ def quality_layer_for(item: dict) -> str:
         return "completeness"
     if item_id.startswith(("G3.", "Q4.", "Q5.", "R.", "I.")):
         return "quality_specific"
-    return "completeness"
+    return "quality_specific"
 
 
 def layer_enabled(item: dict, layers: dict | None) -> bool:
-    """Legacy/unknown rows stay enabled; hard baselines ignore layer policy."""
+    """Legacy policies stay enabled; current rows follow their exact frozen layer."""
     if not layers:
         return True
     if item.get("hard_baseline"):
         return True
-    return layers.get(item.get("quality_layer", ""), True) is True
+    layer = item.get("quality_layer") or quality_layer_for(item)
+    return layers.get(layer, False) is True
 
 
 def frozen_quality_layers(state: dict) -> dict | None:
@@ -90,12 +95,38 @@ def disabled_layer_check(item: dict) -> dict:
 
 
 def finding_layer_enabled(plan: dict, finding: dict) -> bool:
-    """Unbound findings stay visible; disabled layers never drive repair spend."""
+    """Only findings bound to an enabled layer drive repair spend."""
     layers = plan.get("quality_layers") if isinstance(plan, dict) else None
     if not layers:
         return True
     item = next((i for i in plan.get("check_items", []) if i["item_id"] == finding.get("item_id")), None)
-    return True if item is None else layer_enabled(item, layers)
+    bound = dict(item or {})
+    bound.setdefault("item_id", finding.get("item_id"))
+    bound.setdefault("quality_layer", finding.get("quality_layer"))
+    bound.setdefault("hard_baseline", finding.get("hard_baseline"))
+    return layer_enabled(bound, layers)
+
+
+def scoped_findings(plan: dict, findings: list[dict]):
+    layers = plan.get("quality_layers")
+    if not layers:
+        return list(findings), []
+    item_ids = {item["item_id"] for item in plan.get("check_items", [])}
+    enabled, unbound = [], []
+    for finding in findings:
+        if finding.get("item_id") not in item_ids:
+            unbound.append(finding)
+        elif finding_layer_enabled(plan, finding):
+            enabled.append(finding)
+    return enabled, unbound
+
+
+def enabled_findings_for_plan(plan: dict, findings: list[dict]) -> list[dict]:
+    return [
+        finding for finding in findings
+        if finding.get("status") == "confirmed"
+        and finding_layer_enabled(plan, finding)
+    ]
 
 
 def compile_plan(task: dict, network_policy: dict | None = None, quality_layers: dict | None = None) -> dict:
@@ -343,6 +374,30 @@ def compile_plan(task: dict, network_policy: dict | None = None, quality_layers:
                 "legacy_research_rubric_scope_derived_from_unique_task_domain"
                 if legacy_scope_derived else "research_rubric_task_scope"
             )
+    if quality_layers is not None:
+        items.extend([
+            {"item_id": "A.completeness", "system": "planning",
+             "dimension": "A design fidelity", "decision_type": "semantic_rubric",
+             "verifier_binding": "criterion_aggregate.v1", "severity_class": "blocker",
+             "required": True, "required_evidence": ["criterion_aggregate.v1"],
+             "pass_condition": "all enabled A design targets are satisfied",
+             "scope": {}, "applicability_reason": "quality_layer_enabled"},
+            {"item_id": "A.quality_targets", "system": "planning",
+             "dimension": "A quality targets", "decision_type": "semantic_rubric",
+             "verifier_binding": "criterion_aggregate.v1", "severity_class": "blocker",
+             "required": True, "required_evidence": ["criterion_aggregate.v1"],
+             "pass_condition": "all enabled A quality targets are satisfied",
+             "scope": {}, "applicability_reason": "quality_layer_enabled"},
+        ])
+        if task.get("import_understanding"):
+            items.append({
+                "item_id": "P.import_profile", "system": "planning",
+                "dimension": "imported profile fidelity", "decision_type": "semantic_rubric",
+                "verifier_binding": "diagnostic_profile.v1", "severity_class": "blocker",
+                "required": True, "required_evidence": ["diagnostic_profile.v1"],
+                "pass_condition": "all bound profile observations are satisfied or not applicable",
+                "scope": {}, "applicability_reason": "quality_layer_enabled",
+            })
     # Quality-layer annotations are part of the plan itself, so the
     # check_plan_hash binds the executed strategy (quality-layers.v1).
     for item in items:
@@ -414,11 +469,12 @@ def reduce_quality(plan: dict, checks: list[dict], findings: list[dict], calibra
         disabled = {i["item_id"]: i for i in plan.get("check_items", []) if not layer_enabled(i, layers)}
         present = {c.get("item_id") for c in checks}
         for c in checks:
-            if c.get("item_id") in disabled and c.get("result") not in {"satisfied", "violated"}:
+            if c.get("item_id") in disabled:
                 c.update(result="not_applicable", reason="quality_layer_disabled_by_policy")
         for item_id, item in disabled.items():
             if item_id not in present:
                 checks.append(disabled_layer_check(item))
+    effective_findings, unbound_findings = scoped_findings(plan, findings)
     by_id = {c["item_id"]: c for c in checks}
     reasons, completed, violations = [], 0, []
     for item in plan.get("check_items", []):
@@ -428,12 +484,19 @@ def reduce_quality(plan: dict, checks: list[dict], findings: list[dict], calibra
             reasons.append({"item_id": item["item_id"], "result": result})
         if result == "violated" and (item.get("required") or item["severity_class"] == "blocker"):
             violations.append(item["item_id"])
-    confirmed = [f for f in findings if f.get("status") == "confirmed"
+    confirmed = [f for f in effective_findings if f.get("status") == "confirmed"
                  and f.get("severity_class") == "blocker"]
+    unbound_blockers = [
+        f for f in unbound_findings
+        if f.get("status") in {"confirmed", "suspected", "unsupported", "escalated"}
+    ]
     unavailable = any(item.get("required") and by_id.get(item["item_id"],{"result":"not_run"})["result"]
                       not in {"satisfied","violated","not_applicable"} for item in plan.get("check_items",[]))
-    if not plan.get("check_items") or unavailable or plan.get("conflicts") or any(
-            f.get("status") in {"suspected", "unsupported", "escalated"} for f in findings):
+    if (not plan.get("check_items") or unavailable or plan.get("conflicts")
+            or unbound_blockers or any(
+                f.get("status") in {"suspected", "unsupported", "escalated"}
+                for f in effective_findings
+            )):
         verdict, legacy = "blocked", "needs_review"
     elif violations or confirmed:
         verdict, legacy = "needs_repair", "failed"
@@ -452,7 +515,11 @@ def reduce_quality(plan: dict, checks: list[dict], findings: list[dict], calibra
     return {"tqi_verdict": verdict, "calibration_status": calibration, "quality_status": legacy,
             "benchmark_build_status": "not_run", "evaluation_phase": "running" if any(c["result"] == "not_run" for c in checks) else "completed" if checks else "pending",
             "check_coverage": {"completed": completed, "total": len(plan.get("check_items", []))},
-            "blocking_reasons": reasons + [{"finding_id": f["finding_id"], "result": "violated"} for f in confirmed],
+            "blocking_reasons": (
+                reasons
+                + [{"finding_id": f["finding_id"], "result": "violated"} for f in confirmed]
+                + [{"finding_id": f["finding_id"], "result": "unbound"} for f in unbound_blockers]
+            ),
             "check_plan_hash": plan.get("check_plan_hash"), "check_items": plan.get("check_items", []),
             "checks": checks, "findings": findings, "repair_policy": POLICY}
 

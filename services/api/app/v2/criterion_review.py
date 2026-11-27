@@ -121,7 +121,7 @@ def requests_for_unit(state, unit):
     quality_refs = requirements.get("global_targets", {}).get(
         "quality_target_contracts", [])
     unit_targets = requirements.get("unit_targets", {})
-    from .quality import frozen_quality_layers, layer_enabled
+    from .quality import frozen_quality_layers, layer_enabled, quality_layer_for
     layers = frozen_quality_layers(state)
     # Disabled layers never generate criterion requests; the downstream binding
     # revalidates against this same selector, so no disabled row can flow back.
@@ -131,8 +131,9 @@ def requests_for_unit(state, unit):
         # These dimensions have dedicated consumers; generic clauses cannot
         # substitute for executing their frozen rubric/runtime contract.
         and c["verifier_binding"] not in {"ps51_sandbox.v1", "target_runtime.v1", "research_rubric.v1"}
+        and c["verifier_binding"] not in {"criterion_aggregate.v1", "diagnostic_profile.v1"}
         and layer_enabled(c, layers)]
-    completeness_on = layers is None or layers.get("completeness", True) is True
+    completeness_on = layer_enabled({"item_id": "A.completeness", "quality_layer": "completeness"}, layers)
     requests, matched_quality = [], set()
     for check in semantic:
         contract = check.get("criterion_contract") or criterion(check)
@@ -171,7 +172,17 @@ def requests_for_unit(state, unit):
 
     for ref in quality_refs:
         key = (ref["profile_id"], ref["rule_id"], ref["criterion_hash"])
-        if key in matched_quality or not completeness_on:
+        if key in matched_quality:
+            continue
+        bound = next((item for item in state.get("check_plan", {}).get("check_items", [])
+                      if item.get("item_id") == ref["rule_id"]), None)
+        if bound is not None:
+            if not layer_enabled(bound, layers):
+                continue
+        elif not layer_enabled({
+            "item_id": ref["rule_id"],
+            "quality_layer": quality_layer_for({"item_id": ref["rule_id"]}),
+        }, layers):
             continue
         add_a_row("quality", ref,
             f"Quality target {ref['profile_id']} / {ref['rule_id']}",

@@ -277,16 +277,17 @@ def invoke(run_id, worker, epoch, state, *, stage, unit_id, data, system, role="
         root = job(db,run_id)
         chain = select(GenerationJob.id,GenerationJob.parent_job_id).where(GenerationJob.id == root.id).cte("inference_ancestors",recursive=True)
         chain = chain.union_all(select(GenerationJob.id,GenerationJob.parent_job_id).join(chain,GenerationJob.id == chain.c.parent_job_id))
+        allow_ancestor_cache = not state.get("quality_restart_force_fresh")
         candidates = db.query(CallDispatch).filter(CallDispatch.root_job_id.in_(select(chain.c.id)),
             CallDispatch.unit_id == unit_id, CallDispatch.provider == profile.llm_base_url,
             CallDispatch.model == profile.llm_model, CallDispatch.model_family == getattr(profile, "llm_model_family", "unknown"),
             CallDispatch.input_hash == state["context"]["context_hash"],
-            CallDispatch.status == "settled", CallDispatch.outcome == "success")
+            CallDispatch.status == "settled", CallDispatch.outcome == "success") if allow_ancestor_cache else None
         cached = candidates.filter(
             CallDispatch.request_hash == req,CallDispatch.input_hash == state["context"]["context_hash"],
-            CallDispatch.status == "settled",CallDispatch.outcome == "success").first()
+            CallDispatch.status == "settled",CallDispatch.outcome == "success").first() if candidates is not None else None
         normalization = None
-        if not cached:
+        if candidates is not None and not cached:
             # Legacy requests used insertion-order JSON inside a string. Validate
             # their original identity before comparing the canonical JSON form.
             for candidate in candidates.order_by(CallDispatch.started_at, CallDispatch.call_id):
@@ -307,7 +308,7 @@ def invoke(run_id, worker, epoch, state, *, stage, unit_id, data, system, role="
                 if normalized == req:
                     cached, normalization = candidate, "json_object_order_v1"
                     break
-        if not cached:
+        if candidates is not None and not cached:
             # Raising the output ceiling is not a semantic change: a successful
             # ancestor that finished within a smaller allowance is still a valid
             # result for the same messages/schema. Without this normalization,

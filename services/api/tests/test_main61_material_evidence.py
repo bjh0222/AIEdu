@@ -59,7 +59,7 @@ def test_source_free_task_keeps_legacy_payload_unchanged(client):
     assert selected_material_evidence({"context": {"material_ids": []}, "plan": {"units": []}}) is None
 
 
-def test_plan_must_bind_every_frozen_chunk(client):
+def test_plan_may_use_a_selected_subset_of_frozen_chunks(client):
     from app.v2.material_evidence import selected_material_evidence
 
     goal_id = str(uuid4())
@@ -71,6 +71,26 @@ def test_plan_must_bind_every_frozen_chunk(client):
     state = {"context": {"material_ids": [source_id], "context_hash": "context"},
              "plan": {"plan_hash": "plan", "units": [
                  {"unit_id": "only", "artifact_role": "chapter", "material_chunk_ids": [chunks[0]["chunk_id"]]}
+             ]}}
+    package = selected_material_evidence(state, goal_id=goal_id)
+    assert package["coverage"]["complete"] is True
+    assert package["coverage"]["plan_mapped_chunk_count"] == 1
+    assert package["coverage"]["out_of_scope_chunk_count"] == len(chunks) - 1
+    assert chunks[1]["chunk_id"] in package["coverage"]["out_of_scope_chunk_ids"]
+
+
+def test_material_plan_still_rejects_unknown_chunk_ids(client):
+    from app.v2.material_evidence import selected_material_evidence
+
+    goal_id = str(uuid4())
+    with SessionLocal() as db:
+        db.add(LearningGoal(id=goal_id, title="unknown chunk"))
+        db.commit()
+        source_id, _ = _material(db, goal_id, "C" * 80)
+        db.commit()
+    state = {"context": {"material_ids": [source_id], "context_hash": "context"},
+             "plan": {"plan_hash": "plan", "units": [
+                 {"unit_id": "only", "artifact_role": "chapter", "material_chunk_ids": ["missing-chunk"]}
              ]}}
     with pytest.raises(DomainError, match="MATERIAL_EVIDENCE_PLAN_COVERAGE"):
         selected_material_evidence(state, goal_id=goal_id)

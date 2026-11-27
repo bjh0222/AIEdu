@@ -64,13 +64,15 @@ def merge_reports(base, deterministic, incremental, affected):
     from .quality import reduce_quality
     reduced = reduce_quality(
         {"check_items": deterministic.get("check_items", []),
-         "check_plan_hash": deterministic.get("check_plan_hash")},
+         "check_plan_hash": deterministic.get("check_plan_hash"),
+         "quality_layers": deterministic.get("quality_layers")},
         checks,
         list(findings.values()),
         calibration=incremental.get("calibration_status", "not_calibrated"),
     )
     result.update(reduced)
-    for key in ("automated_assessment", "diagnostic_review", "difficulty_review", "item_quality"):
+    for key in ("automated_assessment", "diagnostic_review", "bound_profile_review",
+                "difficulty_review", "item_quality"):
         base_value, new_value = base.get(key), incremental.get(key)
         if not isinstance(base_value, dict) or not isinstance(new_value, dict):
             result[key] = deepcopy(new_value if new_value is not None else base_value)
@@ -126,6 +128,11 @@ def evaluate_candidate(run_id, worker, epoch, state, base_units, new_units, base
     }
     closure = dependency_closure(base_units, changed)
     affected = set(closure["unit_ids"])
+    aggregate_bindings = {"criterion_aggregate.v1", "diagnostic_profile.v1"}
+    if any(item.get("verifier_binding") in aggregate_bindings
+           for item in state.get("check_plan", {}).get("check_items", [])):
+        closure["full_semantic_rerun"] = True
+        closure["full_semantic_reason"] = "aggregate_checks_require_complete_scope"
     directives = package.get("directives", [])
     deterministic = deterministic_results(directives, new_units)
     failed = [row for row in deterministic if row["result"] != "satisfied"]
@@ -153,6 +160,9 @@ def evaluate_candidate(run_id, worker, epoch, state, base_units, new_units, base
     deterministic_report = check_snapshot(state, new_units, version_id)
     deterministic_report["check_items"] = deepcopy(
         state.get("check_plan", {}).get("check_items", [])
+    )
+    deterministic_report["quality_layers"] = deepcopy(
+        state.get("check_plan", {}).get("quality_layers")
     )
     affected_units = [row for row in new_units if row["unit_id"] in affected]
     from .checker import evaluate

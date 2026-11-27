@@ -197,11 +197,14 @@ def apply_design(context, plan, arrangement, chunks):
                 raise DomainError("READING_SUMMARY_HEADING_REQUIRED", 422)
     if set(roles) - {r for u in units for r in u["artifact_roles"]}:
         raise DomainError("OUTPUT_DESIGN_ARTIFACT_COVERAGE_INCOMPLETE", 422)
-    if chunk_ids - {c for u in units for c in u["material_chunk_ids"]}:
-        raise DomainError("OUTPUT_DESIGN_MATERIAL_COVERAGE_INCOMPLETE", 422)
+    mapped_chunk_ids = {c for u in units for c in u["material_chunk_ids"]}
     result = deepcopy(plan)
     result["units"] = units
     result["output_design"] = design
+    result["material_scope"] = {
+        "mapped_chunk_ids": sorted(mapped_chunk_ids),
+        "out_of_scope_chunk_ids": sorted(chunk_ids - mapped_chunk_ids),
+    }
     if integration:
         result["integration_plan"] = deepcopy(integration)
     return result

@@ -52,6 +52,7 @@ _OPTIMIZATION_TERMINAL_STOPS = {
     "no_progress",
     "optimization_model_not_run_demo",
     "optimization_paid_not_authorized",
+    "optimization_not_needed",
 }
 
 
@@ -149,7 +150,8 @@ def execute_run(run_id: str, provider_factory=None):
             execute_cards(run_id, worker, epoch, operation_state, provider_factory)
             return
         if (operation_state.get("mode") == "configured"
-                and not operation_state.get("review_only_source_version")):
+                and not operation_state.get("review_only_source_version")
+                and not operation_state.get("quality_restart_from_version")):
             run_research_before_planning(run_id, worker, epoch, provider_factory)
         if operation_state["context"].get("operation") == "benchmark_build":
             from .benchmark import compile_semantic,seal_dataset,store_report,source_roles_for_versions,source_evaluation_basis

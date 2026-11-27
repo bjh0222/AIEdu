@@ -100,10 +100,12 @@ def delivery_decision(
     seen = set()
     if not profile_binding_current:
         hard.append({"code": "PROFILE_BINDING_STALE"})
-    if quality.get("quality_status") in {"failed", "not_evaluated"}:
+    if (quality.get("quality_status") in {"failed", "not_evaluated"}
+            or quality.get("tqi_verdict") in {"blocked", "needs_repair"}):
         hard.append({
             "code": "QUALITY_NOT_DELIVERABLE",
             "quality_status": quality.get("quality_status"),
+            "tqi_verdict": quality.get("tqi_verdict"),
         })
     for reason in quality.get("blocking_reasons") or []:
         item_id = reason.get("item_id")

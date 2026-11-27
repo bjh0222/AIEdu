@@ -35,7 +35,7 @@ export default function NewTask() {
   const [unknownKey, setUnknownKey] = useState<string | null>(null);
   const [conflicts, setConflicts] = useState<{ taskId: string; list: Conflict[] } | null>(null);
   const [files, setFiles] = useState<File[]>([]);
-  const [qualityLoop, setQualityLoop] = useState(true);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [completeness, setCompleteness] = useState(true);
   const [qualitySpecific, setQualitySpecific] = useState(false);
   const [research, setResearch] = useState(true);
@@ -53,7 +53,7 @@ export default function NewTask() {
   // 不再自动降级 demo；demo 只保留给 AI 测试/基准/内部验证。
   const canStart = !!caps && paidOk && text.trim().length > 0 && !busy && !unknownKey
     && (files.length === 0 || materialsReady)
-    && (!qualityLoop || callBudget === null || Number.isInteger(callBudget) && callBudget > 0);
+    && (callBudget === null || Number.isInteger(callBudget) && callBudget > 0);
   const scenes = useMemo(() => caps?.scenes.filter((s) => s !== "exam") ?? [], [caps]);
 
   function bodyOf() {
@@ -63,12 +63,12 @@ export default function NewTask() {
     if (scope) body.generation_scope = scope;
     if (scene) body.spec_bindings = [{ artifact_role: scene === "exam_paper" ? "paper" : scene === "exercise" ? "exercise" : "tutorial", scene }];
     {
-      body.execution_policy = { structured_arrangement: true, quality_loop: qualityLoop,
+      body.execution_policy = { structured_arrangement: true, quality_loop: true,
         task_adaptive_format: true,
         // 三层质检：correctness 强制 true；completeness 默认开；quality_specific 默认关。
         quality_layers: { correctness: true, completeness, quality_specific: qualitySpecific },
-        ...(qualityLoop ? { optimization_policy: { policy_version: "aiedu.repair.v2", enabled: true,
-          max_attempts_per_finding: 6, max_repair_rounds_per_run: 8, root_call_budget: callBudget } } : {}) };
+        optimization_policy: { policy_version: "aiedu.repair.v2", enabled: true,
+          max_attempts_per_finding: 2, max_repair_rounds_per_run: 2, root_call_budget: callBudget } };
       if (research) {
         // 研究请求只携带可公开的结构化标签。用户原话可能包含私有资料、
         // 学习背景或内部标识，不能被当作公开检索主题发送给模型/索引服务。
@@ -213,12 +213,22 @@ export default function NewTask() {
             </div>
             <div className="field">
               <label htmlFor="files">参考资料（可选）</label>
-              <input id="files" type="file" multiple disabled={!materialsReady || busy} accept=".txt,.md,.markdown,.csv,.pdf,.docx,.epub" onChange={(e) => setFiles(Array.from(e.target.files ?? []))} />
+              <input ref={fileInputRef} id="files" type="file" multiple disabled={!materialsReady || busy} accept=".txt,.md,.markdown,.csv,.pdf,.docx,.epub" onChange={(e) => { const incoming = Array.from(e.target.files ?? []); setFiles((current) => [...current, ...incoming]); if (fileInputRef.current) fileInputRef.current.value = ""; }} />
               {!materialsReady && <p className="hint">资料上传暂不可用：{caps?.materials.resource_policy_reason ?? "资源策略尚未确认"}。仍可创建无资料任务。</p>}
               <p className="hint">
                 支持 txt、md、csv、带文字层的 pdf、docx、epub；扫描件和旧版 doc/ppt 不支持。
                 {files.length > 0 && <> 已选 {files.length} 个文件</>}
               </p>
+              {files.length > 0 && (
+                <ul style={{ margin: "8px 0 0", padding: 0, listStyle: "none", display: "grid", gap: 6 }}>
+                  {files.map((file, index) => (
+                    <li key={`${file.name}-${file.lastModified}-${index}`} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.name}</span>
+                      <button type="button" className="btn btn-sm" aria-label={`移除 ${file.name}`} onClick={() => { setFiles((current) => current.filter((_, i) => i !== index)); if (fileInputRef.current) fileInputRef.current.value = ""; }}>移除</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         </details>
@@ -232,12 +242,11 @@ export default function NewTask() {
             <label><input type="checkbox" checked disabled /> 正确性检查</label>
             <label><input type="checkbox" checked={completeness} onChange={(e) => setCompleteness(e.target.checked)} /> 完整性检查</label>
             <label><input type="checkbox" checked={qualitySpecific} onChange={(e) => setQualitySpecific(e.target.checked)} /> 质量专项检查（命题/研究量规/领域条目质量）</label>
-            <label><input type="checkbox" checked={qualityLoop} onChange={(e) => setQualityLoop(e.target.checked)} /> 定向整改与优化</label>
-            {qualityLoop && <div className="field">
+            <div className="field">
               <label htmlFor="call-budget">模型调用上限</label>
               <input id="call-budget" type="number" min={1} step={1} placeholder="不限" value={callBudget === null ? "" : callBudget} onChange={(e) => setCallBudget(Number.isNaN(e.target.valueAsNumber) ? null : e.target.valueAsNumber)} />
               <p className="hint">理解、研究、生成、检查和优化共用此上限；留空表示不限。若设置上限，预算耗尽会停止并保留最佳草稿；无进展、取消和未知回执仍受保护。</p>
-            </div>}
+            </div>
             <label><input type="checkbox" checked={research} onChange={(e) => setResearch(e.target.checked)} /> 联网查阅教育文献，建立任务适用的逐维量规</label>
             <p className="hint">{research ? "研究会增加模型调用；仅把需求主题用于公共教育检索，不发送附件原文。" : "不联网检索；按任务已有绑定与已导入资料质检。"}</p>
           </>

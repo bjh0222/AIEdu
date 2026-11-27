@@ -296,3 +296,65 @@ Verification:
   first, scope merge and ledger lifecycle.
 - Existing A/B/C, optimization, delivery, contract and frontend regressions must
   remain green before live generation and export.
+
+## ADR-2026-11-27-02: Layer-scoped repair and fail-closed actionable findings
+
+Status: implemented and verified in the working tree.
+
+Context: The three quality layers existed as check annotations, but several
+downstream paths still consumed the legacy unlayered report shape. A disabled
+layer could reappear in criterion requests, scope-aware rechecks, candidate
+completion or optimization acceptance. A failed check without a located
+confirmed finding could also fall through to an unrelated teaching optimization.
+
+Decision:
+
+- `quality_layer_for()` classifies every row exactly. New or unrecognized rows
+  default to `quality_specific`; they never default to the user-disabled
+  completeness layer.
+- A quality finding is actionable only when it is confirmed, belongs to an
+  enabled layer, binds to the frozen plan and carries a unit/version/hash/span
+  location. A violated enabled check without such a finding stops before any
+  C→B provider dispatch with `ACTIONABLE_FINDING_REQUIRED`.
+- Enabled checks that are incomplete stop with `QUALITY_CHECK_INCOMPLETE`.
+  When every enabled required check is satisfied or honestly not applicable,
+  optimization is skipped with `optimization_not_needed`; the delivery gate then
+  decides final eligibility from the frozen policy.
+- Disabled findings remain audit evidence but are filtered by the reducer,
+  scope-aware recheck and candidate completion. They cannot create a blocking
+  reason, regression, directive or repair attempt.
+- Derived checks (for example C3 from Q1/Q2) may be covered by a source-check
+  finding, but an unbound derived violation cannot start a repair.
+- A and imported-profile observations are bound to aggregate plan checks so a
+  violated observation cannot remain a diagnostic-only result. Q5 difficulty
+  observations become plan checks and findings, not a permanent `not_run` row.
+- New configured tasks freeze a default repair policy of at most two attempts
+  per finding and two rounds per run. This is a bounded ceiling, not a claim that
+  two rounds are sufficient for every task.
+- Material `source` mappings expand to all chunks of that source; explicit chunk
+  mappings define a task subset. Manifest byte/hash/offset integrity remains
+  mandatory and unmapped chunks are recorded as out of scope.
+
+Consequences:
+
+- A correctness-only task can final after its enabled required checks pass, even
+  though completeness and quality-specific rows remain honest `not_applicable`
+  policy skips. It cannot silently consume quality-specific criteria.
+- Existing unlayered runs keep their legacy policy behavior. New runs carry the
+  exact frozen `quality_layers` into both check compilation and recheck.
+- A C failure is either actionable or explicitly blocked; it is no longer
+  converted into a generic teaching rewrite.
+
+Verification:
+
+- Backend full regression: `2563 passed, 133 warnings` after a clean isolated
+  test database. Focused layer/optimization/assessment/material tests were run
+  separately during implementation.
+- `scripts/generate_v2_contracts.py --check` reports `100 schemas / 72 routes`;
+  frontend production build, TypeScript, targeted ESLint and spec preview sync
+  pass.
+- Real instance verification reloaded 8010/3001 and validated the new file
+  removal and absent legacy quality-loop entry. The fresh quality restart did
+  not reach final: one run stopped on incomplete required correctness checks,
+  and the following run was explicitly stopped by provider HTTP 429. Those
+  failures remain recorded; no failed run was retried or signed final.

@@ -233,14 +233,17 @@ def evaluate(run_id, worker, epoch, state, units, version_id, provider_factory=N
     # quality_specific layer. Legacy runs without a frozen policy keep the
     # previous behavior; correctness rows are never gated by this switch.
     from .quality import frozen_quality_layers
-    quality_specific_on = (frozen_quality_layers(state) or {}).get("quality_specific", False) is True
+    layers = frozen_quality_layers(state)
+    quality_specific_on = True if layers is None else layers.get("quality_specific", False) is True
     if _l4 and quality_specific_on and state["context"].get("research_rubrics"):
         from .import_profiles import review_research_rubrics
         result["diagnostic_review"] = review_research_rubrics(run_id, worker, epoch, state, units, version_id, provider_factory)
         _apply_research_review(result, state, units, version_id)
-    elif _l4 and state["context"].get("import_understanding"):
+    if _l4 and quality_specific_on and state["context"].get("import_understanding"):
         from .import_profiles import review_bound_profiles
-        result["diagnostic_review"] = review_bound_profiles(run_id, worker, epoch, state, units, version_id, provider_factory)
+        result["bound_profile_review"] = review_bound_profiles(
+            run_id, worker, epoch, state, units, version_id, provider_factory
+        )
     if _l4 and state.get("execution_policy", {}).get("criterion_assessment"):
         from .criterion_review import evaluate_criteria
         from .difficulty_review import evaluate_difficulty
@@ -268,22 +271,43 @@ def evaluate(run_id, worker, epoch, state, units, version_id, provider_factory=N
         if quality_specific_on:
             result["difficulty_review"] = evaluate_difficulty(run_id, worker, epoch, state, units, version_id, provider_factory)
         from .assessment_binding import criterion_check_results
+        from .assessment_binding import difficulty_check_results
+        from .assessment_binding import diagnostic_profile_check_results
         from .derivation import derive_assessment_checks
         criterion_checks = criterion_check_results(result["automated_assessment"], state, units, version_id)
+        difficulty_checks = difficulty_check_results(
+            result.get("difficulty_review") or {}, state, units, version_id
+        )
+        profile_checks = diagnostic_profile_check_results(
+            result.get("bound_profile_review"), state, units
+        )
         derived_checks = derive_assessment_checks(
             state, units, result["automated_assessment"], version_id,
             matrix_hash=(result["automated_assessment"].get("quality_preflight") or {}).get("matrix_hash"),
         )
-        from .repair_directives import criterion_findings
+        from .repair_directives import (
+            criterion_findings,
+            diagnostic_profile_findings,
+            difficulty_findings,
+        )
         criterion_finding_rows = criterion_findings(result["automated_assessment"], state, units)
+        criterion_finding_rows.extend(
+            difficulty_findings(result.get("difficulty_review") or {}, state, units)
+        )
+        criterion_finding_rows.extend(
+            diagnostic_profile_findings(result.get("bound_profile_review"), state, units)
+        )
         if criterion_finding_rows:
             by_claim = {row["normalized_claim_hash"]: row for row in result.get("findings", [])}
             for row in criterion_finding_rows:
                 by_claim.setdefault(row["normalized_claim_hash"], row)
             result["findings"] = list(by_claim.values())
-        if criterion_checks or derived_checks or criterion_finding_rows:
+        if (criterion_checks or difficulty_checks or profile_checks
+                or derived_checks or criterion_finding_rows):
             checks = {c["item_id"]: c for c in result.get("checks", [])}
             checks.update(criterion_checks)
+            checks.update(difficulty_checks)
+            checks.update(profile_checks)
             checks.update(derived_checks)
             reduced = reduce_quality(state["check_plan"], list(checks.values()),
                                      list(result.get("findings", [])),

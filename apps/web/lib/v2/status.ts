@@ -184,6 +184,9 @@ export const REASON_TEXT: Record<string, string> = {
   REPAIR_DIRECTIVE_BINDING_REQUIRED: "整改候选未绑定修复指令，已拒绝",
   REPAIR_DIRECTIVE_TARGET_STALE: "修复指令指向的版本或位置已变化",
   REPAIR_LEDGER_INVALID: "修复记录不完整，候选未发布",
+  ACTIONABLE_FINDING_REQUIRED: "已启用检查发现失败，但没有形成可定位、可执行的修复项，任务已停止",
+  QUALITY_CHECK_INCOMPLETE: "已启用检查尚未全部完成，任务不能进入修复或最终交付",
+  OPTIMIZATION_CONFIRMATION_COVERAGE_INCOMPLETE: "修复规划没有覆盖全部已确认问题，已拒绝继续整改",
 };
 export function reasonText(code?: string | null): string {
   if (!code) return "";

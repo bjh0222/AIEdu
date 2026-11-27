@@ -178,17 +178,21 @@ def selected_material_evidence(state, *, db=None, goal_id=None, store=None):
             mapped.update(chunk_ids)
             mappings.append({"unit_id": unit["unit_id"], "material_chunk_ids": list(chunk_ids),
                              "source_ids": sorted({all_chunks[c] for c in chunk_ids})})
-        missing = sorted(set(all_chunks) - mapped)
-        if missing:
-            raise DomainError("MATERIAL_EVIDENCE_PLAN_COVERAGE", 422, missing_chunk_ids=missing[:20])
+        out_of_scope = sorted(set(all_chunks) - mapped)
         package = {
             "schema_version": SCHEMA_VERSION,
             "plan_hash": state.get("plan", {}).get("plan_hash"),
             "context_hash": context.get("context_hash"),
             "sources": sources,
             "plan_bindings": mappings,
-            "coverage": {"complete": True, "source_count": len(sources), "chunk_count": len(all_chunks),
-                          "plan_mapped_chunk_count": len(mapped)},
+            "coverage": {
+                "complete": True,
+                "source_count": len(sources),
+                "chunk_count": len(all_chunks),
+                "plan_mapped_chunk_count": len(mapped),
+                "out_of_scope_chunk_count": len(out_of_scope),
+                "out_of_scope_chunk_ids": out_of_scope,
+            },
         }
         package["package_hash"] = digest(package)
         return package

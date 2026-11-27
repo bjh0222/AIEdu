@@ -3113,6 +3113,11 @@
             "title": "Replan",
             "type": "boolean"
           },
+          "restart_quality": {
+            "default": false,
+            "title": "Restart Quality",
+            "type": "boolean"
+          },
           "transport_retries": {
             "items": {
               "$ref": "#/components/schemas/TransportRetry"

@@ -112,7 +112,11 @@ artifacts require the primary role plus the runtime's answer projection. Unit
 dependencies must be expressed with exact depends_on_titles so the runtime can
 bind them into the frozen execution graph.
 material_mapping uses exact supplied source IDs or chunk IDs. Preserve all
-selected bytes; no-source tasks may generate original questions. Whole-book
+selected bytes; material_mapping represents the material scope for this task,
+not a file inventory. A source ID mapping selects every chunk of that source; a
+specific chunk ID mapping selects only those bytes. For a chapter-scoped task,
+map only the relevant chunks and do not map unrelated chapters merely to satisfy
+a coverage check. No-source tasks may generate original questions. Whole-book
 conclusions use artifact_role=book_level with depends_on_titles to chapters.
 Reading chapter units declare summary_heading and applicable required_sections;
 book_level units must depend on ALL chapter titles and use generated chapter

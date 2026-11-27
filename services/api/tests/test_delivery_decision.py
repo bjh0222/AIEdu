@@ -201,6 +201,19 @@ def test_required_checks_without_certificate_can_be_final_and_revoked_waiver_is_
     assert result["waiver_status"] == "revoked"
 
 
+def test_blocked_or_needs_repair_verdict_cannot_final_even_when_rows_pass():
+    for verdict in ("blocked", "needs_repair"):
+        quality_value = quality(c3="satisfied")
+        quality_value["tqi_verdict"] = verdict
+        result = delivery_decision(
+            quality_value, plan(), profile_binding_current=True,
+            requested_scope=requested_scope(),
+        )
+        assert result["state"] == "blocked"
+        assert any(row["code"] == "QUALITY_NOT_DELIVERABLE"
+                   for row in result["hard_blockers"])
+
+
 def test_certificate_must_cover_remaining_professional_claims_when_not_waived():
     quality_value = quality(c3="satisfied")
     result = delivery_decision(

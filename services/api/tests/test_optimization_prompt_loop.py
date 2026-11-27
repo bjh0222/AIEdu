@@ -15,7 +15,7 @@ POLICY = {"policy_version": "aiedu.repair.v2", "enabled": True, "max_attempts_pe
           "max_repair_rounds_per_run": 8, "root_call_budget": 12}
 
 
-def _prepare(client, snap, *, confirmed=False, rounds=0):
+def _prepare(client, snap, *, confirmed=False, rounds=0, acceptance=True):
     from app.v2.runtime import dump, job, load, write
     from app.models import TutorialVersion
     with write() as db:
@@ -27,12 +27,36 @@ def _prepare(client, snap, *, confirmed=False, rounds=0):
         obj.state_json, obj.state_revision = dump(state), obj.state_revision + 1
         obj.status, obj.cancel_epoch = "running", 1
         obj.worker_instance_id, obj.lease_until = "fixture", time.time() + 60
+        version = db.get(TutorialVersion, snap["version_id"])
+        checks = [{"item_id": item["item_id"], "result": "satisfied",
+                   "method_version": item.get("verifier_binding")}
+                  for item in state["check_plan"]["check_items"]]
+        findings = []
         if confirmed:
-            version = db.get(TutorialVersion, snap["version_id"])
-            version.quality_report = dump({"findings": [{
+            checks = [
+                {**row, "result": "violated"} if row["item_id"] == "C1.coverage" else row
+                for row in checks
+            ]
+            finding = {
                 "finding_id": "f1", "status": "confirmed", "item_id": "C1.coverage",
-                "normalized_claim_hash": "h", "location": {"unit_id": snap["units"][0]["unit_id"]},
-            }], "checks": [{"item_id": "C1.coverage", "result": "violated", "method_version": "coverage.v1"}]})
+                "quality_layer": "correctness", "hard_baseline": True,
+                "normalized_claim_hash": "h",
+                "location": {"unit_id": snap["units"][0]["unit_id"],
+                             "unit_hash": snap["units"][0]["content_hash"],
+                             "span_hash": "s" * 64,
+                             "start_byte": 0, "end_byte": 1},
+            }
+            if acceptance:
+                finding["acceptance_assertion"] = {"method": "coverage.v1"}
+            findings.append(finding)
+        quality = load(version.quality_report)
+        quality.update({
+            "checks": checks,
+            "findings": findings,
+            "blocking_reasons": ([{"item_id": "C1.coverage", "result": "violated"}]
+                                 if confirmed else []),
+        })
+        version.quality_report = dump(quality)
         return obj.state_revision
 
 
@@ -55,6 +79,14 @@ def _package(snap, bindings):
                                  "verification_method": "coverage.v1"}],
         "stop_conditions": ["no_progress"], "recheck_scope": "full",
     }
+
+
+def _confirmed_package_rows(data):
+    return [{
+        "finding_id": finding_id,
+        "claim": "fixture confirmed defect",
+        "evidence": {"method": "fixture"},
+    } for finding_id in data.get("eligible_confirmed_finding_ids", [])]
 
 
 def _candidate(snap, package, strategy="whole_unit"):
@@ -113,6 +145,7 @@ def _run_loop(client, monkeypatch, snap, *, invoke_side_effect=None, checked=Non
         if invoke_side_effect:
             return invoke_side_effect(*args, **kwargs)
         package = _package(snap, kwargs["data"]["frozen_bindings"])
+        package["confirmed_findings"] = _confirmed_package_rows(kwargs["data"])
         return package, {"call_id": "c1"}
 
     def fake_generation(*args, **kwargs):
@@ -132,7 +165,7 @@ def test_material_evidence_reaches_c_package_and_b_repair(client, monkeypatch):
     evidence = {"schema_version": "aiedu.material-evidence.v1", "sources": [
         {"source_id": "fixture-source", "source_hash": "s", "text": "complete source"}],
         "coverage": {"complete": True}, "package_hash": "p"}
-    seen = _run_loop(client, monkeypatch, snap, material_evidence=evidence)
+    seen = _run_loop(client, monkeypatch, snap, confirmed=True, material_evidence=evidence)
     assert seen["C"] >= 1 and seen["B"] == 1
     assert any(d.get("material_evidence") == evidence for d in seen["data"])
     assert sum(d.get("material_evidence") == evidence for d in seen["data"]) >= 2
@@ -203,7 +236,7 @@ def test_candidate_reuses_unchanged_dependencies_but_rejects_scope_and_body_drif
 
 def test_loop_injects_package_into_B_and_persists_candidate(client, monkeypatch):
     _, _, snap = task_run(client)
-    seen = _run_loop(client, monkeypatch, snap)
+    seen = _run_loop(client, monkeypatch, snap, confirmed=True)
     assert seen["C"] == 2 and seen["B"] == 1
     c_data = seen["data"][0]
     b_data = seen["data"][1]
@@ -314,7 +347,7 @@ def test_frozen_research_rubric_is_consumed_by_c_and_b(client, monkeypatch):
         "content": {"research_method_version": "ai-screened-diagnostic.v1", "source_catalog": [{"source_id": "s1"}],
                      "dimensions": [{"dimension_id": "knowledge.coverage"}]},
     }
-    seen = _run_loop(client, monkeypatch, snap, research_binding=binding)
+    seen = _run_loop(client, monkeypatch, snap, confirmed=True, research_binding=binding)
     c_data = seen["data"][0]
     b_data = seen["data"][1]
     assert c_data["frozen_bindings"]["research_rubrics"] == [{
@@ -327,27 +360,25 @@ def test_frozen_research_rubric_is_consumed_by_c_and_b(client, monkeypatch):
     assert b_data["research_rubrics"] == [binding]
 
 
-def test_unconfirmed_observations_are_preserved_in_improved_draft(client, monkeypatch):
+def test_unconfirmed_observations_do_not_trigger_optimization(client, monkeypatch):
     _, _, snap = task_run(client)
     checked = {"checks": [{"item_id": "C1.coverage", "result": "satisfied", "method_version": "coverage.v1"}],
         "findings": [{"status": "suspected", "normalized_claim_hash": "unconfirmed", "claim": "needs external evidence"}],
         "tqi_verdict": "needs_review", "calibration_status": "not_calibrated"}
-    _run_loop(client, monkeypatch, snap, checked=checked)
+    seen = _run_loop(client, monkeypatch, snap, checked=checked)
     from app.v2.runtime import job, load
     from app.db import SessionLocal
     from app.models import TutorialVersion
     with SessionLocal() as db:
         state = load(job(db, snap["run_id"]).state_json)
-        result = db.get(TutorialVersion, state["best_so_far_version"])
-        quality = load(result.quality_report)
-    assert quality["tqi_verdict"] == "needs_review"
-    assert quality["findings"][0]["status"] == "suspected"
+    assert seen["C"] == 0 and seen["B"] == 0
+    assert state["optimization_stop_reason"] == "ACTIONABLE_FINDING_REQUIRED"
 
 
 def test_unknown_C_call_is_not_replayed(client, monkeypatch):
     from app.v2.contracts import DomainError
     _, _, snap = task_run(client)
-    _prepare(client, snap)
+    _prepare(client, snap, confirmed=True)
     from app.config import settings
     from app.v2 import inference, model_roles
     from app.v2.optimization import execute_optimization
@@ -363,15 +394,15 @@ def test_unknown_C_call_is_not_replayed(client, monkeypatch):
     assert len(calls) == 1
 
 
-def test_explicit_pedagogical_followup_not_blocked_by_absence_of_confirmed(client, monkeypatch):
+def test_no_confirmed_finding_skips_c_and_b_optimization(client, monkeypatch):
     _, _, snap = task_run(client)
     seen = _run_loop(client, monkeypatch, snap, rounds=1)
     from app.v2.runtime import job, load
     from app.db import SessionLocal
     with SessionLocal() as db:
         state = load(job(db, snap["run_id"]).state_json)
-    assert seen["B"] == 1 and state["optimization_rounds"] == 2
-    assert state["optimization_stop_reason"] == "optimization_completed_uncalibrated"
+    assert seen["C"] == 0 and seen["B"] == 0
+    assert state["optimization_stop_reason"] == "ACTIONABLE_FINDING_REQUIRED"
 
 
 def test_model_cannot_invent_confirmed_findings(client, monkeypatch):
@@ -380,7 +411,7 @@ def test_model_cannot_invent_confirmed_findings(client, monkeypatch):
         package = _package(snap, kwargs["data"]["frozen_bindings"])
         package["confirmed_findings"] = [{"finding_id": "invented", "claim": "not tool verified", "evidence": {}}]
         return package, {"call_id": "C"}
-    seen = _run_loop(client, monkeypatch, snap, invoke_side_effect=unbound)
+    seen = _run_loop(client, monkeypatch, snap, confirmed=True, invoke_side_effect=unbound)
     assert seen["B"] == 0
     from app.v2.runtime import job, load
     from app.db import SessionLocal
@@ -400,9 +431,9 @@ def test_invalid_package_followup_has_source_bound_feedback_not_cached_input(cli
         del package["acceptance_criteria"]
         return package, {"call_id": "incomplete-C"}
 
-    first = _run_loop(client, monkeypatch, snap, invoke_side_effect=incomplete)
+    first = _run_loop(client, monkeypatch, snap, confirmed=True, invoke_side_effect=incomplete)
     assert first["B"] == 0 and first["data"][0]["package_validation_feedback"] == []
-    second = _run_loop(client, monkeypatch, snap)
+    second = _run_loop(client, monkeypatch, snap, confirmed=True)
     feedback = second["data"][0]["package_validation_feedback"]
     assert second["B"] == 1 and len(feedback) == 1
     assert feedback[0]["call_id"] == "incomplete-C"
@@ -420,12 +451,12 @@ def test_rejected_acceptance_is_returned_to_optimizer_not_promoted_to_fact(clien
     from app.v2.runtime import job, load
     from app.db import SessionLocal
     _, _, snap = task_run(client)
-    _prepare(client, snap)
+    _prepare(client, snap, confirmed=True)
     report = {"status": "unresolved", "candidate_hash": "unpublished",
               "criteria": [{"item_id": "task.original_requirements", "result": "violated",
                             "method": "per-method summary absent", "evidence": []}]}
     identity, _ = _persist_artifact(snap["run_id"], "fixture", 1, report, "optimization_acceptance", {"call_id": "prior-C"})
-    seen = _run_loop(client, monkeypatch, snap)
+    seen = _run_loop(client, monkeypatch, snap, confirmed=True)
     feedback = seen["data"][0]["rejected_acceptance_feedback"][0]
     assert feedback["report_hash"] == identity and feedback["candidate_hash"] == "unpublished"
     assert feedback["unresolved_criteria"][0]["method"] == "per-method summary absent"
@@ -437,7 +468,7 @@ def test_rejected_acceptance_is_returned_to_optimizer_not_promoted_to_fact(clien
 
 def test_confirmed_finding_without_acceptance_is_not_washed_out(client, monkeypatch):
     _, _, snap = task_run(client)
-    _prepare(client, snap, confirmed=True)
+    _prepare(client, snap, confirmed=True, acceptance=False)
     from app.config import settings
     from app.v2 import checker, generation_tools, inference, model_roles
     from app.v2.optimization import execute_optimization
@@ -447,8 +478,12 @@ def test_confirmed_finding_without_acceptance_is_not_washed_out(client, monkeypa
     monkeypatch.setattr(checker, "evaluate", lambda *args, **kwargs: {
         "checks": [{"item_id": "C1.coverage", "result": "satisfied", "method_version": "coverage.v1"}],
         "findings": []})
-    monkeypatch.setattr(inference, "invoke", lambda *args, **kwargs:
-        (_package(snap, kwargs["data"]["frozen_bindings"]), {"call_id": "c1"}))
+    def package_with_confirmed(*args, **kwargs):
+        package = _package(snap, kwargs["data"]["frozen_bindings"])
+        package["confirmed_findings"] = _confirmed_package_rows(kwargs["data"])
+        return package, {"call_id": "c1"}
+
+    monkeypatch.setattr(inference, "invoke", package_with_confirmed)
     monkeypatch.setattr(generation_tools, "generation_with_sources", lambda *args, **kwargs:
         (_candidate(snap, kwargs["data"]["optimization_package"]), {"call_id": "b1"}, {"calls": [], "receipts": []}))
     execute_optimization(snap["run_id"], "fixture", 1)
@@ -567,7 +602,7 @@ def test_c_planner_receives_bounded_projection_not_full_report(client, monkeypat
                 "audits": [{"usage": {"blob": "y" * 500000}}],
             },
         })
-    seen = _run_loop(client, monkeypatch, snap)
+    seen = _run_loop(client, monkeypatch, snap, confirmed=True)
     c_data = seen["data"][0]
     assert c_data["quality_report_projection"]["method_version"].startswith("aiedu.optimization-quality-projection")
     assert c_data["quality_report"]["automated_assessment"]["audits"] == "call_audit_metadata_stripped_for_capacity"

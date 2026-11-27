@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from .contracts import DomainError, digest
+from .contracts import DomainError, digest, sha
 
 VERSION = "repair-directive.v1"
 LEDGER_VERSION = "repair-ledger.v1"
@@ -268,20 +268,60 @@ def criterion_findings(report, state, units):
     unit_by_id = {row["unit_id"]: row for row in units}
     result = []
     for row in rows:
-        if (row.get("processing_status") != "complete" or row.get("result") != "violated"
-                or not row.get("evidence")):
+        if row.get("processing_status") != "complete" or row.get("result") != "violated":
+            continue
+        evidence = row.get("evidence")
+        if not isinstance(evidence, list):
+            evidence = [
+                entry
+                for clause in row.get("clauses", [])
+                if isinstance(clause, dict) and clause.get("result") == "violated"
+                for entry in clause.get("evidence", [])
+                if isinstance(entry, dict)
+            ]
+        if not evidence:
             continue
         item = items.get(row.get("check_id"))
+        if item is None and isinstance(row.get("check_id"), str):
+            if row["check_id"].startswith("A.quality"):
+                item = items.get("A.quality_targets")
+            elif row["check_id"].startswith("A."):
+                item = items.get("A.completeness")
         unit = unit_by_id.get(row.get("unit_id"))
         if item is None or unit is None:
             continue
-        candidate = {"item_id": row["check_id"], "quality_layer": item.get("quality_layer"),
+        candidate = {"item_id": item["item_id"], "quality_layer": item.get("quality_layer"),
                      "hard_baseline": item.get("hard_baseline")}
         if not finding_layer_enabled(state.get("check_plan", {}), candidate):
             continue
-        evidence = deepcopy(row["evidence"])
+        evidence = deepcopy(evidence)
         located = next((entry for entry in evidence if isinstance(entry, dict)
-                        and entry.get("unit_id") == unit["unit_id"]), evidence[0])
+                        and entry.get("unit_id") == unit["unit_id"]), None)
+        if located is None:
+            body = unit["body"]
+            quote_entry = next(
+                (entry for entry in evidence
+                 if isinstance(entry, dict) and isinstance(entry.get("quote"), str)
+                 and entry["quote"] and body.count(entry["quote"]) == 1),
+                None,
+            )
+            if quote_entry is not None:
+                quote = quote_entry["quote"]
+                start = body.encode().find(quote.encode())
+                located = {
+                    "unit_id": unit["unit_id"],
+                    "start_byte": start,
+                    "end_byte": start + len(quote.encode()),
+                    "span_hash": sha(quote),
+                    "quote": quote,
+                }
+            else:
+                located = {
+                    "unit_id": unit["unit_id"],
+                    "start_byte": 0,
+                    "end_byte": len(body.encode()),
+                    "span_hash": unit["content_hash"],
+                }
         clause_ids = [clause.get("clause_id") for clause in row.get("clauses", [])
                       if clause.get("result") == "violated"]
         identity = digest({
@@ -294,10 +334,10 @@ def criterion_findings(report, state, units):
         finding_id = "criterion:" + identity[:24]
         result.append({
             "finding_id": finding_id,
-            "item_id": row["check_id"],
+            "item_id": item["item_id"],
             "check_plan_hash": state["check_plan"]["check_plan_hash"],
             "system": "criterion_review",
-            "severity_class": "correctness" if item.get("quality_layer") == "correctness" else "advisory",
+            "severity_class": item.get("severity_class", "blocker"),
             "quality_layer": item.get("quality_layer"),
             "hard_baseline": bool(item.get("hard_baseline")),
             "location": {
@@ -327,9 +367,172 @@ def criterion_findings(report, state, units):
             "context_conflict": False,
             "category": "criterion_observation",
             "acceptance_assertion": {
-                "method": "criterion-review.v1",
+                "method": ("assessment-input-binding.v1"
+                           if item.get("verifier_binding") == "criterion_aggregate.v1"
+                           else "criterion-review.v1"),
                 "check_id": row["check_id"],
                 "criterion_hash": (row.get("criterion") or {}).get("criterion_hash"),
+            },
+        })
+    return result
+
+
+def difficulty_findings(report, state, units):
+    from .quality import finding_layer_enabled
+
+    items = {
+        item["item_id"]: item
+        for item in state.get("check_plan", {}).get("check_items", [])
+        if item.get("item_id", "").startswith("Q5.")
+    }
+    unit_by_id = {unit["unit_id"]: unit for unit in units}
+    result = []
+    for item_id, item in items.items():
+        if not finding_layer_enabled(state.get("check_plan", {}), item):
+            continue
+        role_units = [
+            unit for unit in units
+            if unit.get("artifact_role") in (item.get("scope") or {}).get("roles", [])
+        ]
+        violated = [
+            row for row in (report or {}).get("items", [])
+            if isinstance(row, dict) and row.get("unit_id") in {u["unit_id"] for u in role_units}
+            and row.get("processing_status") == "complete" and row.get("result") == "violated"
+        ]
+        if not violated:
+            continue
+        row = violated[0]
+        unit = unit_by_id[row["unit_id"]]
+        evidence = []
+        for axis in (row.get("dimensions") or {}).values():
+            if isinstance(axis, list):
+                evidence.extend(
+                    entry for entry in axis
+                    if isinstance(entry, dict) and entry.get("quote")
+                )
+        located = next((entry for entry in evidence if entry.get("unit_id") == unit["unit_id"]
+                        and isinstance(entry.get("start_byte"), int)), None)
+        start = located["start_byte"] if located else 0
+        end = located["end_byte"] if located else len(unit["body"].encode())
+        identity = digest({
+            "check_id": item_id,
+            "unit_id": unit["unit_id"],
+            "item_id": row["item_id"],
+            "item_fields_hash": row.get("item_fields_hash"),
+        })
+        result.append({
+            "finding_id": "difficulty:" + identity[:24],
+            "item_id": item_id,
+            "check_plan_hash": state["check_plan"]["check_plan_hash"],
+            "system": "difficulty_review",
+            "severity_class": item.get("severity_class", "blocker"),
+            "quality_layer": item.get("quality_layer"),
+            "hard_baseline": bool(item.get("hard_baseline")),
+            "location": {
+                "unit_id": unit["unit_id"],
+                "version_id": (report or {}).get("version_id"),
+                "unit_hash": unit["content_hash"],
+                "start_byte": start,
+                "end_byte": end,
+                "span_hash": located.get("quote_hash") if located else unit["content_hash"],
+            },
+            "claim": "The frozen difficulty requirement was not met by the fixed candidate.",
+            "evidence": deepcopy(row),
+            "verification_method": "difficulty_review.v1",
+            "verification_result": "violated",
+            "method_version": "difficulty_review.v1",
+            "tool_raw_output_hash": digest(row),
+            "confidence": "model_observation",
+            "suggested_fix": None,
+            "model_family": None,
+            "input_hash": unit["content_hash"],
+            "normalized_claim_hash": identity,
+            "attempt": 1,
+            "status": "confirmed",
+            "reviewed_by": "difficulty_review.v1",
+            "review_evidence": [{
+                "authority": "wrapper_counted_operations_not_professional_difficulty",
+                "source_item_id": row.get("item_id"),
+            }],
+            "context_conflict": False,
+            "category": "difficulty_observation",
+            "acceptance_assertion": {
+                "method": "difficulty_review.v1",
+                "check_id": item_id,
+            },
+        })
+    return result
+
+
+def diagnostic_profile_findings(report, state, units):
+    from .quality import finding_layer_enabled
+
+    item = next(
+        (row for row in state.get("check_plan", {}).get("check_items", [])
+         if row.get("item_id") == "P.import_profile"),
+        None,
+    )
+    if item is None or not finding_layer_enabled(state.get("check_plan", {}), item):
+        return []
+    unit_by_id = {unit["unit_id"]: unit for unit in units}
+    result = []
+    for row in (report or {}).get("dimensions", []):
+        if not isinstance(row, dict) or row.get("result") != "violated":
+            continue
+        unit = unit_by_id.get(row.get("unit_id"))
+        evidence = [
+            entry for entry in row.get("evidence", [])
+            if isinstance(entry, dict) and entry.get("unit_id") == row.get("unit_id")
+            and isinstance(entry.get("start_byte"), int)
+        ]
+        if unit is None or not evidence:
+            continue
+        located = evidence[0]
+        identity = digest({
+            "check_id": item["item_id"],
+            "unit_id": unit["unit_id"],
+            "dimension_id": row.get("dimension_id"),
+            "binding_hash": row.get("binding_hash"),
+        })
+        result.append({
+            "finding_id": "profile:" + identity[:24],
+            "item_id": item["item_id"],
+            "check_plan_hash": state["check_plan"]["check_plan_hash"],
+            "system": "import_profile",
+            "severity_class": item.get("severity_class", "blocker"),
+            "quality_layer": item.get("quality_layer"),
+            "hard_baseline": bool(item.get("hard_baseline")),
+            "location": {
+                "unit_id": unit["unit_id"],
+                "version_id": (report or {}).get("version_id"),
+                "unit_hash": unit["content_hash"],
+                "start_byte": located["start_byte"],
+                "end_byte": located["end_byte"],
+                "span_hash": located.get("quote_hash") or unit["content_hash"],
+            },
+            "claim": "A bound imported profile observation was not satisfied.",
+            "evidence": deepcopy(row),
+            "verification_method": "bound-rubric-model-review.v2",
+            "verification_result": "violated",
+            "method_version": "bound-rubric-model-review.v2",
+            "tool_raw_output_hash": digest(row),
+            "confidence": "model_observation",
+            "suggested_fix": None,
+            "model_family": None,
+            "input_hash": unit["content_hash"],
+            "normalized_claim_hash": identity,
+            "attempt": 1,
+            "status": "confirmed",
+            "reviewed_by": "bound-rubric-model-review.v2",
+            "review_evidence": [{
+                "authority": "same_family_profile_observation_not_professional_certification",
+                "dimension_id": row.get("dimension_id"),
+            }],
+            "context_conflict": False,
+            "category": "profile_observation",
+            "acceptance_assertion": {
+                "method": "bound-rubric-model-review.v2",
+                "check_id": item["item_id"],
             },
         })
     return result
@@ -362,20 +565,31 @@ def directive_recheck_results(package, checked, new_units, resolved_finding_ids)
     for directive in package.get("directives", []):
         current = by_id.get(directive["directive_id"])
         check = (directive.get("acceptance_assertion") or {}).get("criterion_check")
-        if current is not None or not check:
+        if not check:
             continue
         if check["kind"] == "acceptance_item":
             row = next((entry for entry in acceptance if entry.get("item_id") == check["item_id"]), None)
-            result = row.get("result") if row else "undecidable"
+            criterion_result = row.get("result") if row else "undecidable"
         else:
             row = next((entry for entry in criteria
                         if entry.get("check_id") == check["check_id"]
                         and (entry.get("criterion") or {}).get("criterion_hash") == check["criterion_hash"]), None)
-            result = row.get("result") if row else "undecidable"
+            criterion_result = row.get("result") if row else "undecidable"
+        deterministic_result = current.get("result") if current else None
+        if deterministic_result is None:
+            result = criterion_result
+        elif criterion_result == "violated" or deterministic_result == "violated":
+            result = "violated"
+        elif criterion_result == "satisfied" and deterministic_result == "satisfied":
+            result = "satisfied"
+        else:
+            result = "undecidable"
         by_id[directive["directive_id"]] = {
             "directive_id": directive["directive_id"],
             "finding_id": directive["finding_id"],
             "result": result,
+            "deterministic_result": deterministic_result,
+            "criterion_result": criterion_result,
         }
     for directive in package.get("directives", []):
         if directive["directive_id"] not in by_id:

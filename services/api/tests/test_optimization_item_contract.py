@@ -100,7 +100,7 @@ def test_real_optimizer_wiring_supplies_typed_schema_to_C_and_B(client, monkeypa
         original(target, name, value)
 
     monkeypatch.setattr = instrument
-    seen = _run_loop(client, monkeypatch, snap)
+    seen = _run_loop(client, monkeypatch, snap, confirmed=True)
     assert observed == [candidate_schema_for_units(snap["units"])]
     assert seen["data"][0]["candidate_schema"] == observed[0]
 

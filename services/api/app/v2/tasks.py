@@ -295,11 +295,13 @@ def start_run(task_id, payload, key, automatic=False, envelope=None):
         # Defaults belong to new configured runs, not to historical frozen runs.
         # Explicit opt-out/demo retain their contracts. A new root is unlimited;
         # resuming an old root still requires its explicit budget amendment.
-        if requested_policy.get("quality_loop", True) and payload.mode == "configured":
+        automatic_repair = quality_layers is not None and payload.mode == "configured"
+        if (requested_policy.get("quality_loop", True) or automatic_repair) and payload.mode == "configured":
             from .optimization import validate_policy
             from .quality import POLICY
             policy = validate_policy(requested_policy.get("optimization_policy") or
-                {**POLICY, "policy_version": "aiedu.repair.v2", "root_call_budget": None})
+                {**POLICY, "policy_version": "aiedu.repair.v2", "max_attempts_per_finding": 2,
+                 "max_repair_rounds_per_run": 2, "root_call_budget": None})
             frozen["optimization_policy"] = policy
             frozen["budget"]["calls"] = policy["root_call_budget"]
             frozen["intent_pending"] = True
@@ -524,7 +526,9 @@ def resume(run_id, payload, key):
             raise DomainError("SYNTHESIS_REQUIRES_SOURCE_BOUND_OPERATION", 422)
         if payload.enable_research and not payload.replan:
             raise DomainError("RESEARCH_ENABLE_REQUIRES_EXPLICIT_REPLAN", 422)
-        allowed = old.status in {"paused", "interrupted", "failed"} or (old.status == "completed" and (payload.recheck_completed or payload.replan))
+        restart_quality = bool(getattr(payload, "restart_quality", False))
+        allowed = (old.status in {"paused", "interrupted", "failed"}
+                   or (old.status == "completed" and (payload.recheck_completed or payload.replan or restart_quality)))
         if not allowed and old.status == "completed":
             # Historical defect: contract-error optimization stops were recorded
             # as "completed". They are not a clean finish and must stay
@@ -556,6 +560,11 @@ def resume(run_id, payload, key):
             raise DomainError("CHECK_PLAN_REFRESH_REQUIRES_FIXED_RECHECK", 422)
         if payload.replan and (not payload.acknowledge_new_generation or payload.recheck_completed or state.get("card_source")):
             raise DomainError("REPLAN_REQUIRES_EXPLICIT_GENERATION_ACK", 422)
+        if restart_quality and (payload.recheck_completed or payload.refresh_check_plan
+                                or payload.replan or state.get("synthesis_source")):
+            raise DomainError("QUALITY_RESTART_CONFLICT", 422)
+        if restart_quality and not state.get("version_id"):
+            raise DomainError("QUALITY_RESTART_REQUIRES_VERSION", 422)
         if db.query(GenerationJob).filter(GenerationJob.goal_id == old.goal_id, GenerationJob.job_type == "task_v2",
                 GenerationJob.status.in_(["queued", "running"])).first():
             raise DomainError("ACTIVE_RUN")
@@ -582,12 +591,15 @@ def resume(run_id, payload, key):
                 state.setdefault("retry_links", {})[call.unit_id] = call.call_id
         previous_version = db.get(TutorialVersion, state.get("version_id")) if state.get("version_id") else None
         current_artifact = db.get(Tutorial, state.get("artifact_id")) if state.get("artifact_id") else None
-        if ((payload.recheck_completed or (payload.replan and state.get("version_id"))) and
+        if ((payload.recheck_completed or restart_quality or (payload.replan and state.get("version_id"))) and
                 (not previous_version or not current_artifact or
                  current_artifact.current_version_id != previous_version.id)):
             raise DomainError("VERSION_MISMATCH")
         completed = {u["unit_id"] for u in materialize(previous_version).get("units", [])} if previous_version else set()
-        if payload.recheck_completed and not {u["unit_id"] for u in state["plan"]["units"]} <= completed:
+        complete_plan = {u["unit_id"] for u in state["plan"]["units"]} <= completed
+        if restart_quality and not complete_plan:
+            raise DomainError("QUALITY_RESTART_REQUIRES_COMPLETE_VERSION", 422)
+        if payload.recheck_completed and not complete_plan:
             raise DomainError("RECHECK_REQUIRES_COMPLETE_VERSION", 422)
         recovered = {} if payload.replan else deepcopy(state.get("recovered_candidates", {}))
         recovery_calls = [] if payload.replan else db.query(CallDispatch).filter_by(root_job_id=old.id, status="settled", outcome="success").order_by(CallDispatch.finished_at)
@@ -609,6 +621,36 @@ def resume(run_id, payload, key):
                 "injected_chunk_ids": [entry["chunk_id"] for entry in manifest.get("entries", []) if entry.get("status") == "injected"]}
         new_id, root_id = str(uuid4()), str(uuid4())
         new_state = deepcopy({k: v for k, v in state.items() if k != "receipts"})
+        if restart_quality:
+            for field in (
+                "optimization_request", "review_only_source_version", "best_so_far_version",
+                "optimization_rounds", "optimization_attempts", "optimization_attempts_by_finding",
+                "optimization_stop_reason", "optimization_stop_details", "repair_rounds",
+                "repair_stop_reason", "last_rejected_candidate_hash", "rejected_candidate_hashes",
+                "rejected_candidate_regressions", "quality_phase_started_at",
+            ):
+                new_state.pop(field, None)
+            for field in list(new_state):
+                if field.startswith(("optimization_", "repair_")):
+                    new_state.pop(field, None)
+            new_state.update(
+                intent_pending=False,
+                quality_restart_from_version=previous_version.id,
+                quality_restart_force_fresh=True,
+                quality_phase_started_at=datetime.now(timezone.utc).timestamp(),
+                optimization_rounds=0,
+                optimization_attempts=0,
+                optimization_attempts_by_finding={},
+                stages={"checking": "queued"},
+            )
+            from .optimization import validate_policy
+            from .quality import POLICY
+            new_state["optimization_policy"] = validate_policy({
+                **POLICY, "policy_version": "aiedu.repair.v2",
+                "max_attempts_per_finding": 2, "max_repair_rounds_per_run": 2,
+                "root_call_budget": None,
+            })
+            new_state.setdefault("execution_policy", {})["quality_loop"] = True
         _rollback_unbilled_optimization_attempt(db, old, new_state)
         _rollback_normalized_optimization_contract(new_state)
         if payload.transport_retries:
@@ -669,7 +711,11 @@ def resume(run_id, payload, key):
             if not new_state.get("optimization_policy"):
                 from .optimization import validate_policy
                 from .quality import POLICY
-                new_state["optimization_policy"] = validate_policy({**POLICY, "policy_version": "aiedu.repair.v2", "root_call_budget": None})
+                new_state["optimization_policy"] = validate_policy({
+                    **POLICY, "policy_version": "aiedu.repair.v2",
+                    "max_attempts_per_finding": 2, "max_repair_rounds_per_run": 2,
+                    "root_call_budget": None,
+                })
             new_state["execution_policy"]["quality_loop"] = True
             new_state["replan_amendment"] = {"method_version": "explicit-task-replan.v1", "parent_run_id": run_id,
                 "parent_plan_hash": state["plan"]["plan_hash"], "parent_version_id": state.get("version_id"),
@@ -918,6 +964,10 @@ def snapshot(task_id, run_id=None):
                 "content_hash": version.content_hash if version else None, "context_hash": state["context"]["context_hash"],
                 "resolved_task":state["context"],
                 "plan_hash": state["plan"]["plan_hash"], "checkpoint_hash": digest(state["plan"]),
+                "quality_phase": {
+                    "started_at": state.get("quality_phase_started_at"),
+                    "baseline_version_id": state.get("quality_restart_from_version"),
+                },
                   "units": snapshot_units, "stages": visible_stages,
                 "quality": quality, "budget": state["budget"], "stop_reason": state.get("stop_reason"),
                 "knowledge_results":state.get("knowledge_results",[]),"embedding_status":state.get("embedding_status","disabled"),

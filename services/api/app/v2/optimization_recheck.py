@@ -198,7 +198,7 @@ def finish_candidate(run_id, worker, epoch, state, version, units, new_units, qu
                      *, prior_observations=None, repair_ledger=None):
     from .optimization import diagnostic_regressions, _persist_artifact, _stop, OPTIMIZATION_SKILL, unit_content_identity
     from .optimization_acceptance import verify
-    from .quality import dependency_closure
+    from .quality import dependency_closure, enabled_findings_for_plan, layer_enabled
     candidate_hash = digest([(unit["unit_id"], unit_content_identity(unit)) for unit in new_units])
 
     def write_ledger(status, resolved_finding_ids):
@@ -234,7 +234,7 @@ def finish_candidate(run_id, worker, epoch, state, version, units, new_units, qu
             obj.state_json, obj.state_revision = dump(current), obj.state_revision + 1
         return updated
 
-    regressions = diagnostic_regressions(quality, checked)
+    regressions = diagnostic_regressions(quality, checked, state.get("check_plan"))
     if regressions:
         _persist_artifact(run_id, worker, epoch, {"base_version": version.id,
             "candidate_version": new_version, "regressions": regressions}, "optimization_regression", b_audit)
@@ -269,10 +269,21 @@ def finish_candidate(run_id, worker, epoch, state, version, units, new_units, qu
         write_ledger("blocked", set())
         _stop(run_id, worker, epoch, "diagnostic_regression")
         return False
-    old_violations = {c["item_id"] for c in quality.get("checks", []) if c.get("result") == "violated"}
-    new_violations = {c["item_id"] for c in checked.get("checks", []) if c.get("result") == "violated"}
+    def enabled_violations(report):
+        checks = {row.get("item_id"): row for row in report.get("checks", [])
+                  if isinstance(row, dict) and row.get("item_id")}
+        return {
+            item["item_id"] for item in state.get("check_plan", {}).get("check_items", [])
+            if item.get("required")
+            and layer_enabled(item, state.get("check_plan", {}).get("quality_layers"))
+            and checks.get(item["item_id"], {}).get("result") == "violated"
+        }
+
+    old_violations = enabled_violations(quality)
+    new_violations = enabled_violations(checked)
     resolved_old, unresolved_old = [], []
-    for finding in (f for f in quality.get("findings", []) if f.get("status") == "confirmed"):
+    for finding in enabled_findings_for_plan(
+            state.get("check_plan", {}), quality.get("findings", [])):
         assertion = finding.get("acceptance_assertion")
         check = next((c for c in checked.get("checks", []) if c.get("item_id") == finding.get("item_id")), None)
         method_matches = not isinstance(assertion, dict) or not assertion.get("method") or check is None or check.get("method_version") == assertion.get("method")
@@ -285,7 +296,10 @@ def finish_candidate(run_id, worker, epoch, state, version, units, new_units, qu
             resolved_old.append(resolved)
         else:
             unresolved_old.append(finding)
-    if new_violations - old_violations or unresolved_old or any(f.get("status") == "confirmed" for f in checked.get("findings", [])):
+    new_confirmed = enabled_findings_for_plan(
+        state.get("check_plan", {}), checked.get("findings", []))
+    if (new_violations - old_violations or unresolved_old
+            or any(f.get("status") == "confirmed" for f in new_confirmed)):
         write_ledger("blocked", {row["finding_id"] for row in resolved_old})
         _stop(run_id, worker, epoch, "regression_or_unresolved")
         return False
@@ -316,7 +330,15 @@ def finish_candidate(run_id, worker, epoch, state, version, units, new_units, qu
         _stop(run_id, worker, epoch, "optimization_acceptance_unresolved")
         return False
     checked["optimization_acceptance"] = acceptance
-    write_ledger("resolved", {row["finding_id"] for row in resolved_old})
+    from .repair_directives import directive_recheck_results
+    directive_results = directive_recheck_results(
+        package, checked, new_units,
+        {row["finding_id"] for row in resolved_old},
+    )
+    if any(row.get("result") != "satisfied" for row in directive_results):
+        write_ledger("blocked", {row["finding_id"] for row in resolved_old})
+        _stop(run_id, worker, epoch, "REPAIR_DIRECTIVE_ACCEPTANCE_UNSATISFIED")
+        return False
     package_hash = digest(package)
     changed_ids = {b["unit_id"] for a, b in zip(units, new_units) if unit_content_identity(a) != unit_content_identity(b)}
     checked.setdefault("findings", []).extend(resolved_old)
@@ -340,15 +362,17 @@ def finish_candidate(run_id, worker, epoch, state, version, units, new_units, qu
             "network_sources": len(network_trace.get("receipts", [])),
             "professional_progress": "not_run", "new_deterministic_regressions": False})
         obj.state_json, obj.state_revision = dump(current), obj.state_revision + 1
-    # S10: difficulty review only exists when the frozen quality_specific
-    # layer is enabled; legacy runs without a frozen policy keep old behavior.
-    from .quality import frozen_quality_layers
-    quality_specific_on = (frozen_quality_layers(state) or {}).get("quality_specific", False) is True
-    diagnostic_keys = ("difficulty_review",) if quality_specific_on else ()
-    diagnostic_failures = (any(r.get("result") == "violated" for r in (checked.get("diagnostic_review") or {}).get("dimensions", [])) or
-        any((checked.get(key) or {}).get("result") not in {"satisfied", "not_applicable"}
-            for key in diagnostic_keys + ("automated_assessment",) if state.get("execution_policy", {}).get("criterion_assessment")))
-    if not unresolved_old and not package.get("confirmed_findings") and not diagnostic_failures:
+    write_ledger("resolved", {row["finding_id"] for row in resolved_old})
+    from .optimization import optimization_trigger
+    next_trigger = optimization_trigger(
+        state["check_plan"], checked, units=new_units, version_id=new_version
+    )
+    if next_trigger["status"] == "final":
         _stop(run_id, worker, epoch, "optimization_completed_uncalibrated")
+        return False
+    if next_trigger["status"] in {"incomplete", "unactionable"}:
+        _stop(run_id, worker, epoch,
+              "QUALITY_CHECK_INCOMPLETE" if next_trigger["status"] == "incomplete"
+              else "ACTIONABLE_FINDING_REQUIRED", next_trigger)
         return False
     return True

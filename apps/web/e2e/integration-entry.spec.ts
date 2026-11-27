@@ -42,9 +42,63 @@ test("上传入口保留原话、范围、研究和有界优化策略，不另�
     research_request: { enabled: true }, execution_policy: { structured_arrangement: true, quality_loop: true,
       task_adaptive_format: true,
       quality_layers: { correctness: true, completeness: true, quality_specific: false },
-      optimization_policy: { root_call_budget: 24, max_repair_rounds_per_run: 8, max_attempts_per_finding: 6 } } });
+      optimization_policy: { root_call_budget: 24, max_repair_rounds_per_run: 2, max_attempts_per_finding: 2 } } });
   expect(input.execution_policy as Record<string, unknown>).not.toHaveProperty("criterion_assessment");
   expect(input).not.toHaveProperty("mode");
+});
+
+test("已选资料可在提交前移除并重新选择同一文件", async ({ page }) => {
+  const uploads: string[] = [];
+  let created = 0;
+  await mockBackend(page, { onWrite: async (route, path) => {
+    if (path.endsWith("/materials")) {
+      uploads.push(route.request().headers()["x-filename-utf8"] ?? "");
+      await route.fulfill({ json: { source_id: `source-${uploads.length}` } });
+      return true;
+    }
+    if (path === "/tasks") {
+      created += 1;
+      await route.fulfill({ json: { task_id: IDS.task, input_revision: 1, context_hash: "h1", conflicts: [] } });
+      return true;
+    }
+    if (path.endsWith("/input")) {
+      await route.fulfill({ json: { task_id: IDS.task, input_revision: 2, context_hash: "h2", task_state: "draft" } });
+      return true;
+    }
+    if (path.endsWith("/confirm")) {
+      await route.fulfill({ json: { task_id: IDS.task, input_revision: 2, context_hash: "h2", task_state: "confirmed" } });
+      return true;
+    }
+    if (path.endsWith("/runs")) {
+      await route.fulfill({ json: { run_id: IDS.run } });
+      return true;
+    }
+    return false;
+  } });
+  await page.route("**/api/v2/capabilities", (r) => r.fulfill({ json: {
+    scenes: ["default_tutorial"], taxonomy: [], paid_calls_enabled: true,
+    materials: { resource_policy_status: "ready" },
+  } }));
+  await page.goto("/new");
+  await page.getByLabel("需求").fill("使用已选资料");
+  await page.locator("summary").click();
+  const input = page.getByLabel("参考资料（可选）");
+  await input.setInputFiles([
+    { name: "a.md", mimeType: "text/markdown", buffer: Buffer.from("a") },
+    { name: "b.md", mimeType: "text/markdown", buffer: Buffer.from("b") },
+  ]);
+  await expect(page.getByRole("button", { name: "移除 a.md" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "移除 b.md" })).toBeVisible();
+  await page.getByRole("button", { name: "移除 a.md" }).click();
+  await expect(page.getByRole("button", { name: "移除 a.md" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "移除 b.md" })).toBeVisible();
+  await input.setInputFiles({ name: "a.md", mimeType: "text/markdown", buffer: Buffer.from("a2") });
+  await expect(page.getByRole("button", { name: "移除 a.md" })).toBeVisible();
+  expect(created).toBe(0);
+  await page.getByRole("button", { name: "开始生成" }).click();
+  await expect(page).toHaveURL(new RegExp(`/tasks/${IDS.task}$`));
+  expect(created).toBe(1);
+  expect(uploads).toHaveLength(2);
 });
 
 test("真实生成默认不限调用，发送三层质检开关，保留安全护栏与软提醒", async ({ page }) => {
@@ -68,6 +122,7 @@ test("真实生成默认不限调用，发送三层质检开关，保留安全�
   await expect(page.getByRole("checkbox", { name: /正确性检查/ })).toBeChecked();
   await expect(page.getByRole("checkbox", { name: /完整性检查/ })).toBeChecked();
   await expect(page.getByRole("checkbox", { name: /质量专项检查/ })).not.toBeChecked();
+  await expect(page.getByRole("checkbox", { name: /定向整改与优化/ })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /演示/ })).toHaveCount(0);
   await expect(page.getByLabel("启用 Criterion 评估")).toHaveCount(0);
   await page.getByRole("button", { name: "开始生成" }).click();
@@ -78,7 +133,7 @@ test("真实生成默认不限调用，发送三层质检开关，保留安全�
     task_adaptive_format: true,
     quality_layers: { correctness: true, completeness: true, quality_specific: false },
     optimization_policy: { policy_version: "aiedu.repair.v2", enabled: true,
-      root_call_budget: null, max_repair_rounds_per_run: 8, max_attempts_per_finding: 6 },
+      root_call_budget: null, max_repair_rounds_per_run: 2, max_attempts_per_finding: 2 },
   });
   expect(submitted?.execution_policy as Record<string, unknown>).not.toHaveProperty("criterion_assessment");
 });

@@ -272,7 +272,9 @@ def semantic_check_items(state):
     return [i for i in state["check_plan"]["check_items"]
             if i["decision_type"] != "deterministic"
             and not is_derived_target(state, i)
-            and i.get("verifier_binding") not in {"research_rubric.v1", "ps51_sandbox.v1", "target_runtime.v1"}
+            and i.get("verifier_binding") not in {"research_rubric.v1", "ps51_sandbox.v1",
+                                                  "target_runtime.v1", "criterion_aggregate.v1",
+                                                  "diagnostic_profile.v1"}
             and not (skip_criterion and i.get("verifier_binding") == "criterion_review.v1")
             and layer_enabled(i, layers)]
 

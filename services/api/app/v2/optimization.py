@@ -14,7 +14,7 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import GenerationJob, Tutorial, TutorialVersion
 from .contracts import DomainError, canonical, digest, sha
-from .quality import finding_layer_enabled, dependency_closure, POLICY, progress_fingerprint
+from .quality import finding_layer_enabled, layer_enabled, dependency_closure, POLICY, progress_fingerprint
 from .runtime import cas, dump, fence, job, load, materialize, publish, write
 from .storage import BlobStore
 from .tasks import receipt, remember
@@ -556,7 +556,7 @@ def _projection_batches(rows) -> list[dict]:
     return out
 
 
-def quality_report_projection(quality: dict, level: str) -> dict:
+def quality_report_projection(quality: dict, level: str, plan: dict | None = None) -> dict:
     """Bounded C-planner projection of a stored quality report.
 
     The stored ``tutorial_versions.quality_report`` keeps complete call audits,
@@ -576,6 +576,26 @@ def quality_report_projection(quality: dict, level: str) -> dict:
     if not isinstance(quality, dict):
         return quality
     projected = dict(quality)
+    layers = (plan or {}).get("quality_layers")
+    enabled_items = {
+        item["item_id"] for item in (plan or {}).get("check_items", [])
+        if layer_enabled(item, layers)
+    } if plan else set()
+    if plan:
+        projected["checks"] = [
+            row for row in quality.get("checks", [])
+            if isinstance(row, dict) and row.get("item_id") in enabled_items
+        ]
+        projected["findings"] = [
+            row for row in quality.get("findings", [])
+            if isinstance(row, dict) and row.get("item_id") in enabled_items
+        ]
+        projected["check_items"] = [
+            row for row in quality.get("check_items", [])
+            if isinstance(row, dict) and row.get("item_id") in enabled_items
+        ]
+    quality_specific_on = (True if layers is None
+                           else layers.get("quality_specific", False) is True)
     assessment = quality.get("automated_assessment")
     if isinstance(assessment, dict):
         bounded = dict(assessment)
@@ -586,7 +606,7 @@ def quality_report_projection(quality: dict, level: str) -> dict:
         if "quality_preflight" in bounded:
             bounded["quality_preflight"] = _projection_preflight(bounded["quality_preflight"])
         projected["automated_assessment"] = bounded
-    review = quality.get("diagnostic_review")
+    review = quality.get("diagnostic_review") if quality_specific_on else None
     if isinstance(review, dict):
         bounded = dict(review)
         if "dimensions" in bounded:
@@ -600,8 +620,8 @@ def quality_report_projection(quality: dict, level: str) -> dict:
         projected["diagnostic_review"] = bounded
     if "quality_preflight" in projected:
         projected["quality_preflight"] = _projection_preflight(projected["quality_preflight"])
-    projected["findings"] = _projection_findings(quality.get("findings"), limits)
-    projected["checks"] = _projection_checks(quality.get("checks"), limits)
+    projected["findings"] = _projection_findings(projected.get("findings"), limits)
+    projected["checks"] = _projection_checks(projected.get("checks"), limits)
     if "check_items" in projected:
         projected["check_items"] = _projection_check_items(projected["check_items"], limits)
     for key, projector in (
@@ -609,7 +629,7 @@ def quality_report_projection(quality: dict, level: str) -> dict:
         ("mathematical_evidence", _projection_mathematical_evidence),
         ("item_quality", _projection_item_quality),
     ):
-        if key in projected:
+        if key in projected and (key not in {"difficulty_review", "item_quality"} or quality_specific_on):
             projected[key] = projector(projected[key], limits)
     if "independent_review" in projected:
         projected["independent_review"] = _projection_independent_review(projected["independent_review"])
@@ -639,7 +659,8 @@ def _projection_recheck_reports(state: dict, level: str) -> list[dict]:
         if not ref:
             continue
         report = load(BlobStore().get(ref["blob_hash"]).decode())
-        rows.append({"report_hash": identity, "report": quality_report_projection(report, level)})
+        rows.append({"report_hash": identity,
+                     "report": quality_report_projection(report, level, state.get("check_plan"))})
     return rows
 
 
@@ -765,6 +786,78 @@ def enabled_confirmed_findings(plan: dict, findings: list[dict]) -> list[dict]:
     defect can silently disappear from the repair loop.
     """
     return [f for f in findings if f.get("status") == "confirmed" and finding_layer_enabled(plan, f)]
+
+
+def optimization_trigger(plan: dict, quality: dict, *, units=None, version_id=None) -> dict:
+    from .quality import layer_enabled
+    enabled_items = [
+        item for item in plan.get("check_items", [])
+        if layer_enabled(item, plan.get("quality_layers"))
+    ]
+    enabled_item_ids = {item["item_id"] for item in enabled_items}
+    checks = {
+        row.get("item_id"): row for row in quality.get("checks", [])
+        if isinstance(row, dict) and row.get("item_id")
+    }
+    unfinished = sorted(
+        item["item_id"] for item in enabled_items
+        if item.get("required")
+        and checks.get(item["item_id"], {}).get("result", "not_run")
+        not in {"satisfied", "violated", "not_applicable"}
+    )
+    violated = sorted(
+        item["item_id"] for item in enabled_items
+        if checks.get(item["item_id"], {}).get("result") == "violated"
+    )
+    confirmed = enabled_confirmed_findings(plan, quality.get("findings", []))
+    unit_by_id = {unit["unit_id"]: unit for unit in (units or [])}
+    actionable = []
+    for finding in confirmed:
+        location = finding.get("location")
+        if not finding.get("item_id") or finding["item_id"] not in enabled_item_ids:
+            continue
+        if not isinstance(location, dict) or not location.get("unit_id"):
+            continue
+        if not location.get("unit_hash") or not location.get("span_hash"):
+            continue
+        if type(location.get("start_byte")) is not int or type(location.get("end_byte")) is not int:
+            continue
+        if units is not None:
+            unit = unit_by_id.get(location["unit_id"])
+            if unit is None or location.get("unit_hash") != unit.get("content_hash"):
+                continue
+            body = unit.get("body", "").encode()
+            start, end = location["start_byte"], location["end_byte"]
+            if not 0 <= start < end <= len(body):
+                continue
+            if location.get("version_id") not in {None, version_id}:
+                continue
+        actionable.append(finding)
+    finding_items = {finding["item_id"] for finding in actionable}
+    derivation_sources = {
+        target.get("target_id"): {
+            source.get("check_id") for source in target.get("sources", [])
+        }
+        for target in (plan.get("derivation_contract") or {}).get("targets", [])
+    }
+    unresolved = sorted({
+        item_id for item_id in violated
+        if item_id not in finding_items
+        and not (derivation_sources.get(item_id, set()) & finding_items)
+    })
+    if unresolved:
+        return {"status": "unactionable", "item_ids": unresolved}
+    if actionable:
+        return {"status": "repair", "findings": actionable}
+    if unfinished:
+        return {"status": "incomplete", "item_ids": unfinished}
+    if confirmed:
+        return {"status": "unactionable", "reason": "confirmed_findings_not_actionable",
+                "finding_ids": [finding.get("finding_id") for finding in confirmed]}
+    if quality.get("tqi_verdict") == "blocked":
+        return {"status": "unactionable", "reason": "quality_verdict_blocked",
+                "blocking_reasons": deepcopy(quality.get("blocking_reasons", []))}
+    return {"status": "final"}
 
 
 def validate_policy(value: Any) -> dict:
@@ -1184,6 +1277,8 @@ def validate_package(package: dict, version, skill: dict = OPTIMIZATION_SKILL,
         raise DomainError("REPAIR_DIRECTIVE_REQUIRED", 422)
     if package.get("directives"):
         package, _ = normalize_directives(package)
+        if package.get("unverified_hypotheses") or package.get("optimizations"):
+            raise DomainError("REPAIR_DIRECTIVE_EXTRA_WORK_FORBIDDEN", 422)
     return package
 
 
@@ -1357,16 +1452,18 @@ def _persist_artifact(run_id, worker, epoch, payload: dict, kind: str, audit: di
     return payload_hash, blob_hash
 
 
-def _stop(run_id, worker, epoch, reason):
+def _stop(run_id, worker, epoch, reason, details=None):
     with write() as db:
         obj = job(db, run_id)
         fence(obj, worker, epoch)
         state = load(obj.state_json)
         state["optimization_stop_reason"] = reason
+        if details is not None:
+            state["optimization_stop_details"] = deepcopy(details)
         obj.state_json, obj.state_revision = dump(state), obj.state_revision + 1
 
 
-def diagnostic_regressions(before: dict, after: dict) -> list[dict]:
+def diagnostic_regressions(before: dict, after: dict, plan: dict | None = None) -> list[dict]:
     """Compare the same frozen dimension identities, never an aggregate score.
 
     Observations are not confirmed facts. Nevertheless, losing a satisfied
@@ -1374,9 +1471,23 @@ def diagnostic_regressions(before: dict, after: dict) -> list[dict]:
     is insufficient evidence to promote a candidate over the saved best draft.
     Missing/unknown remains unknown, not a zero score or an improvement.
     """
+    layers = (plan or {}).get("quality_layers")
+    quality_specific_on = True if layers is None else layers.get("quality_specific", False) is True
     def keyed(report):
+        if not quality_specific_on:
+            return {}
         return {(r.get("binding_hash"), r.get("unit_id"), r.get("dimension_id")): r
                 for r in (report.get("diagnostic_review") or {}).get("dimensions", [])}
+    def criterion_enabled(check_id):
+        if not plan or not plan.get("quality_layers"):
+            return True
+        items = {item["item_id"]: item for item in plan.get("check_items", [])}
+        item = items.get(check_id)
+        if item is None and isinstance(check_id, str):
+            item = items.get("A.quality_targets") if check_id.startswith("A.quality") else (
+                items.get("A.completeness") if check_id.startswith("A.") else None
+            )
+        return item is not None and layer_enabled(item, plan.get("quality_layers"))
     old, new = keyed(before), keyed(after)
     rows = []
     for key, prior in old.items():
@@ -1393,8 +1504,12 @@ def diagnostic_regressions(before: dict, after: dict) -> list[dict]:
     # the frozen learner slot. Never let UUID churn evade per-item best guards.
     for section, field, suffix in (("difficulty_review", "items", "difficulty"),
                                    ("automated_assessment", "criteria", "criterion")):
+        if section == "difficulty_review" and not quality_specific_on:
+            continue
         def slot_key(row):
             if type(row.get("ordinal")) is not int:
+                return None
+            if section == "automated_assessment" and not criterion_enabled(row.get("check_id")):
                 return None
             return (row.get("unit_id"), row["ordinal"], row.get("check_id"), row.get("criterion_hash"))
         previous = {slot_key(r): r for r in (before.get(section) or {}).get(field, []) if slot_key(r)}
@@ -1471,15 +1586,24 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
             return
         # S10: only enabled-layer findings drive repair/optimization spend;
         # disabled-layer defects stay recorded but never consume attempts.
-        old_confirmed = enabled_confirmed_findings(state["check_plan"], quality.get("findings", []))
-        attempt_keys = [f.get("normalized_claim_hash") or f["finding_id"] for f in old_confirmed] or ["candidate:" + version.id]
+        trigger = optimization_trigger(
+            state["check_plan"], quality, units=units, version_id=version.id
+        )
+        if trigger["status"] == "final":
+            _stop(run_id, worker, epoch, "optimization_not_needed", trigger)
+            return
+        if trigger["status"] == "incomplete":
+            _stop(run_id, worker, epoch, "QUALITY_CHECK_INCOMPLETE", trigger)
+            return
+        if trigger["status"] == "unactionable":
+            _stop(run_id, worker, epoch, "ACTIONABLE_FINDING_REQUIRED", trigger)
+            return
+        old_confirmed = trigger["findings"]
+        attempt_keys = [f.get("normalized_claim_hash") or f["finding_id"] for f in old_confirmed]
         prior_attempts = state.get("optimization_attempts_by_finding", {})
         if any(int(prior_attempts.get(k, 0)) >= policy["max_attempts_per_finding"] for k in attempt_keys):
             _stop(run_id, worker, epoch, "optimization_attempt_limit")
             return
-        # An explicit follow-up may address evidence-based pedagogical targets
-        # even without confirmed factual defects. Finite attempt/round/root
-        # budgets still apply; unsupported observations never become facts.
         try:
             c_profile = for_role("review")
             b_profile = for_role("generation")
@@ -1495,7 +1619,8 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
             payload = {
                 "schema": PACKAGE_SCHEMA, "optimization_skill": {k: OPTIMIZATION_SKILL[k] for k in ("id", "version", "hash")},
                 "base_version": version.id, "base_content_hash": version.content_hash,
-                "quality_report": quality_report_projection(quality, level), "units": units, "round": rounds,
+                "quality_report": quality_report_projection(quality, level, state.get("check_plan")),
+                "units": units, "round": rounds,
                 "quality_report_projection": projection_envelope(quality, level),
                 "frozen_bindings": expected_bindings,
                 "import_understanding": state.get("context", {}).get("import_understanding", []),
@@ -1578,10 +1703,17 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
         try:
             package = validate_package(
                 package, version, expected_bindings=expected_bindings,
-                require_directives=bool(state.get("plan", {}).get("blueprint")),
+                require_directives=bool(
+                    state.get("check_plan", {}).get("quality_layers")
+                    or state.get("plan", {}).get("blueprint")
+                ),
             )
-            if not {f["finding_id"] for f in package["confirmed_findings"]} <= {f["finding_id"] for f in old_confirmed}:
+            expected_finding_ids = {f["finding_id"] for f in old_confirmed}
+            actual_finding_ids = {f["finding_id"] for f in package["confirmed_findings"]}
+            if not actual_finding_ids <= expected_finding_ids:
                 raise DomainError("OPTIMIZATION_CONFIRMATION_NOT_BOUND", 422)
+            if actual_finding_ids != expected_finding_ids:
+                raise DomainError("OPTIMIZATION_CONFIRMATION_COVERAGE_INCOMPLETE", 422)
         except DomainError as exc:
             _stop(run_id, worker, epoch, exc.code)
             return

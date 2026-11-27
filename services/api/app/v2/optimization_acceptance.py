@@ -11,29 +11,38 @@ C_REVIEW_SKILL_PROMPT = "\n" + C_REVIEW_SKILL["instructions"]
 def execution_manifest(report, plan=None):
     """Execution facts only: never feed prior semantic judgments to blind C."""
     review = (report or {}).get("diagnostic_review") or {}
+    layers = (plan or {}).get("quality_layers")
+    include_diagnostics = layers is None or layers.get("quality_specific", False) is True
     expected = (plan or {}).get("check_items", [])
-    actual = (report or {}).get("check_items", [])
+    expected_ids = {row.get("item_id") for row in expected}
+    actual = [
+        row for row in (report or {}).get("check_items", [])
+        if row.get("item_id") in expected_ids
+    ]
     identity_keys = ("item_id", "required", "severity_class", "decision_type", "verifier_binding")
     identities = lambda rows: sorted([{k: r.get(k) for k in identity_keys} for r in rows], key=lambda r: r["item_id"])
+    from .quality import enabled_findings_for_plan
+    visible_findings = (enabled_findings_for_plan(plan, (report or {}).get("findings", []))
+                        if plan else (report or {}).get("findings", []))
     return {"method_version": "optimization-execution-facts.v2",
         "check_executions": [{"item_id": row.get("item_id"), "method_version": row.get("method_version"),
                               "result_record_present": row.get("result") is not None}
-                             for row in (report or {}).get("checks", [])],
+                             for row in actual],
         "diagnostic_method": review.get("method_version"),
         "dimensions": [{k: row.get(k) for k in
             ("unit_id", "dimension_id", "binding_hash", "profile_ref", "rubric_ref", "method_version")}
             | {"call_id": row.get("audit", {}).get("call_id"),
                "unknown_score_is_null": row.get("result") != "undecidable" or row.get("score") is None}
-            for row in review.get("dimensions", [])],
+            for row in (review.get("dimensions", []) if include_diagnostics else [])],
         "aggregate_score": review.get("aggregate_score"), "threshold": review.get("threshold"),
-        "wrapper_confirmed_finding_count": sum(f.get("status") == "confirmed" for f in (report or {}).get("findings", [])),
+        "wrapper_confirmed_finding_count": sum(f.get("status") == "confirmed" for f in visible_findings),
         "barrier_preservation": {
             "check_plan_hash_matches": bool(plan and (report or {}).get("check_plan_hash") == plan.get("check_plan_hash")),
             "check_definitions_unchanged": bool(expected and identities(expected) == identities(actual)),
             "all_check_results_present": bool(expected) and {r["item_id"] for r in expected} <= {
                 r.get("item_id") for r in (report or {}).get("checks", []) if r.get("result") is not None},
             "all_result_values_valid": all(r.get("result") in {"satisfied", "violated", "undecidable", "not_run", "not_applicable", "error", "no_method"}
-                for r in (report or {}).get("checks", [])),
+                for r in actual),
             "report_reused_without_changing_check_results": True,
             "reducer_is_pass": (report or {}).get("tqi_verdict") == "pass",
             "professionally_calibrated": (report or {}).get("calibration_status") == "calibrated",
@@ -71,15 +80,46 @@ def prepared_inputs(state, package, units, recheck=None, network_trace=None, can
     criteria = list(package["acceptance_criteria"])
     if not criteria or len({c["item_id"] for c in criteria}) != len(criteria):
         raise DomainError("OPTIMIZATION_ACCEPTANCE_REQUIRED", 422)
-    mandatory = original_task_acceptance(state.get("context", {}))
+    layers = state.get("check_plan", {}).get("quality_layers")
+    completeness_on = layers is None or layers.get("completeness", True) is True
+    mandatory = original_task_acceptance(state.get("context", {})) if completeness_on else []
+    if not completeness_on:
+        criteria = [c for c in criteria if c["item_id"] != "task.original_requirements"]
     # C cannot replace the reserved original-task criterion with weaker wording.
     criteria = [c for c in criteria if c["item_id"] not in {m["item_id"] for m in mandatory}] + mandatory
+    from .quality import layer_enabled
+    enabled_ids = {
+        item["item_id"] for item in state.get("check_plan", {}).get("check_items", [])
+        if layer_enabled(item, layers)
+    }
+    allowed_acceptance_ids = set(enabled_ids)
+    for directive in package.get("directives", []):
+        check = (directive.get("acceptance_assertion") or {}).get("criterion_check")
+        if isinstance(check, dict) and check.get("kind") == "acceptance_item":
+            allowed_acceptance_ids.add(check.get("item_id"))
+    invalid = [
+        c["item_id"] for c in criteria
+        if c["item_id"] not in allowed_acceptance_ids
+        and not (c["item_id"] == "task.original_requirements" and completeness_on)
+    ] if layers is not None and state.get("check_plan") else []
+    if invalid:
+        raise DomainError(
+            "OPTIMIZATION_ACCEPTANCE_CRITERION_NOT_ENABLED", 422,
+            item_ids=sorted(set(invalid)),
+        )
     fixed_units = [{k: u[k] for k in ("unit_id", "body", "content_hash", "title", "artifact_role",
         "items", "format_contract", "source_sections") if k in u} for u in units]
-    execution = execution_manifest(recheck, state.get("check_plan"))
+    visible_plan = {
+        **state.get("check_plan", {}),
+        "check_items": [
+            item for item in state.get("check_plan", {}).get("check_items", [])
+            if layer_enabled(item, layers)
+        ],
+    }
+    execution = execution_manifest(recheck, visible_plan)
     unit_ids = [u["unit_id"] for u in units]
     document_values = {"candidate_execution_facts": execution,
-                       "frozen_check_contract": state.get("check_plan", {}),
+                       "frozen_check_contract": visible_plan,
                        "candidate_units": [{k: u[k] for k in ("unit_id", "title", "artifact_role", "items") if k in u}
                                            for u in units]}
     documents = {key: {"hash": digest(value), "text": canonical(value).decode(), "unit_ids": unit_ids}
@@ -98,7 +138,7 @@ def prepared_inputs(state, package, units, recheck=None, network_trace=None, can
             "frozen_check_contract": {"check_plan_hash": state.get("check_plan", {}).get("check_plan_hash"),
                 "check_items": [{k: row.get(k) for k in
                     ("item_id", "required", "severity_class", "decision_type", "verifier_binding")}
-                    for row in state.get("check_plan", {}).get("check_items", [])]},
+                    for row in visible_plan["check_items"]]},
             "candidate_structure": [{"unit_id": u["unit_id"], "headings": [
                 {"level": len(m[1]), "text": m[2]} for m in re.finditer(r"(?m)^(#{1,6})[ \t]+([^\n]+)$", u["body"])]}
                 for u in units],
@@ -234,9 +274,12 @@ def verify(run_id, worker, epoch, state, package, units, provider_factory=None, 
             "limitations": row.get("limitations", []), "audit": audit})
     if state.get("execution_policy", {}).get("criterion_assessment"):
         from .assessment_binding import consume
-        # A model's broad approval cannot waive the actual executed difficulty
-        # gate or an incomplete/negative required automatic clause assessment.
-        for key in ("difficulty_review", "automated_assessment"):
+        layers = state.get("check_plan", {}).get("quality_layers")
+        quality_specific_on = layers is None or layers.get("quality_specific", False) is True
+        report_keys = ["automated_assessment"]
+        if quality_specific_on:
+            report_keys.append("difficulty_review")
+        for key in report_keys:
             report = (recheck or {}).get(key) or {}
             report = report if isinstance(report, dict) else {}
             outcome, binding_errors = consume(report, key, state, units, version_id)

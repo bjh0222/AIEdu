@@ -159,6 +159,7 @@ class Resume(Revision):
     acknowledge_new_generation: bool = False
     enable_research: bool = False
     quality_protocol_upgrade: bool = False
+    restart_quality: bool = False
 
 
 class ExportRequest(Revision):
