@@ -397,3 +397,21 @@ def test_knowledge_chain_inventory_lists_every_unbound_endpoint_across_units():
         ("U1", "target_concept", "bad-1"),
         ("U2", "source_concept", "bad-2"),
     ]
+
+
+def test_research_source_catalog_includes_frozen_evaluation_framework_evidence_refs():
+    from app.v2.planning import research_source_catalog
+
+    context = {
+        "evaluation_frameworks": {
+            "frameworks": [{
+                "id": "math-framework",
+                "source_hash": "f" * 64,
+                "evidence_refs": [{"id": "E15"}, {"id": "E4"}],
+            }],
+        },
+    }
+    catalog = research_source_catalog({"plan": {}}, context)
+    assert catalog["math-framework"] == "f" * 64
+    assert "math-framework:E15" in catalog
+    assert "math-framework:E4" in catalog

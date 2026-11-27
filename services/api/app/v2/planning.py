@@ -530,6 +530,15 @@ def research_source_catalog(state, context):
             value = binding.get(kind) or {}
             if value.get("id"):
                 catalog[str(value["id"])] = value.get("hash")
+    frameworks = context.get("evaluation_frameworks") or {}
+    for framework in frameworks.get("frameworks", []):
+        framework_id = framework.get("id")
+        if not framework_id:
+            continue
+        catalog[str(framework_id)] = framework.get("source_hash")
+        for evidence in framework.get("evidence_refs", []):
+            if evidence.get("id"):
+                catalog[f"{framework_id}:{evidence['id']}"] = None
     return catalog
 
 
