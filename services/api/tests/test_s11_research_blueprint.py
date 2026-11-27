@@ -227,6 +227,31 @@ def test_blueprint_rejects_unbound_evidence_and_layout_mismatch():
     assert exc.value.code == "BLUEPRINT_LAYOUT_UNBOUND"
 
 
+def test_blueprint_completes_reciprocal_evidence_decision_links_without_changing_evidence_text():
+    from app.v2.planning import bind_a1_artifact
+
+    state = {"research_result": {"sources": [{"source_id": "m1", "source_hash": sha("source")}]}}
+    blueprint = _blueprint()
+    blueprint["decisions"].append({
+        "decision_id": "d2",
+        "statement": "Use a second decision.",
+        "requirement": "should_implement",
+        "blueprint_unit_ids": ["bu1"],
+        "evidence_ids": ["e1"],
+        "acceptance_method": "Locate the implementation.",
+    })
+    evidence = _evidence()
+    evidence["used_for"] = ["d1"]
+    artifact = bind_a1_artifact(
+        {"blueprint": blueprint, "evidence": [evidence]},
+        teaching_content=_teaching(), context=_context(), state=state,
+    )
+    normalized = artifact["evidence_records"][0]
+    assert normalized["claim"] == evidence["claim"]
+    assert normalized["location"] == evidence["location"]
+    assert set(normalized["used_for"]) == {"d1", "d2"}
+
+
 def test_b_blueprint_execution_allows_only_low_risk_noncore_deviation():
     from app.v2.planning import bind_a1_artifact, validate_blueprint_execution
 

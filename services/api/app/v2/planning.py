@@ -573,6 +573,18 @@ def bind_a1_artifact(output, *, teaching_content, context, state):
             raise DomainError("BLUEPRINT_EVIDENCE_UNBOUND", 422,
                               evidence_id=row["evidence_id"])
     evidence_by_id = {row["evidence_id"]: row for row in evidence}
+    decision_by_id = {row["decision_id"]: row for row in blueprint["decisions"]}
+    for row in evidence:
+        for decision_id in row["used_for"]:
+            decision_by_id[decision_id]["evidence_ids"] = list(dict.fromkeys(
+                [*decision_by_id[decision_id]["evidence_ids"], row["evidence_id"]]
+            ))
+    for decision in blueprint["decisions"]:
+        for evidence_id in decision["evidence_ids"]:
+            if evidence_id in evidence_by_id:
+                evidence_by_id[evidence_id]["used_for"] = list(dict.fromkeys(
+                    [*evidence_by_id[evidence_id]["used_for"], decision["decision_id"]]
+                ))
     for decision in blueprint["decisions"]:
         if not set(decision["evidence_ids"]) <= set(evidence_by_id):
             raise DomainError("BLUEPRINT_EVIDENCE_UNBOUND", 422,
