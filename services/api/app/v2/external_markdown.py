@@ -159,13 +159,17 @@ def _finish_parse(text: str, lines: list[str], offsets: list[int], candidates: l
     if candidates:
         prefix_end = candidates[0].offset
         prefix = text[:prefix_end]
-        if prefix.strip():
+        # A YAML front matter is metadata, not a readable empty chapter. Merge it
+        # into the first heading source slice so the reader opens content.
+        merge_prefix = bool(re.match(r"^---\r?\n[\s\S]*?\r?\n---\r?\n?", prefix))
+        if prefix.strip() and not merge_prefix:
             units.append({"title": "前言与元信息", "body": prefix, "section_level": 0,
                           "heading_kind": "prefix", "source_start": 0, "source_end": prefix_end})
         for index, candidate in enumerate(candidates):
             end = candidates[index + 1].offset if index + 1 < len(candidates) else len(text)
-            units.append({"title": candidate.title, "body": text[candidate.offset:end], "section_level": chosen,
-                          "heading_kind": candidate.kind, "source_start": candidate.offset, "source_end": end})
+            body_start = 0 if index == 0 and merge_prefix else candidate.offset
+            units.append({"title": candidate.title, "body": text[body_start:end], "section_level": chosen,
+                          "heading_kind": candidate.kind, "source_start": body_start, "source_end": end})
     else:
         units = [{"title": "全文", "body": text, "section_level": 0, "heading_kind": "plain",
                   "source_start": 0, "source_end": len(text)}]
@@ -237,38 +241,4 @@ def parse_markdown(text: str, ai_line_indices: list[int] | None = None) -> dict:
     if any(_fence_marker(line) and flags[i] and i == len(lines) - 1 for i, line in enumerate(lines)):
         warnings.append("unclosed_code_fence")
     assets = _assets(text)
-
-    units = []
-    if candidates:
-        prefix_end = candidates[0].offset
-        prefix = text[:prefix_end]
-        if prefix.strip():
-            units.append({"title": "前言与元信息", "body": prefix, "section_level": 0,
-                          "heading_kind": "prefix", "source_start": 0, "source_end": prefix_end})
-        for index, candidate in enumerate(candidates):
-            end = candidates[index + 1].offset if index + 1 < len(candidates) else len(text)
-            units.append({"title": candidate.title, "body": text[candidate.offset:end], "section_level": chosen,
-                          "heading_kind": candidate.kind, "source_start": candidate.offset, "source_end": end})
-    else:
-        units = [{"title": "全文", "body": text, "section_level": 0, "heading_kind": "plain",
-                  "source_start": 0, "source_end": len(text)}]
-
-    # A structural parser is allowed to drop only zero-length separators. Every
-    # non-empty byte must round-trip through the unit bodies.
-    if "".join(u["body"] for u in units) != text:
-        raise AssertionError("external markdown slices do not reconstruct source")
-    metadata = {
-        "method_version": METHOD_VERSION,
-        "source_hash": sha(text),
-        "parser_mode": mode,
-        "split_level": chosen,
-        "confidence": confidence,
-        "ai_assist_candidate": confidence < 0.70,
-        "warnings": warnings,
-        "assets": assets,
-        "unit_map": [{"title": u["title"], "source_start": u["source_start"], "source_end": u["source_end"],
-                      "source_hash": sha(u["body"])} for u in units],
-    }
-    return {"manifest": metadata, "units": units}
-
-
+    return _finish_parse(text, lines, offsets, candidates, chosen, mode, confidence, warnings, assets)

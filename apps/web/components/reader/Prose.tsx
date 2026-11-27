@@ -326,8 +326,8 @@ export type ProseProps = {
 function stripFrontmatter(source: string): string {
   const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(source);
   if (!m) return source;
-  // 保留换行数，保证后续行号/偏移与原文一一对应。
-  return m[0].replace(/[^\n]/g, " ");
+  // 只遮蔽 front matter；保留换行数与后续正文，保证行号/偏移与原文一一对应。
+  return source.slice(0, m[0].length).replace(/[^\n]/g, " ") + source.slice(m[0].length);
 }
 
 export default function Prose({ source, wikiTargets, assets, pins = [], onPinClick, headings }: ProseProps) {
