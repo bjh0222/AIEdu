@@ -556,6 +556,15 @@ def test_exam_type_names_come_from_material_not_a_fixed_enum():
     assert "相邻解答题、证明题、综合题及其它主观题之间固定保留 3 个空行" in exam["format_rules"]
     assert "题末到下一题题首共 4 个换行符" in cm
 
+    # ⑦ 小问分行紧凑与公式口径：小题逐行连排不空行；行内公式一律成对 $…$；
+    # $$…$$ 不再「一律」，仅限无法单行表达的数学或确有助于排版且不破坏连续阅读的关键公式
+    assert "相邻小题之间直接换行，不插入空行" in exam["format_rules"]
+    assert "题干、公式与各小题之间也不留空行" in exam["format_rules"]
+    assert "所有行内公式必须用成对的 $…$ 包裹" in exam["format_rules"]
+    assert "$$…$$ 独立成行仅限两类情形" in exam["format_rules"]
+    assert "题内间隔保持紧凑" in cm
+    assert "(1) 第一问；\n(2) 第二问。" in exam["content_structure"]
+
     # ⑥ 模板与正反例都给了「按材料题型」的形态，模型不只见过默认六题型
     assert "名词解释" in exam["content_structure"]
     assert "名词解释" in exam["reference_examples"]
