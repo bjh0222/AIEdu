@@ -459,6 +459,8 @@ def _validated(model, value, code):
 
 def research_strategy(value):
     content = _validated(ResearchStrategy, value, "RESEARCH_STRATEGY_INVALID")
+    if content["necessity"] in {"not_needed", "disabled"}:
+        content["evidence_extraction"] = []
     direction_ids = [row["direction_id"] for row in content["research_directions"]]
     if len(direction_ids) != len(set(direction_ids)):
         raise DomainError("RESEARCH_STRATEGY_DIRECTION_DUPLICATE", 422)

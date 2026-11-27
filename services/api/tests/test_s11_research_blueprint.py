@@ -162,6 +162,19 @@ def test_research_strategy_disabled_path_is_deterministic_and_unknown_evidence_i
     assert value["content"]["necessity"] == "disabled"
     assert value["content"]["user_requirements"] == ["Use local files only."]
     assert research_strategy(value["content"])["hash"] == value["hash"]
+    not_needed = _strategy()
+    not_needed["necessity"] = "not_needed"
+    not_needed["research_directions"] = []
+    not_needed["autonomous_additions"] = []
+    not_needed["search_strategy"]["queries"] = []
+    not_needed["evidence_extraction"] = [{
+        "direction_id": "none",
+        "record_fields": ["evidence_id", "source", "claim", "location", "scope",
+                          "confidence", "limitation", "used_for"],
+        "minimum_support": "No external evidence is required.",
+    }]
+    normalized = research_strategy(not_needed)
+    assert normalized["content"]["evidence_extraction"] == []
 
 
 def test_blueprint_binds_evidence_decisions_layout_and_hashes():
