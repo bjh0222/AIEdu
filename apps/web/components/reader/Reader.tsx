@@ -54,6 +54,9 @@ export default function Reader({ taskId }: { taskId: string }) {
   const [answersOpen, setAnswersOpen] = useState(false);
   const [drawer, setDrawer] = useState<"toc" | "tech" | null>(null);
   const [chatOpen, setChatOpen] = useState(true);
+  // 2026-11-27 手机问答 sheet：ReaderChat 常挂载保留会话历史；仅显隐切换。
+  const [chatSheetOpen, setChatSheetOpen] = useState(false);
+  const [kbLift, setKbLift] = useState(0);
   // 2026-11-23 平板适配：视口分层（desktop≥1280 / tablet-land 1024-1279 / tablet-port 768-1023 / phone<768）与目录侧栏开合。
   const tier = useViewportTier();
   const [rulerOpen, setRulerOpen] = useState<boolean | null>(null);
@@ -180,6 +183,29 @@ export default function Reader({ taskId }: { taskId: string }) {
     return () => window.removeEventListener("keydown", k);
   }, [focus]);
 
+  // 2026-11-27 手机键盘补偿：visualViewport 高度差上移面板（iOS 布局视口不收缩时兜底）。
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => setKbLift(Math.max(0, Math.round(window.innerHeight - vv.height)));
+    update();
+    vv.addEventListener("resize", update);
+    return () => vv.removeEventListener("resize", update);
+  }, []);
+
+  // 2026-11-27 手机问答 sheet：Esc 关闭 + 打开期间锁定页面滚动。
+  useEffect(() => {
+    if (tier !== "phone" || !chatSheetOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const k = (e: KeyboardEvent) => { if (e.key === "Escape") setChatSheetOpen(false); };
+    window.addEventListener("keydown", k);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener("keydown", k);
+    };
+  }, [tier, chatSheetOpen]);
+
   // Shift+F7 已改由 Shell 折叠最左侧应用导航；Shift+F6 仍折叠 AI 聊天。
   useEffect(() => {
     const toggleChat = (event: KeyboardEvent) => {
@@ -253,6 +279,14 @@ export default function Reader({ taskId }: { taskId: string }) {
           </ul>
         </div>
       )}
+      {tier === "phone" && (
+        <div className="reader-phone-tools" role="group" aria-label="阅读工具">
+          <button className="btn btn-sm" onClick={() => setPrefs({ ...prefs, size: Math.max(14, prefs.size - 1) })} aria-label="减小字号">A−</button>
+          <button className="btn btn-sm" onClick={() => setPrefs({ ...prefs, size: Math.min(22, prefs.size + 1) })} aria-label="增大字号">A+</button>
+          <button className="btn btn-sm" aria-pressed={focus} onClick={() => setFocus(!focus)}>{focus ? "退出专注" : "专注"}</button>
+          <button className="btn btn-primary btn-sm" onClick={() => { setDrawer(null); setExportOpen(true); }} disabled={!read}>下载 {versionLabel}</button>
+        </div>
+      )}
       <p className="hint" style={{ marginTop: 16 }}>已读到 {progress}%</p>
     </nav>
   );
@@ -261,23 +295,35 @@ export default function Reader({ taskId }: { taskId: string }) {
     <div className="reader-shell">
       <div className="progress-line" style={{ width: `${progress}%` }} aria-hidden="true" />
       <div className="reader-top">
-        <nav className="crumbs grow" aria-label="位置" style={{ margin: 0 }}>
-          <Link href="/">任务</Link><span aria-hidden="true">/</span>
-          <Link href={`/tasks/${taskId}`}>{title}</Link><span aria-hidden="true">/</span>
-          <span aria-current="page">阅读</span>
-        </nav>
-        <div className="reader-tools" role="group" aria-label="阅读设置">
-          {tier !== "phone" && (
-            <button className="btn btn-sm" aria-pressed={tier === "tablet-port" ? drawer === "toc" : rulerShown}
-              title={tier === "tablet-port" ? "打开目录" : rulerShown ? "折叠目录" : "展开目录"}
-              onClick={() => { if (tier === "tablet-port") setDrawer(drawer === "toc" ? null : "toc"); else toggleRuler(); }}>目录</button>
-          )}
-          <button className="btn btn-sm" onClick={() => setPrefs({ ...prefs, size: Math.max(14, prefs.size - 1) })} aria-label="减小字号">A−</button>
-          <button className="btn btn-sm" onClick={() => setPrefs({ ...prefs, size: Math.min(22, prefs.size + 1) })} aria-label="增大字号">A+</button>
-          <button className="btn btn-sm" aria-pressed={focus} onClick={() => setFocus(!focus)}>{focus ? "退出专注" : "专注"}</button>
-          <button className="btn btn-sm chat-toggle-btn" aria-keyshortcuts="Shift+F6" onClick={() => setChatOpen(!chatOpen)} title={chatOpen ? "折叠聊天（Shift + F6）" : "展开聊天（Shift + F6）"}>{chatOpen ? "折叠聊天" : "展开聊天"}</button>
-          <button className="btn btn-primary btn-sm" onClick={() => setExportOpen(true)} disabled={!read}>下载 {versionLabel}</button>
-        </div>
+        {tier === "phone" ? (
+          // 2026-11-27 移动端阅读优先：手机专属顶栏（返回 + 单元标题 + 目录/问答），工具收进目录 sheet。
+          <>
+            <Link className="reader-back" href={`/tasks/${taskId}`} aria-label="返回任务页">‹</Link>
+            <div className="reader-phone-title">{unit?.title ?? title}</div>
+            <div className="reader-phone-actions">
+              <button className="btn btn-sm" aria-pressed={drawer === "toc"} onClick={() => setDrawer(drawer === "toc" ? null : "toc")}>目录</button>
+              <button className="btn btn-sm" aria-pressed={chatSheetOpen} onClick={() => setChatSheetOpen(!chatSheetOpen)}>问答</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <nav className="crumbs grow" aria-label="位置" style={{ margin: 0 }}>
+              <Link href="/">任务</Link><span aria-hidden="true">/</span>
+              <Link href={`/tasks/${taskId}`}>{title}</Link><span aria-hidden="true">/</span>
+              <span aria-current="page">阅读</span>
+            </nav>
+            <div className="reader-tools" role="group" aria-label="阅读设置">
+              <button className="btn btn-sm" aria-pressed={tier === "tablet-port" ? drawer === "toc" : rulerShown}
+                title={tier === "tablet-port" ? "打开目录" : rulerShown ? "折叠目录" : "展开目录"}
+                onClick={() => { if (tier === "tablet-port") setDrawer(drawer === "toc" ? null : "toc"); else toggleRuler(); }}>目录</button>
+              <button className="btn btn-sm" onClick={() => setPrefs({ ...prefs, size: Math.max(14, prefs.size - 1) })} aria-label="减小字号">A−</button>
+              <button className="btn btn-sm" onClick={() => setPrefs({ ...prefs, size: Math.min(22, prefs.size + 1) })} aria-label="增大字号">A+</button>
+              <button className="btn btn-sm" aria-pressed={focus} onClick={() => setFocus(!focus)}>{focus ? "退出专注" : "专注"}</button>
+              <button className="btn btn-sm chat-toggle-btn" aria-keyshortcuts="Shift+F6" onClick={() => setChatOpen(!chatOpen)} title={chatOpen ? "折叠聊天（Shift + F6）" : "展开聊天（Shift + F6）"}>{chatOpen ? "折叠聊天" : "展开聊天"}</button>
+              <button className="btn btn-primary btn-sm" onClick={() => setExportOpen(true)} disabled={!read}>下载 {versionLabel}</button>
+            </div>
+          </>
+        )}
       </div>
 
       {readError && <div className="banner banner-danger" role="alert" style={{ marginBottom: 12 }}><div>{readError}</div></div>}
@@ -335,18 +381,28 @@ export default function Reader({ taskId }: { taskId: string }) {
           {stale.length > 0 && <p className="hint" style={{ marginTop: 8 }}>有 {stale.length} 个问题的位置已过期，没有标在正文里。</p>}
         </article>
 
-        {chatOpen && !focus && (
+        {tier !== "phone" && chatOpen && !focus && (
           <div className="chat-cell" style={{ width: chatWidthEffective }}>
             <ReaderChat taskId={taskId} read={read} currentUnitId={unit?.unit_id ?? null} open={chatOpen} onOpenChange={setChatOpen} width={chatWidth} />
-            {tier !== "phone" && <ResizeHandle side="left" label="拖拽调整 AI 聊天面板宽度" onPointerDown={startChatResize} />}
+            <ResizeHandle side="left" label="拖拽调整 AI 聊天面板宽度" onPointerDown={startChatResize} />
           </div>
         )}
-        {!chatOpen && !focus && (
+        {tier !== "phone" && !chatOpen && !focus && (
           <button className="chat-expand-tab" onClick={() => setChatOpen(true)} aria-label="展开 AI 聊天（Shift+F6）" title="展开 AI 聊天（Shift + F6）">‹</button>
         )}
       </div>
 
-      <Drawer open={drawer === "toc"} onClose={() => setDrawer(null)} title="目录" side="bottom">{ruler}</Drawer>
+      {/* 2026-11-27 手机问答 sheet：ReaderChat 常挂载保留会话；显隐由 chatSheetOpen 控制；kbLift 为 iOS 键盘兜底。 */}
+      {tier === "phone" && (
+        <div className={`chat-sheet${chatSheetOpen ? " open" : ""}`} aria-hidden={!chatSheetOpen}>
+          <div className="scrim" onClick={() => setChatSheetOpen(false)} aria-hidden="true" />
+          <div className="chat-sheet-panel" role="dialog" aria-modal="true" aria-label="AI 聊天" style={kbLift > 0 ? { transform: `translateY(-${kbLift}px)` } : undefined}>
+            <div className="drawer-grab" role="button" aria-label="收起问答面板" onClick={() => setChatSheetOpen(false)}><span aria-hidden="true" /></div>
+            <ReaderChat taskId={taskId} read={read} currentUnitId={unit?.unit_id ?? null} open={chatSheetOpen} onOpenChange={(v) => { if (!v) setChatSheetOpen(false); }} width={400} sessionsCollapsed={true} />
+          </div>
+        </div>
+      )}
+      <Drawer open={drawer === "toc"} onClose={() => setDrawer(null)} title="目录" side="bottom" sheetHeights>{ruler}</Drawer>
       <Drawer open={drawer === "tech"} onClose={() => setDrawer(null)} title="技术信息" side="right">
         {read && (
           <dl className="kv" style={{ gridTemplateColumns: "auto 1fr" }}>
@@ -436,3 +492,6 @@ function DocumentAnswersGate({ source }: { source: string }) {
     </div>
   );
 }
+
+
+

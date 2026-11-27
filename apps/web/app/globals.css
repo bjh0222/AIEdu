@@ -602,3 +602,67 @@ dialog.dlg::backdrop { background: rgba(10, 16, 22, 0.45); }
 }
 .chat-rail .seg { display: flex; width: 100%; }
 .chat-rail .seg button { flex: 1; min-width: 0; padding: 0 6px; white-space: nowrap; font-size: 12px; }
+
+/* ===== 2026-11-27 移动端阅读优先（A+B 混排，方案 v1）===== */
+
+/* D1：阅读页路由手机档隐藏全局侧栏/底栏，正文占满整幅 */
+@media (max-width: 767px) {
+  .app.reader-route .sidebar { display: none; }
+  .app.reader-route .main { padding: 12px 16px calc(16px + env(safe-area-inset-bottom)); }
+}
+
+/* D2：手机端外部提问链接从底栏收进设置页（桌面侧栏入口不变） */
+@media (max-width: 767px) {
+  .app .sidebar .external-nav { display: none; }
+}
+
+/* 手机阅读顶栏：返回 + 单元标题 + 目录/问答 */
+@media (max-width: 767px) {
+  .reader-top { align-items: center; gap: 8px; }
+  .reader-top > * { flex: initial; }
+  .reader-back { flex: none; min-width: 36px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--control); border-radius: var(--r2); background: var(--surface); color: var(--ink); font-size: 18px; line-height: 1; text-decoration: none; padding: 0 10px; }
+  .reader-phone-title { flex: 1 1 auto; min-width: 0; font-weight: 700; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .reader-phone-actions { flex: none; display: flex; gap: 6px; }
+  .reader-phone-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+}
+
+/* Drawer sheet 形态（目录/问答通用）：28px 顶角圆角、把手 44px 目标、两档高度 */
+.drawer-sheet { top: auto; left: 0; right: 0; bottom: 0; height: 70vh; max-height: none; padding: 0 16px calc(14px + env(safe-area-inset-bottom)); border-radius: 24px 24px 0 0; display: flex; flex-direction: column; animation: aiedu-sheet-up 240ms var(--ease, ease); }
+.drawer-sheet-expanded { height: 92vh; }
+.drawer-grab { flex: none; width: 100%; min-height: 44px; display: flex; align-items: center; justify-content: center; cursor: grab; touch-action: none; border: 0; background: none; padding: 0; }
+.drawer-grab span { width: 40px; height: 5px; border-radius: 3px; background: var(--line-strong); }
+.drawer-sheet-head { flex: none; display: flex; justify-content: space-between; align-items: center; padding: 2px 0 8px; border-bottom: 1px solid var(--line); }
+.drawer-sheet-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-top: 12px; }
+@keyframes aiedu-sheet-up { from { transform: translateY(60%); } to { transform: translateY(0); } }
+
+/* 手机问答 sheet：ReaderChat 常挂载，显隐由 .open 控制 */
+.chat-sheet { position: fixed; inset: 0; z-index: 56; display: none; }
+.chat-sheet.open { display: block; }
+.chat-sheet .scrim { position: absolute; inset: 0; z-index: 0; }
+.chat-sheet-panel { position: absolute; left: 0; right: 0; bottom: 0; z-index: 1; height: 62vh; background: var(--surface); border: 1px solid var(--line-strong); border-bottom: 0; border-radius: 24px 24px 0 0; display: flex; flex-direction: column; padding: 0 10px calc(10px + env(safe-area-inset-bottom)); transition: transform 160ms var(--ease, ease); }
+.chat-sheet.open .chat-sheet-panel { animation: aiedu-sheet-up 240ms var(--ease, ease); }
+.chat-sheet-panel .chat-rail { flex: 1 1 auto; min-height: 0; border: 0; border-radius: 0; background: transparent; padding: 4px 2px 0; }
+
+/* 引用 chip（可删除）与手机会话折叠 */
+.chat-quote-flag { width: 100%; justify-content: flex-start; }
+.chat-quote-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-sessions summary { display: flex; align-items: center; gap: 8px; list-style: none; }
+.chat-sessions summary::-webkit-details-marker { display: none; }
+
+/* P2：横向滚动容器防穿透 + 右缘渐隐提示（手机档；数学块不放提示以保护复制按钮） */
+@media (max-width: 767px) {
+  .table-scroll, .code-scroll, .math-block, .mermaid-figure { overscroll-behavior-x: contain; }
+  .prose .table-scroll, .prose .code-scroll { position: relative; }
+  .prose .table-scroll::after, .prose .code-scroll::after {
+    content: ""; position: absolute; top: 0; right: 0; bottom: 0; width: 28px;
+    background: linear-gradient(to left, var(--bg), transparent);
+    pointer-events: none;
+  }
+  .prose code { font-size: 13px; }
+}
+
+/* 触控目标统一 44px（粗指针，含手机与触屏平板） */
+@media (pointer: coarse) {
+  .copy-btn { min-height: 44px; }
+}
+

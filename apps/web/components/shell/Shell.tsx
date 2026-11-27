@@ -70,6 +70,8 @@ function useNavWidth(): [number, (event: React.PointerEvent<HTMLDivElement>) => 
 
 export default function Shell({ children }: { children: ReactNode }) {
   const path = usePathname();
+  // 2026-11-27 阅读优先（D1）：阅读页路由隐藏全局底栏与侧栏（手机档），由 CSS 按 .reader-route 生效。
+  const isReaderRoute = /^\/tasks\/[^/]+\/read/.test(path);
   const external = useRef<HTMLElement>(null);
   const navOpen = useSyncExternalStore(subscribeNav, navClientSnapshot, navServerSnapshot);
   const [navWidth, startNavResize] = useNavWidth();
@@ -109,7 +111,7 @@ export default function Shell({ children }: { children: ReactNode }) {
     <ToastProvider>
       <a className="skip" href="#main">跳到正文</a>
       <div
-        className={`app${navCollapsed ? " nav-collapsed" : ""}`}
+        className={`app${navCollapsed ? " nav-collapsed" : ""}${isReaderRoute ? " reader-route" : ""}`}
         style={{ "--sidebar": navCollapsed ? "64px" : `${navWidth}px` } as CSSProperties}
       >
         <aside className="sidebar" data-collapsed={navOpen ? undefined : "true"}>
@@ -152,11 +154,14 @@ export default function Shell({ children }: { children: ReactNode }) {
         </aside>
         <main className="main" id="main" tabIndex={-1}>{children}</main>
       </div>
-      <nav className="tabbar" aria-label="主导航（窄屏）">
-        {NAV.map((n) => (
+      {!isReaderRoute && (
+        <nav className="tabbar" aria-label="主导航（窄屏）">
+          {NAV.map((n) => (
           <Link key={n.href} href={n.href} aria-current={n.match(path) ? "page" : undefined}>{n.label}</Link>
         ))}
-      </nav>
+        </nav>
+      )}
     </ToastProvider>
   );
 }
+

@@ -342,6 +342,15 @@ export default function Settings() {
             </section>
           )}
 
+          {/* 2026-11-27 移动端（D2）：外链条从手机底栏移入设置页；桌面侧栏入口不变。 */}
+          <section className="panel panel-pad" style={{ display: "grid", gap: 10 }} aria-labelledby="s-external">
+            <h2 className="sub" id="s-external">外部提问</h2>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <a className="btn" href="https://chatgpt.com" target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">ChatGPT（新标签页）</a>
+              <a className="btn" href="https://chat.deepseek.com" target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">DeepSeek（新标签页）</a>
+            </div>
+            <p className="hint">桌面端也可从左栏进入（Shift+F8 / Shift+F9）。这些站点不经过本应用，模型调用与费用由对应平台记录。</p>
+          </section>
           <details className="panel panel-pad"><summary>模型回收站与恢复</summary><ResourceManager key={managementRevision} initialKind="model-profiles" initialView="trashed" onChanged={load} /></details>
         </div>
       </div>

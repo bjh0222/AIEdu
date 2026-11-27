@@ -22,13 +22,15 @@ function unitLabel(unitId: string, read: VersionRead | null): string {
   return unit?.title || unitId;
 }
 
-export default function ReaderChat({ taskId, read, currentUnitId, open, onOpenChange, width = 400 }: {
+export default function ReaderChat({ taskId, read, currentUnitId, open, onOpenChange, width = 400, sessionsCollapsed = false }: {
   taskId: string;
   currentUnitId: string | null;
   read: VersionRead | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   width?: number;
+  /** 手机档：会话列表折叠为 details，节省纵向空间（2026-11-27）。 */
+  sessionsCollapsed?: boolean;
 }) {
   const [sessions, setSessions] = useState<ChatSession[]>(() => [{
     id: "chat-1",
@@ -151,10 +153,15 @@ export default function ReaderChat({ taskId, read, currentUnitId, open, onOpenCh
             ))}
           </div>
         )}
-        {quote && <p className="chat-quote-flag">已捕获引用</p>}
+        {quote && (
+          <div className="chat-quote-flag" aria-label="已捕获引用">
+            <span className="chat-quote-text">已捕获引用：{quote.slice(0, 80)}{quote.length > 80 ? "…" : ""}</span>
+            <button className="btn btn-quiet btn-sm" aria-label="删除引用" onClick={() => setQuote("")}>✕</button>
+          </div>
+        )}
       </div>
 
-      {width >= 300 && (
+      {width >= 300 && !sessionsCollapsed && (
         <div className="panel" style={{ flex: "0 0 auto", maxHeight: 96, overflow: "auto", padding: 7, fontSize: 12 }} aria-label="聊天会话">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
             <small className="muted">会话</small>
@@ -173,6 +180,26 @@ export default function ReaderChat({ taskId, read, currentUnitId, open, onOpenCh
             ))}
           </ul>
         </div>
+      )}
+      {width >= 300 && sessionsCollapsed && (
+        <details className="panel chat-sessions" aria-label="聊天会话" style={{ flex: "0 0 auto", padding: "7px 10px", fontSize: 12 }}>
+          <summary style={{ cursor: "pointer" }}>
+            会话（{sessions.length}）
+            <button className="btn btn-quiet btn-sm" onClick={(e) => { e.preventDefault(); e.stopPropagation(); newSession(); }}>＋ 新会话</button>
+          </summary>
+          <ul style={{ listStyle: "none", margin: "6px 0 0", padding: 0, display: "grid", gap: 3 }}>
+            {sessions.map((s) => (
+              <li key={s.id}>
+                <button className="btn btn-quiet btn-sm" aria-pressed={s.id === activeId}
+                  style={{ width: "100%", justifyContent: "flex-start" }}
+                  onClick={() => { setActiveId(s.id); setError(""); }}>
+                  {s.title}
+                  <span className="muted" style={{ marginLeft: "auto" }}>{s.messages.length}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
 
       <div style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto", display: "grid", gap: 8, alignContent: "start", paddingRight: 2 }}>

@@ -218,6 +218,9 @@ $$
   test("R13 整页无横向溢出，键盘可达阅读/下载", async ({ page }) => {
     await open(page);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+    // 2026-11-27 移动端阅读优先：手机档下载按钮移入目录 sheet；桌面/平板仍在顶栏。
+    const isPhone = (page.viewportSize()?.width ?? 1440) < 768;
+    if (isPhone) await page.getByRole("button", { name: "目录", exact: true }).click();
     const download = page.getByRole("button", { name: /下载 v2/ });
     await download.focus();
     await expect(download).toBeFocused();

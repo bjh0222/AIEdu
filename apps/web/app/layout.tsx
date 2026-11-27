@@ -11,7 +11,8 @@ export const metadata: Metadata = {
   manifest: "/manifest.webmanifest",
   appleWebApp: { capable: true, statusBarStyle: "default", title: "AI Edu" },
 };
-export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover", themeColor: "#1d5c6e" };
+// 2026-11-27 移动端问答 sheet：Android Chrome 键盘收缩布局视口；iOS 由 visualViewport 补偿（Reader.tsx）。
+export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover", themeColor: "#1d5c6e", interactiveWidget: "resizes-content" };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -25,3 +26,4 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     </html>
   );
 }
+
