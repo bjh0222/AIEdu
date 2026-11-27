@@ -197,6 +197,12 @@ def test_blueprint_binds_evidence_decisions_layout_and_hashes():
     assert artifact["evidence_hash"] == digest({"evidence_records": artifact["evidence_records"]})
     assert artifact["teaching_arrangement_hash"] == digest(_teaching())
     assert artifact["context_hash"] == "c" * 64
+    aliased = bind_a1_artifact(
+        {"blueprint": _blueprint(), "evidence": [_evidence()]},
+        teaching_content=_teaching(), context=_context(), state=state,
+    )
+    assert aliased["hash"] == artifact["hash"]
+    assert aliased["evidence_hash"] == artifact["evidence_hash"]
 
 
 def test_blueprint_rejects_unbound_evidence_and_layout_mismatch():

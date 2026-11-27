@@ -554,10 +554,12 @@ def a1_blueprint(value):
 
 
 def bind_a1_artifact(output, *, teaching_content, context, state):
-    if not isinstance(output, dict) or "blueprint" not in output or "evidence_records" not in output:
+    if not isinstance(output, dict) or "blueprint" not in output:
         raise DomainError("BLUEPRINT_REQUIRED", 422)
     blueprint = a1_blueprint(output["blueprint"])
-    raw_evidence = output.get("evidence_records")
+    if "evidence_records" in output and "evidence" in output and output["evidence_records"] != output["evidence"]:
+        raise DomainError("BLUEPRINT_EVIDENCE_INVALID", 422, field="evidence_records")
+    raw_evidence = output.get("evidence_records", output.get("evidence"))
     if not isinstance(raw_evidence, list):
         raise DomainError("BLUEPRINT_EVIDENCE_INVALID", 422)
     evidence = [_validated(ResearchEvidence, row, "BLUEPRINT_EVIDENCE_INVALID")
