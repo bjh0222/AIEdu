@@ -286,7 +286,7 @@ export default function Reader({ taskId }: { taskId: string }) {
           <div><b>只读 · 历史版本。</b> 你正在看 v{read.version}，当前版本更新。这里不提供修复或生成。 <Link href={`/tasks/${taskId}/read`}>回到当前版本</Link></div>
         </div>
       )}
-      {run.demo && <p style={{ marginBottom: 12 }}><span className="demo-tag">演示</span> <span className="muted">内容由演示模式生成，不是真实模型输出。</span></p>}
+      {run.stop_reason === "external_import_no_model_calls" ? <p style={{ marginBottom: 12 }}><span className="demo-tag">外部导入</span> <span className="muted">原文已按固定版本保存；本次仅做规则解析，未调用模型。</span></p> : run.demo && <p style={{ marginBottom: 12 }}><span className="demo-tag">演示</span> <span className="muted">内容由演示模式生成，不是真实模型输出。</span></p>}
 
       <details className="reader-knowledge disclosure" style={{ marginBottom: 20 }} onToggle={(e) => setKnowledgeOpen(e.currentTarget.open)}>
         <summary>探索知识体系与方法卡</summary>
