@@ -345,3 +345,24 @@ def test_criterion_requests_include_one_existing_contract_row_per_blueprint_deci
     assert len(blueprint_rows) == 1
     assert blueprint_rows[0]["criterion"]["target"] == "unit"
     assert blueprint_rows[0]["a_target"]["decision_id"] == "d1"
+
+
+def test_knowledge_chain_inventory_lists_every_unbound_endpoint_across_units():
+    from app.v2.worker import knowledge_chain_endpoint_inventory
+
+    content = {
+        "learner_prerequisites": ["P"],
+        "units": [
+            {"title": "U1", "concepts": ["A"], "knowledge_chain": [
+                {"source_concept": "A", "target_concept": "bad-1"},
+            ]},
+            {"title": "U2", "concepts": ["B"], "knowledge_chain": [
+                {"source_concept": "bad-2", "target_concept": "B"},
+            ]},
+        ],
+    }
+    rows = knowledge_chain_endpoint_inventory(content)
+    assert [(row["unit_title"], row["field"], row["unbound_endpoint"]) for row in rows] == [
+        ("U1", "target_concept", "bad-1"),
+        ("U2", "source_concept", "bad-2"),
+    ]

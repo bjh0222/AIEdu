@@ -662,6 +662,25 @@ def understanding_json_correction_candidate(error):
     }
 
 
+def knowledge_chain_endpoint_inventory(content):
+    prerequisites = set(content.get("learner_prerequisites", []))
+    rows = []
+    for unit in content.get("units", []):
+        allowed = set(unit.get("concepts", [])) | prerequisites
+        for index, link in enumerate(unit.get("knowledge_chain", [])):
+            for field in ("source_concept", "target_concept"):
+                endpoint = link.get(field)
+                if endpoint not in allowed:
+                    rows.append({
+                        "unit_title": unit.get("title"),
+                        "knowledge_chain_index": index,
+                        "field": field,
+                        "unbound_endpoint": endpoint,
+                        "allowed_endpoints": sorted(allowed),
+                    })
+    return rows
+
+
 def load_failed_call_content(run_id, *, call_id):
     """Read the immutable failed output for an explicit correction request."""
     from .storage import CallDispatch
@@ -980,6 +999,9 @@ def resolve_run_intent(run_id, worker, epoch, provider_factory=None):
             role="understanding", provider_factory=provider_factory,
             data={"original_arrangement": teaching["content"],
                   "validation_error": {"code": exc.code, "details": exc.details},
+                  "knowledge_chain_endpoint_inventory": knowledge_chain_endpoint_inventory(
+                      teaching["content"]
+                  ),
                   "planning_skill": planning_skill,
                   "teaching_arrangement_json_schema": TeachingArrangement.model_json_schema(),
                   "context": planning_context(context)},
