@@ -518,5 +518,8 @@ def run_manifest(task_id, run_id):
                 "context_hash": snap["context_hash"], "checkpoint_hash": snap["checkpoint_hash"],
                 "input": {k: context[k] for k in ("raw_input", "title", "domain_key", "branch", "hard_constraints", "generation_scope", "spec_bindings", "requested_artifacts") if k in context},
                 "source_material_ids": context.get("material_ids", []), "source_bytes": "owner-controlled immutable blob store; not embedded",
-                "execution_policy": state.get("execution_policy"), "plan": state["plan"]}}
+                "execution_policy": state.get("execution_policy"),
+                "research_strategy": state.get("research_strategy"),
+                "repair_ledger": state.get("repair_ledger"),
+                "plan": state["plan"]}}
         return {**result, "manifest_hash": digest(result)}

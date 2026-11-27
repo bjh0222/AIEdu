@@ -9,7 +9,7 @@ import styles from "./TaskCards.module.css";
 type Tone = "primary" | "warn" | "ok" | "danger";
 
 function status(t: TaskListItem): { text: string; tone: Tone } {
-  if (t.needs_action) return { text: "需要你处理", tone: "warn" };
+  if (t.needs_action) return { text: "需处理", tone: "warn" };
   if (t.state === "queued" || t.state === "running") return { text: "进行中", tone: "primary" };
   if (t.state === "paused") return { text: "已暂停", tone: "warn" };
   if (t.state === "failed" || t.state === "interrupted") return { text: "已中断", tone: "danger" };
@@ -28,7 +28,7 @@ function TaskCard({ task, onChanged }: { task: TaskListItem; onChanged: () => vo
   const finished = task.state === "completed";
   const href = finished && task.version_id ? `/tasks/${task.task_id}/read` : `/tasks/${task.task_id}`;
   const hint = status(task);
-  const actionLabel = task.needs_action ? "去处理" : finished && task.version_id ? "阅读" : "打开";
+  const actionLabel = task.needs_action ? "处理" : finished && task.version_id ? "阅读" : "打开";
   const text = summary(task);
 
   return (

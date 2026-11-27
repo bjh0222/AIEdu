@@ -84,6 +84,10 @@ def test_worker_freezes_degraded_research_and_continues_planning(client, monkeyp
         rubric_research, "execute_research",
         lambda *args, **kwargs: degraded_result(),
     )
+    monkeypatch.setattr(
+        worker, "ensure_research_strategy",
+        lambda *args, **kwargs: {"hash": "s" * 64, "content": {"necessity": "required"}},
+    )
     worker.run_research_before_planning(run["run_id"], "worker", lease["epoch"])
     with write() as db:
         obj = job(db, run["run_id"])

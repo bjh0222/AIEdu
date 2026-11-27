@@ -176,12 +176,10 @@ def delivery_decision(
 
     required_scope = _scope_for_items(plan, quality, requested_scope, soft_ids)
     certificate_status = "not_present"
-    if certificate is None:
-        hard.append({"code": "CALIBRATION_CERTIFICATE_REQUIRED"})
-    elif certificate_current_bindings is None or certificate_current_anchor is None:
+    if certificate is not None and (certificate_current_bindings is None or certificate_current_anchor is None):
         certificate_status = certificate_state(certificate)
         hard.append({"code": "CALIBRATION_CURRENT_BINDINGS_UNAVAILABLE"})
-    else:
+    elif certificate is not None:
         certificate_status = certificate_state(
             certificate,
             current_bindings=certificate_current_bindings,
@@ -230,7 +228,7 @@ def delivery_decision(
         "certificate_status": certificate_status,
         "delivery_calibration_status": (
             "waiver_authorized" if state == "eligible" and soft
-            else "calibrated" if state == "eligible"
+            else "calibrated" if state == "eligible" and certificate_status == "calibrated"
             else "not_calibrated"
         ),
         "required_certificate_scope": required_scope,

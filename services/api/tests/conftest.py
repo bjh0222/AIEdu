@@ -29,6 +29,9 @@ os.environ["AIEDU_EXPORT_DIR"] = str(Path(__file__).parent / f"test_materials{_S
 os.environ["AIEDU_ALLOW_PAID"] = "0"
 os.environ["AIEDU_START_WORKER"] = "0"
 os.environ["AIEDU_ENABLE_LEGACY_API"] = "1"  # isolated baseline regression only
+os.environ.pop("AIEDU_V2_ALLOWED_HOSTS", None)
+os.environ.pop("AIEDU_V2_ALLOWED_ORIGIN_HOSTS", None)
+os.environ.pop("CORS_ORIGINS", None)
 
 # 反馈证据 / 基准报告等离线分析产物（JSON 文件，板块五）也放到测试目录
 os.environ["AIEDU_ANALYSIS_DIR"] = (Path(__file__).resolve().parent / f"test_analysis{_SUFFIX}").as_posix()

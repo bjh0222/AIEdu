@@ -133,6 +133,10 @@ class RunSnapshot(Output):
     research_policy: dict[str, Any] = Field(default_factory=dict)
     research_status: str | None = None
     research_degradation: dict[str, Any] | None = None
+    research_strategy: dict[str, Any] | None = None
+    blueprint: dict[str, Any] | None = None
+    blueprint_execution: dict[str, Any] = Field(default_factory=dict)
+    repair_ledger: dict[str, Any] | None = None
     tutorial_rubric_refs: list[dict[str, Any]] = Field(default_factory=list)
     subject_understanding_ref: dict[str, Any] = Field(default_factory=dict)
     evaluation_framework_refs: list[dict[str, Any]] = Field(default_factory=list)

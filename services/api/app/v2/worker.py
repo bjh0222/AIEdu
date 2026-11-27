@@ -148,7 +148,8 @@ def execute_run(run_id: str, provider_factory=None):
             from .insights import execute_cards
             execute_cards(run_id, worker, epoch, operation_state, provider_factory)
             return
-        if operation_state.get("mode") == "configured" and operation_state["context"].get("research_request", {}).get("enabled"):
+        if (operation_state.get("mode") == "configured"
+                and not operation_state.get("review_only_source_version")):
             run_research_before_planning(run_id, worker, epoch, provider_factory)
         if operation_state["context"].get("operation") == "benchmark_build":
             from .benchmark import compile_semantic,seal_dataset,store_report,source_roles_for_versions,source_evaluation_basis
@@ -370,6 +371,7 @@ def generate_planned_unit(run_id, worker, epoch, state, planned, units, material
     if planned.get("format_contract") in {READING_LAYOUT, ADAPTIVE_LAYOUT} and planned["artifact_role"] == "book_level":
         upstream = reading_digests(upstream)
     from .resolver import spec_entries
+    from .planning import BLUEPRINT_EXECUTION_INSTRUCTION, validate_blueprint_execution
     manifest = {"schema_version": "aiedu.prompt-manifest.v1", "context_hash": state["context"]["context_hash"],
                 "plan_hash": state["plan"]["plan_hash"], "unit_id": planned["unit_id"], "stage": "generating", "role": "generation",
                 "entries": spec_entries(state["context"], "generating", planned["artifact_role"])}
@@ -469,6 +471,20 @@ def generate_planned_unit(run_id, worker, epoch, state, planned, units, material
             " If selected knowledge_guidance is actually used, also return top-level knowledge_bindings:[{id,quote}]. "
             "quote must occur uniquely in an item's stem or displayed answer (or body), verbatim. "
             "This records source use only, not truth or measured benefit. Do not claim use when it is irrelevant.")
+    blueprint_execution = None
+    if state["plan"].get("blueprint"):
+        output_schema = deepcopy(output_schema)
+        output_schema["blueprint_execution"] = {
+            "status": "compliant|local_deviation|requires_human_decision",
+            "deviations": [{
+                "decision_id": "string",
+                "change": "string",
+                "reason": "string",
+                "risk": "low|medium|high",
+                "evidence_ids": ["string"],
+            }],
+        }
+        messages[0]["content"] += "\n" + BLUEPRINT_EXECUTION_INSTRUCTION + " Schema: " + dump(output_schema)
     model = profile.llm_model if profile else "demo"
     provider = profile.llm_base_url if profile else "demo"
     family = getattr(profile, "llm_model_family", "unknown") if profile else "demo"
@@ -528,6 +544,7 @@ def generate_planned_unit(run_id, worker, epoch, state, planned, units, material
                 output_schema=output_schema, output_tokens=None,
                 entries=manifest["entries"])
             call_id, usage = generation_audit["call_id"], generation_audit.get("usage")
+            blueprint_execution = validate_blueprint_execution(output, state["plan"].get("blueprint"))
             if is_items:
                 try:
                     items = normalize_items(output, planned["artifact_role"], planned["unit_id"],
@@ -581,6 +598,8 @@ def generate_planned_unit(run_id, worker, epoch, state, planned, units, material
                       "injected_chunk_ids": [c["chunk_id"] for c in material_chunks]}
     if items:
         unit["items"] = items
+    if blueprint_execution is not None:
+        unit["blueprint_execution"] = blueprint_execution
     if network_trace:
         unit["network_research"] = network_trace
     if knowledge_bundle["selected"]:
@@ -684,7 +703,8 @@ def resolve_run_intent(run_id, worker, epoch, provider_factory=None):
     from ..learning.disciplines import SUBJECTS
     from .tasks import context_of, goal
     from .planning import (skill, arrangement, apply_arrangement, planning_context,
-                           TeachingArrangement, IntegrationPlan, A_SOURCE_INSTRUCTION)
+                           TeachingArrangement, IntegrationPlan, A_SOURCE_INSTRUCTION,
+                           A1_BLUEPRINT_INSTRUCTION, bind_a1_artifact)
     from .adaptive_format import POLICY_PROMPT, apply_design
     planning_skill = skill()
     from .understanding_assets import manifest_entries as understanding_manifest_entries
@@ -736,7 +756,19 @@ def resolve_run_intent(run_id, worker, epoch, provider_factory=None):
              "sha256": planning_skill["hash"], "consumer": "A"}] + understanding_entries
             + framework_entries + experience["entries"],
         provider_factory=provider_factory, output_tokens=32768)
+    research_strategy = state.get("research_strategy")
+    if research_strategy:
+        intent_request["data"]["research_strategy"] = research_strategy
+        intent_request["data"]["research_result"] = {
+            "sources": deepcopy(state.get("research_result", {}).get("sources", [])),
+            "source_claims": deepcopy(state.get("research_result", {}).get("source_claims", [])),
+        }
+        intent_request["system"] += "\n" + A1_BLUEPRINT_INSTRUCTION
+        if research_strategy["content"]["necessity"] in {"not_needed", "disabled"}:
+            intent_request["data"]["research_result"] = {"sources": [], "source_claims": []}
     source_policy = state.get("execution_policy", {}).get("planning_source_tools", False)
+    if research_strategy:
+        source_policy = False
     if type(source_policy) is not bool:
         raise DomainError("PLANNING_SOURCE_POLICY_INVALID", 422)
     network_trace = None
@@ -809,6 +841,7 @@ def resolve_run_intent(run_id, worker, epoch, provider_factory=None):
         network_trace = None
     if not isinstance(result, dict):
         raise DomainError("INTENT_OUTPUT_INVALID", 422)
+    blueprint_artifact = None
     adaptive = state.get("execution_policy", {}).get("task_adaptive_format", False)
     try:
         teaching = arrangement(result)
@@ -981,6 +1014,13 @@ def resolve_run_intent(run_id, worker, epoch, provider_factory=None):
         audit = {**audit, "teaching_arrangement_contract_correction": contract_audit}
     if strict and teaching["content"].get("unresolved_conflicts"):
         raise DomainError("UNRESOLVED_CONFLICT", 422)
+    if research_strategy:
+        blueprint_artifact = bind_a1_artifact(
+            result,
+            teaching_content=teaching["content"],
+            context=context,
+            state=state,
+        )
     with write() as db:
         obj = job(db, run_id)
         fence(obj, worker, epoch)
@@ -992,11 +1032,14 @@ def resolve_run_intent(run_id, worker, epoch, provider_factory=None):
             plan["quality_target_rebinding"] = quality_target_rebinding
         if network_trace:
             plan["planning_network_research"] = {**network_trace, "arrangement_hash": teaching.get("hash")}
+        if blueprint_artifact:
+            plan["blueprint"] = blueprint_artifact
         plan.pop("plan_hash", None)
         plan["plan_hash"] = digest(plan)
-        from .quality import compile_plan
+        from .quality import compile_plan, frozen_quality_layers
         current.update(context=context, plan=plan, check_plan=compile_plan(
-                           context, current.get("plan", {}).get("network_policy")), intent_pending=False,
+                           context, current.get("plan", {}).get("network_policy"),
+                           quality_layers=frozen_quality_layers(current)), intent_pending=False,
                        intent_call=audit, stages={**current.get("stages", {}), "understanding": "done", "planning": "done"})
         owner_state = load(owner.task_state_json)
         owner_state.update(context=context, confirmed_context_hash=context["context_hash"])
@@ -1010,12 +1053,120 @@ def resolve_run_intent(run_id, worker, epoch, provider_factory=None):
         raise DomainError("UNRESOLVED_CONFLICT", 422)
 
 
+def ensure_research_strategy(run_id, worker, epoch, provider_factory=None):
+    from .inference import invoke
+    from .planning import (ResearchStrategy, A0_RESEARCH_STRATEGY_PROMPT,
+                           disabled_research_strategy, planning_context,
+                           research_strategy, skill)
+    from .resolver import spec_entries
+    from .tasks import context_of, goal
+    with SessionLocal() as db:
+        state = load(job(db, run_id).state_json)
+    if state.get("research_strategy"):
+        return state["research_strategy"]
+    if state.get("research_binding_frozen"):
+        return None
+    request = state.get("context", {}).get("research_request", {})
+    enabled = request.get("enabled") is True
+    if enabled:
+        planning_skill = skill()
+        result, audit = invoke(
+            run_id, worker, epoch, state,
+            stage="research_strategy", unit_id="research-strategy",
+            role="understanding", provider_factory=provider_factory,
+            data={
+                "raw_request": state["context"]["raw_input"],
+                "research_request": deepcopy(request),
+                "context": planning_context(state["context"]),
+                "execution_policy": deepcopy(state.get("execution_policy", {})),
+            },
+            system=A0_RESEARCH_STRATEGY_PROMPT,
+            output_schema=ResearchStrategy.model_json_schema(),
+            output_tokens=16384,
+            entries=spec_entries(state["context"], "planning") + [{
+                "source_id": planning_skill["skill_id"],
+                "version": planning_skill["version"],
+                "sha256": planning_skill["hash"],
+                "consumer": "A0",
+            }],
+            key=f"{run_id}:research-strategy:planning",
+        )
+        value = research_strategy(result)
+    else:
+        value = disabled_research_strategy(request)
+        audit = None
+    with write() as db:
+        obj = job(db, run_id)
+        fence(obj, worker, epoch)
+        current = load(obj.state_json)
+        owner = goal(db, obj.goal_id)
+        context = deepcopy(current["context"])
+        context["research_strategy_ref"] = {
+            "method_version": value["content"]["method_version"],
+            "hash": value["hash"],
+            "necessity": value["content"]["necessity"],
+            "user_requirement_count": len(value["content"]["user_requirements"]),
+            "autonomous_addition_count": len(value["content"]["autonomous_additions"]),
+        }
+        current["context"] = context_of(context, owner.input_revision)
+        current["research_strategy"] = {
+            **value,
+            "audit": audit,
+            "frozen": True,
+        }
+        owner_state = load(owner.task_state_json)
+        owner_state.update(
+            context=current["context"],
+            confirmed_context_hash=current["context"]["context_hash"],
+        )
+        owner.task_state_json = dump(owner_state)
+        obj.state_json, obj.state_revision = dump(current), obj.state_revision + 1
+        return current["research_strategy"]
+
+
 def run_research_before_planning(run_id, worker, epoch, provider_factory=None):
     from .rubric_research import execute_research
     from .import_profiles import publish_assets, freeze_import_profiles, freeze_research_rubrics
     from .tasks import context_of, goal
+    from .quality import compile_plan, frozen_quality_layers
     with SessionLocal() as db:
         state = load(job(db, run_id).state_json)
+    strategy = ensure_research_strategy(run_id, worker, epoch, provider_factory)
+    if strategy is None:
+        return
+    necessity = strategy["content"]["necessity"]
+    if necessity in {"not_needed", "disabled"}:
+        with write() as db:
+            obj = job(db, run_id)
+            fence(obj, worker, epoch)
+            current = load(obj.state_json)
+            owner = goal(db, obj.goal_id)
+            result = {
+                "schema_version": "aiedu.research-result.v2",
+                "status": "not_needed" if necessity == "not_needed" else "disabled",
+                "research_mode": necessity,
+                "rubric": None,
+                "research_rubric_ref": None,
+                "sources": [],
+                "source_claims": [],
+                "professional_certification": "not_calibrated",
+                "calibration_status": "not_calibrated",
+                "reason": "A0_DECIDED_RESEARCH_NOT_NEEDED" if necessity == "not_needed" else "RESEARCH_DISABLED_BY_USER",
+            }
+            current["research_result"] = result
+            current["research_binding_frozen"] = True
+            current["check_plan"] = compile_plan(
+                current["context"], current.get("plan", {}).get("network_policy"),
+                quality_layers=frozen_quality_layers(current),
+            )
+            owner_state = load(owner.task_state_json)
+            owner_state.update(
+                context=current["context"],
+                confirmed_context_hash=current["context"]["context_hash"],
+            )
+            owner.task_state_json = dump(owner_state)
+            obj.state_json, obj.state_revision = dump(current), obj.state_revision + 1
+        return
     if state.get("research_binding_frozen"):
         if (state.get("context", {}).get("import_understanding")
                 and state.get("research_result", {}).get("import_quality_review", {}).get("method_version") != "bound-rubric-model-review.v2"):
@@ -1049,7 +1200,10 @@ def run_research_before_planning(run_id, worker, epoch, provider_factory=None):
             current.setdefault("stages", {})["researching"] = "degraded"
             current["check_plan"] = __import__(
                 "app.v2.quality", fromlist=["compile_plan"]
-            ).compile_plan(current["context"], current.get("plan", {}).get("network_policy"))
+            ).compile_plan(
+                current["context"], current.get("plan", {}).get("network_policy"),
+                quality_layers=frozen_quality_layers(current),
+            )
             owner_state = load(owner.task_state_json)
             owner_state.update(
                 context=current["context"],
@@ -1078,7 +1232,8 @@ def run_research_before_planning(run_id, worker, epoch, provider_factory=None):
         current["research_binding_frozen"] = True
         current.setdefault("stages", {})["researching"] = "done"
         current["check_plan"] = __import__("app.v2.quality", fromlist=["compile_plan"]).compile_plan(
-            current["context"], current.get("plan", {}).get("network_policy"))
+            current["context"], current.get("plan", {}).get("network_policy"),
+            quality_layers=frozen_quality_layers(current))
         owner_state = load(owner.task_state_json)
         owner_state.update(context=current["context"], confirmed_context_hash=current["context"]["context_hash"])
         owner.task_state_json = dump(owner_state)

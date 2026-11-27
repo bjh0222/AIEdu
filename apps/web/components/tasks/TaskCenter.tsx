@@ -88,7 +88,7 @@ export default function TaskCenter() {
       {attention.length > 0 && (
         <div className="banner banner-warn" style={{ marginBottom: 16 }}>
           <div>
-            有 {attention.length} 个任务需要你处理：
+            有个任务待处理：
             {attention.slice(0, 3).map((t) => (
               <span key={t.task_id}> <Link href={`/tasks/${t.task_id}`}>{t.title}</Link></span>
             ))}
@@ -111,7 +111,7 @@ export default function TaskCenter() {
       )}
 
       {state === "error" && items.length === 0 && (
-        <div className="empty"><p>还没有读到任务。后端可能没有启动。</p></div>
+        <div className="empty"><p>还没有读到任务。后端可能未启动。</p></div>
       )}
 
       {state === "ready" && items.length === 0 && !search && (

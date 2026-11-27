@@ -12,6 +12,13 @@ const ids = [
   "33333333-3333-4333-8333-333333333333",
 ];
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/v2/session", (route) => route.fulfill({
+    json: { csrf_token: "fixture-csrf" },
+    headers: { "set-cookie": "aiedu_session=fixture; Path=/; HttpOnly; SameSite=Lax" },
+  }));
+});
+
 async function mockTasks(page: import("@playwright/test").Page, items: unknown[]) {
   await page.route("**/api/v2/tasks**", (route) => route.fulfill({ json: { items, next_cursor: null, read_at: 0 } }));
 }
@@ -27,10 +34,10 @@ test.describe("任务中心卡片", () => {
     ];
     await mockTasks(page, items);
     await page.goto("/");
-    await expect(page.getByRole("article", { name: "需要处理的任务" })).toContainText("需要你处理");
+    await expect(page.getByRole("article", { name: "需要处理的任务" })).toContainText("需处理");
     await expect(page.getByRole("article", { name: "可以阅读的任务" })).toContainText("可阅读");
     await expect(page.getByRole("article", { name: "演示任务" })).toContainText("演示");
-    await expect(page.getByRole("article", { name: "需要处理的任务" }).getByRole("link", { name: "去处理" })).toBeVisible();
+    await expect(page.getByRole("article", { name: "需要处理的任务" }).getByRole("link", { name: "处理", exact: true })).toBeVisible();
     await expect(page.getByRole("article", { name: "可以阅读的任务" }).getByRole("link", { name: "阅读", exact: true })).toBeVisible();
     await expect(page.getByRole("article", { name: "演示任务" }).getByRole("button", { name: "将演示任务移入回收站" })).toBeVisible();
 
@@ -82,7 +89,7 @@ test.describe("任务中心卡片", () => {
       return route.fulfill({ json: { items: filtered, next_cursor: null, read_at: 0 } });
     });
     await page.goto("/");
-    await expect(page.getByText("有 1 个任务需要你处理：")).toBeVisible();
+    await expect(page.getByText("有个任务待处理：")).toBeVisible();
     await page.getByLabel("按标题搜索").fill("Beta");
     await expect(page.getByRole("article", { name: "Beta" })).toBeVisible();
     await expect(page.getByRole("article", { name: " Alpha" })).toHaveCount(0);
@@ -131,7 +138,7 @@ test.describe("新建任务", () => {
     await page.goto("/new?example=" + encodeURIComponent("示例需求原话"));
     const raw = page.getByLabel("需求");
     await expect(raw).toHaveValue("");
-    await expect(raw).toHaveAttribute("placeholder", /例如：我想掌握定积分/);
+    await expect(raw).toHaveAttribute("placeholder", /可按需说明学习目标/);
     // 轮3 删除的文案与示例填充入口
     await expect(page.getByText("原话会逐字保存")).toHaveCount(0);
     await expect(page.getByText("先写下你的需求")).toHaveCount(0);

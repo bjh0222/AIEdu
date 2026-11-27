@@ -428,10 +428,12 @@ def reduce_quality(plan: dict, checks: list[dict], findings: list[dict], calibra
             reasons.append({"item_id": item["item_id"], "result": result})
         if result == "violated" and (item.get("required") or item["severity_class"] == "blocker"):
             violations.append(item["item_id"])
-    confirmed = [f for f in findings if f["status"] == "confirmed" and f["severity_class"] == "blocker"]
+    confirmed = [f for f in findings if f.get("status") == "confirmed"
+                 and f.get("severity_class") == "blocker"]
     unavailable = any(item.get("required") and by_id.get(item["item_id"],{"result":"not_run"})["result"]
                       not in {"satisfied","violated","not_applicable"} for item in plan.get("check_items",[]))
-    if not plan.get("check_items") or unavailable or plan.get("conflicts") or any(f["status"] in {"suspected", "unsupported", "escalated"} for f in findings):
+    if not plan.get("check_items") or unavailable or plan.get("conflicts") or any(
+            f.get("status") in {"suspected", "unsupported", "escalated"} for f in findings):
         verdict, legacy = "blocked", "needs_review"
     elif violations or confirmed:
         verdict, legacy = "needs_repair", "failed"

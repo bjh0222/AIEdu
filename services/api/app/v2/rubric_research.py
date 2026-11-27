@@ -858,17 +858,29 @@ def _public_research_topic(request, context):
 def _execute_research_strict(run_id, worker, epoch, state, provider_factory=None):
     request = state["context"].get("research_request", {})
     materials = selected_materials(state)
-    public_topic = _public_research_topic(request, state["context"])
-    queries, q_audit = _call(run_id, worker, epoch, state, "research_queries",
-        {"public_topic": public_topic, "query_hints": []},
-        "Generate two short public academic keyword queries. Return {queries:[string,string],inclusion_criteria:[string],exclusion_criteria:[string]}. "
-        "Cover educational knowledge structure/explanation and assessment item validity/cognitive demand. Never include private material or user text.", provider_factory)
+    from .planning import RESEARCH_STRATEGY_CONSUMER_INSTRUCTION
+    strategy = state.get("research_strategy")
+    if strategy:
+        content = strategy["content"]
+        queries = {
+            "queries": deepcopy(content["search_strategy"]["queries"]),
+            "inclusion_criteria": deepcopy(content["source_selection"]["include_criteria"]),
+            "exclusion_criteria": deepcopy(content["source_selection"]["exclude_criteria"]),
+        }
+        q_audit = strategy.get("audit") or {"cache": "A0_research_strategy"}
+    else:
+        public_topic = _public_research_topic(request, state["context"])
+        queries, q_audit = _call(run_id, worker, epoch, state, "research_queries",
+            {"public_topic": public_topic, "query_hints": []},
+            "Generate two short public academic keyword queries. Return {queries:[string,string],inclusion_criteria:[string],exclusion_criteria:[string]}. "
+            "Cover educational knowledge structure/explanation and assessment item validity/cognitive demand. Never include private material or user text.", provider_factory)
     from .generation_tools import _public_query
     query_list = queries.get("queries", [])
     if not isinstance(query_list, list) or not 1 <= len(query_list) <= 3:
         raise DomainError("RESEARCH_QUERIES_INVALID", 422)
     discovery, candidates, seen = [], [], set()
-    indexes = request.get("indexes") or ["openalex", "crossref", "europepmc"]
+    indexes = ((strategy["content"]["search_strategy"].get("preferred_indexes") if strategy else None)
+               or request.get("indexes") or ["openalex", "crossref", "europepmc"])
     if (not isinstance(indexes, list) or not indexes
             or any(index not in {"crossref", "openalex", "europepmc"} for index in indexes)):
         raise DomainError("RESEARCH_INDEXES_INVALID", 422)
@@ -908,12 +920,15 @@ def _execute_research_strict(run_id, worker, epoch, state, provider_factory=None
     _save(run_id, worker, epoch, "discovery", {"queries": queries, "query_call": q_audit, "results": discovery, "candidates": candidates})
     if len({r["index"] for r in discovery if r.get("status") == "ok"}) < min(2, len(indexes)):
         raise DomainError("RESEARCH_TWO_INDEXES_NOT_RETRIEVED", 422)
+    screening_instruction = RESEARCH_STRATEGY_CONSUMER_INSTRUCTION if strategy else ""
     screened, s_audit = _call(run_id, worker, epoch, state, "research_screening", {"candidates": candidates,
-        "criteria": {k: queries.get(k, []) for k in ("inclusion_criteria", "exclusion_criteria")}},
+        "criteria": {k: queries.get(k, []) for k in ("inclusion_criteria", "exclusion_criteria")},
+        "research_strategy": strategy["content"] if strategy else None},
         "Screen EVERY candidate exactly once. Return {decisions:[{candidate_id,decision:include|exclude,reason,access_priority_urls:[string]}]}. "
         "Use only URLs present in that candidate. Explain relevance, publication context, duplicates and accessible scope. Include relevant open-fulltext academic "
         "papers AND the formal official education framework. Metadata/abstract is discovery, not fulltext evidence. Prefer EuropePMC open fullTextXML for reading. "
-        "Choose up to five non-duplicate relevant sources; do not include merely to reach a number.", provider_factory)
+        "Choose up to five non-duplicate relevant sources; do not include merely to reach a number. "
+        + screening_instruction, provider_factory)
     decisions = screened.get("decisions", [])
     expected = {c["candidate_id"] for c in candidates}
     if (len(decisions) != len(candidates) or {d.get("candidate_id") for d in decisions} != expected

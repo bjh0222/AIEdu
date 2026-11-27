@@ -179,6 +179,11 @@ export const REASON_TEXT: Record<string, string> = {
   model_candidate_is_not_professional_certification: "模型意见不等于专业认证",
   external_defect_verified: "已由外部证据核实",
   external_import_no_model_calls: "外部 Markdown 导入完成；本次仅做规则解析，未调用模型",
+  BLUEPRINT_REQUIRES_HUMAN_DECISION: "蓝图无法按当前条件执行，需要人工决定",
+  BLUEPRINT_EVIDENCE_UNBOUND: "蓝图设计未绑定有效证据",
+  REPAIR_DIRECTIVE_BINDING_REQUIRED: "整改候选未绑定修复指令，已拒绝",
+  REPAIR_DIRECTIVE_TARGET_STALE: "修复指令指向的版本或位置已变化",
+  REPAIR_LEDGER_INVALID: "修复记录不完整，候选未发布",
 };
 export function reasonText(code?: string | null): string {
   if (!code) return "";

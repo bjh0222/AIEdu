@@ -72,6 +72,7 @@ class ImportProfileRef(Contract):
 class ResearchRequest(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
     enabled: StrictBool = False
+    requirements: list[str] = Field(default_factory=list)
 
 
 class TaskInput(Contract):

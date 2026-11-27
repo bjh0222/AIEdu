@@ -215,6 +215,11 @@ export async function downloadBlob(path: string): Promise<{ blob: Blob; name: st
 
 /** 后端错误码 → 用户语言（说明发生了什么与下一步，不道歉）。未知码如实显示原码。 */
 const ERRORS: Record<string, string> = {
+  BLUEPRINT_REQUIRES_HUMAN_DECISION: "蓝图无法按当前条件执行，需要人工决定",
+  BLUEPRINT_EVIDENCE_UNBOUND: "蓝图设计未绑定有效证据",
+  REPAIR_DIRECTIVE_BINDING_REQUIRED: "整改候选未绑定修复指令，已拒绝",
+  REPAIR_DIRECTIVE_TARGET_STALE: "修复指令指向的版本或位置已变化",
+  REPAIR_LEDGER_INVALID: "修复记录不完整，候选未发布",
   SESSION_REQUIRED: "连接已过期。页面会重新建立连接，请再试一次。",
   CSRF_DENIED: "请求校验没有通过。请刷新页面后重试。",
   ORIGIN_DENIED: "这个来源不在本机允许列表内，请通过 127.0.0.1 或 localhost 打开。",

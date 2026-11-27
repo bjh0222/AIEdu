@@ -20,7 +20,7 @@ from .quality_policy import context_domains, unit_domains
 EVIDENCE_VERSION = "server-evidence-catalog.v1"
 NORMALIZER_VERSION = "provider-contract-normalizer.v3"
 APPLICABILITY_VERSION = "zero-model-applicability.v2"
-PROTOCOL_VERSION = "quality-protocol-freeze.v8"
+PROTOCOL_VERSION = "quality-protocol-freeze.v9"
 MAX_CONTRACT_LIST_ITEMS = 256
 
 _RESULT_ALIASES = {
@@ -445,6 +445,11 @@ def review_protocol_manifest() -> dict[str, Any]:
         "delivery_waiver": {"version": DELIVERY_WAIVER},
         "model_output_budget": {"version": "model-output-budget.v1"},
         "research_evidence_degradation": {"version": "research-evidence-degrade.v1"},
+        "research_strategy": {"version": "A0-research-strategy.v1"},
+        "blueprint": {"version": "A1-blueprint.v1"},
+        "repair_directive": {"version": "repair-directive.v1"},
+        "repair_ledger": {"version": "repair-ledger.v1"},
+        "scope_aware_recheck": {"version": "scope-aware-recheck.v1"},
     }
     module_dir = Path(__file__).resolve().parent
     implementation_files = {
@@ -475,6 +480,11 @@ def review_protocol_manifest() -> dict[str, Any]:
             "optimization.py",
             "optimization_recheck.py",
             "optimization_acceptance.py",
+            "repair_directives.py",
+            "recheck_scope.py",
+            "repairs.py",
+            "assessment_binding.py",
+            "check_criteria.py",
             "review_contract.py",
         )
     }

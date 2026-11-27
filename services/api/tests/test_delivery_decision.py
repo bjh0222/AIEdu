@@ -173,14 +173,15 @@ def test_hard_items_and_unbound_findings_cannot_be_waived():
                for row in ambiguous["hard_blockers"])
 
 
-def test_no_reasons_without_certificate_and_revoked_waiver_stay_fail_closed():
+def test_required_checks_without_certificate_can_be_final_and_revoked_waiver_is_not_silently_recreated():
     no_cert = delivery_decision(
         quality(c3="satisfied"), plan(), profile_binding_current=True,
         requested_scope=requested_scope(),
     )
-    assert no_cert["state"] == "blocked"
-    assert any(row["code"] == "CALIBRATION_CERTIFICATE_REQUIRED"
-               for row in no_cert["hard_blockers"])
+    assert no_cert["state"] == "eligible"
+    assert no_cert["final_allowed"] is True
+    assert no_cert["delivery_calibration_status"] == "not_calibrated"
+    assert no_cert["quality_unchanged"] is True
 
     quality_value = quality()
     quality_value["blocking_reasons"] = [{"item_id": "C3.correctness", "result": "undecidable"}]

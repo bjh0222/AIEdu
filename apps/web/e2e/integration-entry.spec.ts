@@ -29,7 +29,7 @@ test("上传入口保留原话、范围、研究和有界优化策略，不另�
   await page.locator("summary").click();
   await page.getByLabel("学习范围", { exact: true }).selectOption("system");
   await page.getByLabel("参考资料（可选）").setInputFiles({ name: "资料.md", mimeType: "text/markdown", buffer: Buffer.from(material) });
-  await page.getByLabel("整条任务模型调用上限").fill("24");
+  await page.getByLabel("模型调用上限").fill("24");
   await expect(page.getByLabel("联网查阅教育文献，建立任务适用的逐维量规")).toBeChecked();
   await page.screenshot({ path: info.outputPath("new-task-policy.png"), fullPage: true });
   await page.getByRole("button", { name: "开始生成" }).click();
@@ -60,7 +60,7 @@ test("真实生成默认不限调用，发送三层质检开关，保留安全�
   } }));
   await page.goto("/new");
   await page.getByLabel("需求").fill("真实生成教程");
-  await expect(page.getByLabel("整条任务模型调用上限")).toBeEmpty();
+  await expect(page.getByLabel("模型调用上限")).toBeEmpty();
   await expect(page.getByText("留空表示不限", { exact: false })).toBeVisible();
   await expect(page.getByText(/无进展、取消和未知回执仍受保护/)).toBeVisible();
   // S10: 三层质检。正确性必开不可关闭；演示入口与 Criterion 用户选项不再出现。
@@ -96,10 +96,11 @@ test("付费未开启时无法开始，不自动降级演示", async ({ page }) 
   } }));
   await page.goto("/new");
   await page.getByLabel("需求").fill("无法开始的任务");
-  await expect(page.getByText(/无法开始：后端没有开启真实模型调用/)).toBeVisible();
+  await expect(page.getByText(/无法开始：后端未开启真实模型调用/)).toBeVisible();
   await expect(page.getByRole("button", { name: /演示/ })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "开始生成" })).toBeDisabled();
-  await page.getByRole("button", { name: "开始生成" }).click({ force: true });
+  await page.getByRole("button", { name: "开始生成" }).evaluate((button) => (button as HTMLButtonElement).click());
+  await expect(page).toHaveURL(/\/new$/);
   await expect(page.getByRole("button", { name: "开始生成" })).toBeDisabled();
   expect(submitted).toBeUndefined();
 });

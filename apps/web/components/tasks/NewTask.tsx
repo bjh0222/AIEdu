@@ -10,7 +10,7 @@ type Conflict = { code?: string; artifact_role?: string; scene?: string; [k: str
 
 const SCENE_TEXT: Record<string, string> = {
   default_tutorial: "通用教程", knowledge_tutorial: "知识讲解", practical_tutorial: "实践操作", reading_guide: "阅读指引",
-  exercise: "练习（不计分）", exam_paper: "试卷（计分）", exam: "试卷（计分）",
+  exercise: "练习", exam_paper: "试卷", exam: "试卷",
 };
 
 function conflictText(c: Conflict): string {
@@ -177,7 +177,7 @@ export default function NewTask() {
       <form className="compose" onSubmit={(e) => { e.preventDefault(); if (canStart) void start(); }} style={{ display: "grid", gap: 20 }}>
         <div className="field">
           <label htmlFor="raw">需求</label>
-          <textarea id="raw" value={text} onChange={(e) => setText(e.target.value)} placeholder={"例如：我想掌握定积分的面积应用；可用学习时间 2 小时，难度从入门到进阶。请生成教程和 10 道练习，包含选择题与计算题，并附答案。\n可按需说明学习目标、学习时间、目标难度、输出模式、题型和题量，不必逐项填写。"} />
+          <textarea id="raw" value={text} onChange={(e) => setText(e.target.value)} placeholder="可按需说明学习目标、学习时间、目标难度、输出模式、题型和题量，不必逐项填写。" />
         </div>
 
         <details className="disclosure panel panel-pad">
@@ -216,30 +216,30 @@ export default function NewTask() {
               <input id="files" type="file" multiple disabled={!materialsReady || busy} accept=".txt,.md,.markdown,.csv,.pdf,.docx,.epub" onChange={(e) => setFiles(Array.from(e.target.files ?? []))} />
               {!materialsReady && <p className="hint">资料上传暂不可用：{caps?.materials.resource_policy_reason ?? "资源策略尚未确认"}。仍可创建无资料任务。</p>}
               <p className="hint">
-                支持 txt、md、csv、带文字层的 pdf、docx、epub；扫描件和旧版 doc/ppt 不支持。资料只作来源，不会被当作指令。
-                {files.length > 0 && <> 已选 {files.length} 个文件，将按“创建 → 上传 → 确认 → 启动”逐步提交。</>}
+                支持 txt、md、csv、带文字层的 pdf、docx、epub；扫描件和旧版 doc/ppt 不支持。
+                {files.length > 0 && <> 已选 {files.length} 个文件</>}
               </p>
             </div>
           </div>
         </details>
 
         <fieldset style={{ border: 0, padding: 0, margin: 0 }} className="field">
-          <legend className="label" style={{ fontWeight: 600, marginBottom: 6 }}>质检与优化</legend>
+          <legend className="label" style={{ fontWeight: 600, marginBottom: 6 }}>质检策略</legend>
           {caps && !paidOk && (
-            <p className="hint" role="note">无法开始：后端没有开启真实模型调用。演示入口已移除，不会自动降级为演示。</p>
+            <p className="hint" role="note">无法开始：后端未开启真实模型调用；演示入口已下线，不会自动降级为演示。</p>
           )}
           <>
-            <label><input type="checkbox" checked disabled /> 正确性检查（必开，不可关闭）</label>
-            <label><input type="checkbox" checked={completeness} onChange={(e) => setCompleteness(e.target.checked)} /> 完整性检查（关闭后仍执行确定性硬底线检查）</label>
-            <label><input type="checkbox" checked={qualitySpecific} onChange={(e) => setQualitySpecific(e.target.checked)} /> 质量专项检查</label>
+            <label><input type="checkbox" checked disabled /> 正确性检查</label>
+            <label><input type="checkbox" checked={completeness} onChange={(e) => setCompleteness(e.target.checked)} /> 完整性检查</label>
+            <label><input type="checkbox" checked={qualitySpecific} onChange={(e) => setQualitySpecific(e.target.checked)} /> 质量专项检查（命题/研究量规/领域条目质量）</label>
             <label><input type="checkbox" checked={qualityLoop} onChange={(e) => setQualityLoop(e.target.checked)} /> 定向整改与优化</label>
             {qualityLoop && <div className="field">
-              <label htmlFor="call-budget">整条任务模型调用上限</label>
+              <label htmlFor="call-budget">模型调用上限</label>
               <input id="call-budget" type="number" min={1} step={1} placeholder="不限" value={callBudget === null ? "" : callBudget} onChange={(e) => setCallBudget(Number.isNaN(e.target.valueAsNumber) ? null : e.target.valueAsNumber)} />
               <p className="hint">理解、研究、生成、检查和优化共用此上限；留空表示不限。若设置上限，预算耗尽会停止并保留最佳草稿；无进展、取消和未知回执仍受保护。</p>
             </div>}
             <label><input type="checkbox" checked={research} onChange={(e) => setResearch(e.target.checked)} /> 联网查阅教育文献，建立任务适用的逐维量规</label>
-            <p className="hint">{research ? "研究会增加模型调用；仅把需求主题用于公共教育检索，不发送附件原文。" : "按已绑定的评价体系质检。"}</p>
+            <p className="hint">{research ? "研究会增加模型调用；仅把需求主题用于公共教育检索，不发送附件原文。" : "不联网检索；按任务已有绑定与已导入资料质检。"}</p>
           </>
         </fieldset>
 

@@ -414,6 +414,21 @@ def publish(run_id, worker, epoch, units, quality, operation_id, base_version=No
         state = load(obj.state_json)
         content = {"schema_version": "aiedu.task-run.v2", "units": frozen, "plan_hash": state["plan"]["plan_hash"],
                    "artifacts": state["context"]["requested_artifacts"]}
+        if state.get("research_strategy"):
+            content["research_strategy_ref"] = {
+                "method_version": state["research_strategy"]["content"]["method_version"],
+                "hash": state["research_strategy"]["hash"],
+                "necessity": state["research_strategy"]["content"]["necessity"],
+            }
+        if state["plan"].get("blueprint"):
+            blueprint = state["plan"]["blueprint"]
+            content["blueprint_ref"] = {
+                key: blueprint.get(key)
+                for key in ("method_version", "hash", "evidence_hash",
+                            "teaching_arrangement_hash", "context_hash")
+                if key in blueprint
+            }
+            content["blueprint_ref"]["plan_hash"] = state["plan"]["plan_hash"]
         if previous:
             if (previous.run_id != run_id or previous.parent_version_id != base_version
                     or previous.content_hash != digest(content) or previous.quality_hash != digest(quality)

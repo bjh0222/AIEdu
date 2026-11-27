@@ -70,7 +70,7 @@ test.describe("真实后端（演示模式，内部验证）", () => {
     await page.goto("/new");
     await page.getByLabel("需求").fill("给我一份定积分入门教程，包含几道练习题 " + Date.now());
     await expect(page.getByRole("button", { name: /演示/ })).toHaveCount(0);   // S10：用户端无演示入口
-    await expect(page.getByText(/无法开始：后端没有开启真实模型调用/)).toBeVisible();
+    await expect(page.getByText(/无法开始：后端未开启真实模型调用/)).toBeVisible();
     await expect(page.getByRole("button", { name: "开始生成" })).toBeDisabled();
   });
 

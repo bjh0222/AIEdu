@@ -228,3 +228,71 @@ Verification:
   technical completion is not a professional or final-delivery claim.
 - Earlier GLM HTTP 502 runs and later failed DeepSeek/C4 or JSON-contract runs
   retain their original failed receipts and were not resumed or replayed.
+
+## ADR-2026-11-27-01: Bind A0 strategy, A1 blueprint, B deviations and repair directives
+
+Status: accepted.
+
+Context: A research, detailed planning, B execution deviations and C repair
+guidance were present in separate fragments. A did not persist one strategy
+that research queries and screening both consumed; B could generate without a
+machine-readable blueprint execution status; C optimization packages did not
+require one directive per confirmed finding; candidates were bound to a package
+but not to concrete repair directives; and candidate rechecks still ran the full
+semantic scope.
+
+Decision:
+
+- A configured new run accepts the user research switch as permission, then
+  calls A0 once to decide research necessity. A0 records user requirements,
+  autonomous additions, directions, public search strategy, source selection,
+  evidence extraction and stop conditions. This strategy is the only input to
+  research queries and screening.
+- A1 receives the frozen A0 strategy and actual research receipts. It returns
+  model-authored Evidence records and a versioned blueprint. The wrapper binds
+  decision evidence, arrangement titles, source identities, strategy hash,
+  evidence hash, arrangement hash and context hash before B can run.
+- B consumes the blueprint and returns `blueprint_execution`. Local low-risk
+  deviations are permitted only for non-`must_follow` decisions. Unknown
+  decisions, core or medium/high-risk changes, or an unexecutable blueprint stop
+  the run with an explicit human-decision failure.
+- C checks frozen blueprint decisions through existing criterion rows. New
+  blueprint optimization packages require one RepairDirective per confirmed
+  finding. Directive modes are limited to executable `whole_item`, `whole_unit`
+  and `related_units` modes; deterministic assertions are limited to
+  `maximum_codepoints` and `required_literals`.
+- Directive-bearing candidates must map every directive at the top level and
+  each changed unit. Unknown, missing, duplicate or target-inconsistent mappings
+  are rejected. Package `directives`, not a new candidate schema version,
+  distinguishes new and legacy behavior.
+- A RepairLedger binds finding, directive, candidate, recheck and lifecycle
+  status. Unchanged checks are reused only with the same plan and input identity;
+  deterministic tests run first; semantic checks rerun only for changed units
+  and their dependency closure. Missing dependency edges fall back to full
+  semantic recheck.
+- Final delivery follows the 2026-11-26 ruling: completed tasks use the frozen
+  policy's non-disabled required checks. A missing optional calibration
+  certificate does not manufacture a hard blocker and never changes
+  `not_calibrated` or professional wording into a pass.
+
+Consequences:
+
+- New runs carry A0, A1 blueprint, B execution and C directive identities in
+  plan, version and quality audit data. Historical runs without these fields
+  remain readable under their original contracts.
+- New prompt and quality protocol hashes intentionally differ. A0, A1, directive
+  planning and scope-aware recheck add bounded calls or reduce recheck calls
+  according to the frozen execution policy.
+- Scope-aware recheck is an engineering control, not proof of professional
+  correctness. Unsupported or unavailable evidence remains undecidable.
+
+Verification:
+
+- `tests/test_s11_research_blueprint.py` covers A0/A1 separation, disabled
+  strategy, Evidence binding, blueprint hashes, B deviation boundaries and C
+  blueprint rows.
+- `tests/test_s11_repair_directives.py` covers executable modes, deterministic
+  assertion whitelists, directive coverage, candidate mappings, deterministic
+  first, scope merge and ledger lifecycle.
+- Existing A/B/C, optimization, delivery, contract and frontend regressions must
+  remain green before live generation and export.

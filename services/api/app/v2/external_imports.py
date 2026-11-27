@@ -212,7 +212,11 @@ def import_markdown(markdown_file: ImportedFile, attachments: list[ImportedFile]
         state["external_import"] = {"request_hash": request_hash, "manifest": manifest,
                                     "response": response, "method_version": METHOD_VERSION}
         context = state["context"]
-        state["check_plan"] = compile_plan(context)
+        from .quality import frozen_quality_layers
+        state["check_plan"] = compile_plan(
+            context,
+            quality_layers=frozen_quality_layers(state),
+        )
         state["plan"] = plan
         state["mode"] = "demo"
         state["artifact_id"] = str(uuid4())

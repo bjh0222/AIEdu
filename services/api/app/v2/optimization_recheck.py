@@ -74,7 +74,9 @@ def load_checkpoint(db, source, state, version, candidate_hash):
     c_call = _settled(db, package_ref.get("call_id"), ancestors)
     if c_call.result_blob_hash != package_hash:
         raise DomainError("OPTIMIZATION_CHECKPOINT_UNBOUND", 422)
-    validate_package(package, version, expected_bindings=_frozen_bindings(state))
+    validate_package(package, version, skill=package.get("skill", {}),
+                     expected_bindings=_frozen_bindings(state),
+                     require_directives=bool(state.get("plan", {}).get("blueprint")))
     candidate, _ = normalize_candidate_envelope(candidate, package, version)
     base_units = materialize(version).get("units", [])
     units = validate_candidate(candidate, package, version, base_units)
@@ -183,7 +185,9 @@ def execute_recheck(run_id, worker, epoch, provider_factory=None):
     continued = finish_candidate(run_id, worker, epoch, state, version, checkpoint["base_units"], checkpoint["units"],
         load(version.quality_report), checked, checkpoint["package"], checkpoint["c_audit"], checkpoint["b_audit"],
         checkpoint["network_trace"], checkpoint["citations"], checkpoint["new_version"],
-        int(state.get("optimization_rounds", 0)), provider_factory, prior_observations=checkpoint["prior_observations"])
+        int(state.get("optimization_rounds", 0)), provider_factory,
+        prior_observations=checkpoint["prior_observations"],
+        repair_ledger=state.get("repair_ledger"))
     if continued:
         # This explicit action never silently starts a fresh generation cycle.
         _stop(run_id, worker, epoch, "candidate_recheck_completed_uncalibrated")
@@ -191,10 +195,45 @@ def execute_recheck(run_id, worker, epoch, provider_factory=None):
 
 def finish_candidate(run_id, worker, epoch, state, version, units, new_units, quality, checked,
                      package, c_audit, b_audit, network_trace, citations, new_version, rounds, provider_factory=None,
-                     *, prior_observations=None):
+                     *, prior_observations=None, repair_ledger=None):
     from .optimization import diagnostic_regressions, _persist_artifact, _stop, OPTIMIZATION_SKILL, unit_content_identity
     from .optimization_acceptance import verify
     from .quality import dependency_closure
+    candidate_hash = digest([(unit["unit_id"], unit_content_identity(unit)) for unit in new_units])
+
+    def write_ledger(status, resolved_finding_ids):
+        if not repair_ledger or not repair_ledger.get("events"):
+            return None
+        from .repair_directives import directive_recheck_results, update_ledger
+        results = directive_recheck_results(package, checked, new_units, resolved_finding_ids)
+        status_value = status
+        if isinstance(status, str):
+            status_value = {
+                row["finding_id"]: (
+                    "resolved" if row.get("result") == "satisfied"
+                    else "blocked" if status == "resolved" else status
+                )
+                for row in results
+            }
+        updated = update_ledger(
+            repair_ledger,
+            candidate_hash=candidate_hash,
+            candidate_version=new_version,
+            recheck_scope=checked.get("recheck_scope"),
+            results=results,
+            status=status_value,
+            call_ids=[c_audit.get("call_id"), b_audit.get("call_id")],
+        )
+        checked["repair_ledger"] = updated
+        _persist_artifact(run_id, worker, epoch, updated, "repair_ledger", b_audit)
+        with write() as db:
+            obj = job(db, run_id)
+            fence(obj, worker, epoch)
+            current = load(obj.state_json)
+            current["repair_ledger"] = updated
+            obj.state_json, obj.state_revision = dump(current), obj.state_revision + 1
+        return updated
+
     regressions = diagnostic_regressions(quality, checked)
     if regressions:
         _persist_artifact(run_id, worker, epoch, {"base_version": version.id,
@@ -204,8 +243,8 @@ def finish_candidate(run_id, worker, epoch, state, version, units, new_units, qu
         # optimization loop already carries rejected full-recheck reports to C;
         # preserve the candidate as rejected and let that loop decide whether
         # its finite round/attempt budgets allow another correction.
+        continued = False
         if state.get("execution_policy", {}).get("criterion_assessment") and prior_observations is None:
-            candidate_hash = digest([(u["unit_id"], unit_content_identity(u)) for u in new_units])
             with write() as db:
                 obj = job(db, run_id)
                 fence(obj, worker, epoch)
@@ -223,7 +262,11 @@ def finish_candidate(run_id, worker, epoch, state, version, units, new_units, qu
                     })
                     current["optimization_rounds"] = rounds + 1
                     obj.state_json, obj.state_revision = dump(current), obj.state_revision + 1
-                    return True
+                    continued = True
+        if continued:
+            write_ledger("blocked", set())
+            return True
+        write_ledger("blocked", set())
         _stop(run_id, worker, epoch, "diagnostic_regression")
         return False
     old_violations = {c["item_id"] for c in quality.get("checks", []) if c.get("result") == "violated"}
@@ -243,6 +286,7 @@ def finish_candidate(run_id, worker, epoch, state, version, units, new_units, qu
         else:
             unresolved_old.append(finding)
     if new_violations - old_violations or unresolved_old or any(f.get("status") == "confirmed" for f in checked.get("findings", [])):
+        write_ledger("blocked", {row["finding_id"] for row in resolved_old})
         _stop(run_id, worker, epoch, "regression_or_unresolved")
         return False
     acceptance = verify(run_id, worker, epoch, state, package, new_units, provider_factory,
@@ -250,8 +294,8 @@ def finish_candidate(run_id, worker, epoch, state, version, units, new_units, qu
                         prior_observations=prior_observations, version_id=new_version)
     _persist_artifact(run_id, worker, epoch, acceptance, "optimization_acceptance", acceptance["audit"])
     if acceptance["status"] != "satisfied":
+        continued = False
         if state.get("execution_policy", {}).get("criterion_assessment") and prior_observations is None:
-            candidate_hash = digest([(u["unit_id"], unit_content_identity(u)) for u in new_units])
             with write() as db:
                 obj = job(db, run_id)
                 fence(obj, worker, epoch)
@@ -262,11 +306,17 @@ def finish_candidate(run_id, worker, epoch, state, version, units, new_units, qu
                     current["last_rejected_candidate_hash"] = candidate_hash
                     current["optimization_rounds"] = rounds + 1
                     obj.state_json, obj.state_revision = dump(current), obj.state_revision + 1
-                    # Best content is unchanged; C receives source-bound rejection
-                    # feedback on the next bounded round, not a fake acceptance.
-                    return True
+                    continued = True
+        if continued:
+            write_ledger("blocked", {row["finding_id"] for row in resolved_old})
+            # Best content is unchanged; C receives source-bound rejection
+            # feedback on the next bounded round, not a fake acceptance.
+            return True
+        write_ledger("blocked", {row["finding_id"] for row in resolved_old})
         _stop(run_id, worker, epoch, "optimization_acceptance_unresolved")
         return False
+    checked["optimization_acceptance"] = acceptance
+    write_ledger("resolved", {row["finding_id"] for row in resolved_old})
     package_hash = digest(package)
     changed_ids = {b["unit_id"] for a, b in zip(units, new_units) if unit_content_identity(a) != unit_content_identity(b)}
     checked.setdefault("findings", []).extend(resolved_old)

@@ -274,7 +274,14 @@ def evaluate(run_id, worker, epoch, state, units, version_id, provider_factory=N
             state, units, result["automated_assessment"], version_id,
             matrix_hash=(result["automated_assessment"].get("quality_preflight") or {}).get("matrix_hash"),
         )
-        if criterion_checks or derived_checks:
+        from .repair_directives import criterion_findings
+        criterion_finding_rows = criterion_findings(result["automated_assessment"], state, units)
+        if criterion_finding_rows:
+            by_claim = {row["normalized_claim_hash"]: row for row in result.get("findings", [])}
+            for row in criterion_finding_rows:
+                by_claim.setdefault(row["normalized_claim_hash"], row)
+            result["findings"] = list(by_claim.values())
+        if criterion_checks or derived_checks or criterion_finding_rows:
             checks = {c["item_id"]: c for c in result.get("checks", [])}
             checks.update(criterion_checks)
             checks.update(derived_checks)

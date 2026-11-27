@@ -939,6 +939,42 @@ def snapshot(task_id, run_id=None):
                     (state.get("research_result") or {}).get("degradation")
                     or (state.get("context") or {}).get("research_degradation")
                 ),
+                "research_strategy": ({
+                    "method_version": state["research_strategy"]["content"]["method_version"],
+                    "hash": state["research_strategy"]["hash"],
+                    "necessity": state["research_strategy"]["content"]["necessity"],
+                    "user_requirement_count": len(state["research_strategy"]["content"]["user_requirements"]),
+                    "autonomous_addition_count": len(state["research_strategy"]["content"]["autonomous_additions"]),
+                } if state.get("research_strategy") else None),
+                "blueprint": ({
+                    "method_version": state["plan"]["blueprint"].get("method_version"),
+                    "hash": state["plan"]["blueprint"].get("hash"),
+                    "evidence_hash": state["plan"]["blueprint"].get("evidence_hash"),
+                    "evidence_count": len(state["plan"]["blueprint"].get("evidence_records", [])),
+                    "decision_count": len(state["plan"]["blueprint"].get("content", {}).get("decisions", [])),
+                    "teaching_arrangement_hash": state["plan"]["blueprint"].get("teaching_arrangement_hash"),
+                } if state.get("plan", {}).get("blueprint") else None),
+                "blueprint_execution": {
+                    "statuses": {
+                        status: sum(1 for unit in snapshot_units
+                                    if (unit.get("blueprint_execution") or {}).get("status") == status)
+                        for status in ("compliant", "local_deviation", "requires_human_decision")
+                    },
+                    "deviation_count": sum(
+                        len((unit.get("blueprint_execution") or {}).get("deviations", []))
+                        for unit in snapshot_units
+                    ),
+                },
+                "repair_ledger": ({
+                    "schema_version": state["repair_ledger"].get("schema_version"),
+                    "ledger_hash": state["repair_ledger"].get("ledger_hash"),
+                    "event_count": len(state["repair_ledger"].get("events", [])),
+                    "status_counts": {
+                        status: sum(1 for event in state["repair_ledger"].get("events", [])
+                                    if event.get("status") == status)
+                        for status in ("pending", "resolved", "rejected", "refused", "blocked")
+                    },
+                } if state.get("repair_ledger") else None),
                 "tutorial_rubric_refs": [{k: item.get(k) for k in (
                     "rubric_id", "version", "hash", "status", "calibration_status")} for item in tutorial_refs],
                 "subject_understanding_ref": {

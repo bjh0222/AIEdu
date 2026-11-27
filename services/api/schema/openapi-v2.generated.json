@@ -3059,6 +3059,13 @@
             "default": false,
             "title": "Enabled",
             "type": "boolean"
+          },
+          "requirements": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Requirements",
+            "type": "array"
           }
         },
         "title": "ResearchRequest",
@@ -3306,6 +3313,23 @@
             "title": "Artifact Id",
             "type": "string"
           },
+          "blueprint": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blueprint"
+          },
+          "blueprint_execution": {
+            "additionalProperties": true,
+            "title": "Blueprint Execution",
+            "type": "object"
+          },
           "budget": {
             "additionalProperties": true,
             "title": "Budget",
@@ -3395,6 +3419,18 @@
           "quality": {
             "$ref": "#/components/schemas/app__v2__responses__QualityReport"
           },
+          "repair_ledger": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repair Ledger"
+          },
           "research_degradation": {
             "anyOf": [
               {
@@ -3422,6 +3458,18 @@
               }
             ],
             "title": "Research Status"
+          },
+          "research_strategy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Research Strategy"
           },
           "root_job_id": {
             "title": "Root Job Id",
