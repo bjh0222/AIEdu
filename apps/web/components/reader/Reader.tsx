@@ -193,18 +193,26 @@ export default function Reader({ taskId }: { taskId: string }) {
     return () => vv.removeEventListener("resize", update);
   }, []);
 
-  // 2026-11-27 真机反馈 T3：手机档选中正文文字立即拉起问答框（引用由 ReaderChat 现有 selectionchange 捕获）。
+  // 2026-11-27 真机反馈 T3：选中正文拉起问答框（用户复核：拉起太敏感）。
+  // 改为「选中稳定 500ms 后 + 至少 2 个非空白字符」才拉起，拖选过程不弹。
   useEffect(() => {
     if (tier !== "phone") return;
+    let timer: number | undefined;
     const capture = () => {
+      window.clearTimeout(timer);
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
       const node = sel.getRangeAt(0).commonAncestorContainer;
       const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as Element);
-      if (el?.closest(".prose")) setChatSheetOpen(true);
+      if (!el?.closest(".prose")) return;
+      if (sel.toString().trim().length < 2) return;
+      timer = window.setTimeout(() => setChatSheetOpen(true), 500);
     };
     document.addEventListener("selectionchange", capture);
-    return () => document.removeEventListener("selectionchange", capture);
+    return () => {
+      document.removeEventListener("selectionchange", capture);
+      window.clearTimeout(timer);
+    };
   }, [tier]);
 
   // 2026-11-27 手机问答 sheet：Esc 关闭 + 打开期间锁定页面滚动。
