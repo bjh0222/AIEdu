@@ -22,5 +22,6 @@ services/api/tests/.sqlite-tmp/
 *.log
 apps/web/test-results*/
 apps/web/playwright-report*/
+apps/web/package-lock.json
 **/.next-workflow/
 **/.next-render-fix/
