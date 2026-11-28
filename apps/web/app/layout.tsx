@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Suspense } from "react";
 import "./globals.css";
 import Shell from "@/components/shell/Shell";
+import Splash, { splashBootstrap } from "@/components/shell/Splash";
 import { prefsBootstrap } from "@/lib/prefs";
 
 export const metadata: Metadata = {
@@ -17,8 +18,12 @@ export const viewport: Viewport = { width: "device-width", initialScale: 1, view
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="zh-CN" suppressHydrationWarning>
-      <head><script dangerouslySetInnerHTML={{ __html: prefsBootstrap }} /></head>
+      <head>
+          <script dangerouslySetInnerHTML={{ __html: prefsBootstrap }} />
+          <script dangerouslySetInnerHTML={{ __html: splashBootstrap }} />
+        </head>
       <body>
+        <Splash />
         <Suspense fallback={null}>
           <Shell>{children}</Shell>
         </Suspense>
@@ -26,5 +31,4 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     </html>
   );
 }
-
 
