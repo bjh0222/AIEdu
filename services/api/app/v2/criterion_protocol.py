@@ -296,6 +296,14 @@ def bind_observations(output, requests, fields, audit, unit_id, catalog=None):
             grounded_abstention = (item_id is None
                 and declared in ("not_applicable", "undecidable")
                 and frozen_unknown_binding(request, clause_id))
+            source_support_abstention = (
+                item_id is None
+                and declared == "undecidable"
+                and request["check_id"].startswith("Q6.")
+                and clause_id == "support"
+                and any(e["field"] == "context:sources" for e in evidence)
+                and any(e["field"] == "context:literal_tool_observations" for e in evidence)
+            )
             if item_id:
                 own = "item:" + item_id + ":"
                 if not any(e["field"].startswith(own) for e in evidence):
@@ -306,7 +314,7 @@ def bind_observations(output, requests, fields, audit, unit_id, catalog=None):
                     faults.append("cross_item_evidence_out_of_scope")
                 if relational and declared in ("satisfied", "violated") and not peer_evidence:
                     faults.append("comparison_endpoint_evidence_required")
-            elif grounded_abstention:
+            elif grounded_abstention or source_support_abstention:
                 pass
             elif not any(e["field"] == "unit:body" or e["field"].startswith("item:") for e in evidence):
                 source_binding = frozen_source_binding(request, clause_id)
@@ -324,6 +332,13 @@ def bind_observations(output, requests, fields, audit, unit_id, catalog=None):
             clauses.append({"clause_id": clause_id, "result": "undecidable" if faults else declared,
                 "reason": reason, "evidence": evidence, "invalid_or_missing_observation": bool(faults),
                 "protocol_errors": sorted(set(faults))})
+            if source_support_abstention and not faults:
+                contract_normalizations.append({
+                    "method_version": "source-support-abstention.v1",
+                    "request_id": request["request_id"],
+                    "clause_id": clause_id,
+                    "result": declared,
+                })
         result = ("violated" if any(c["result"] == "violated" for c in clauses) else
             "undecidable" if any(c["result"] == "undecidable" for c in clauses) else
             "not_applicable" if clauses and all(c["result"] == "not_applicable" for c in clauses) else "satisfied")

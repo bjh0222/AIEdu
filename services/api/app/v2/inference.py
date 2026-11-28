@@ -82,6 +82,98 @@ def complete_object_prefix(content):
     return None
 
 
+def recover_extra_nested_closer(content):
+    if not isinstance(content, str):
+        return None
+    raw = content.strip()
+    outside, in_string, escaped = [True] * len(raw), False, False
+    for index, char in enumerate(raw):
+        if in_string:
+            outside[index] = False
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            outside[index] = False
+            in_string = True
+    for end in range(len(raw)):
+        if raw[end] != "]" or not outside[end]:
+            continue
+        start = end
+        while start > 0 and raw[start - 1] == "}" and outside[start - 1]:
+            start -= 1
+        if end - start < 2:
+            continue
+        candidate = raw[: end - 1] + raw[end:]
+        try:
+            result = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(result, dict):
+            return result
+    return None
+
+
+def recover_flat_clause_sequence(content):
+    if not isinstance(content, str):
+        return None
+    text = content.strip()
+    decoder = json.JSONDecoder()
+    values, pos = [], 0
+    while pos < len(text):
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        if pos >= len(text):
+            break
+        if values:
+            tail = text[pos:].strip()
+            if tail and all(char in "}] \r\n\t" for char in tail):
+                break
+            if text[pos] != ",":
+                return None
+            pos += 1
+            while pos < len(text) and text[pos].isspace():
+                pos += 1
+            if pos >= len(text):
+                return None
+        try:
+            value, end = decoder.raw_decode(text, pos)
+        except ValueError:
+            return None
+        values.append(value)
+        pos = end
+    if not values or not isinstance(values[0], dict):
+        return None
+    first = values[0]
+    if set(first) - {"assessments", "rating"} or not isinstance(first.get("assessments"), list):
+        return None
+    rating = first.get("rating")
+    if rating is not None and type(rating) is not int:
+        return None
+    rows = list(first["assessments"]) + values[1:]
+    if not rows or any(not isinstance(row, dict) for row in rows):
+        return None
+    allowed = {"request_id", "clause_id", "result", "reason", "evidence"}
+    by_request = {}
+    for row in rows:
+        if set(row) - allowed or not all(isinstance(row.get(key), str) and row.get(key).strip()
+                                         for key in ("request_id", "clause_id", "result", "reason")):
+            return None
+        if not isinstance(row.get("evidence"), list):
+            return None
+        request_id = row["request_id"]
+        group = by_request.setdefault(request_id, {
+            "request_id": request_id,
+            "rating": rating,
+            "clauses": [],
+        })
+        group["clauses"].append({key: row[key] for key in ("clause_id", "result", "reason", "evidence")})
+    return {"assessments": list(by_request.values())}
+
+
 def recover_assessment_sequence(content):
     """Recover a stopped response that emitted assessment objects after
     the first root object, separated by a comma.
@@ -217,9 +309,17 @@ class AuditedProvider(OpenAICompatibleProvider):
                     if output is not None:
                         method = "complete_object_redundant_closers.v1"
                     else:
-                        output = recover_assessment_sequence(content)
+                        output = recover_flat_clause_sequence(content)
                         if output is not None:
-                            method = "assessment_sequence_recovery.v1"
+                            method = "flat_clause_sequence_recovery.v1"
+                        else:
+                            output = recover_assessment_sequence(content)
+                            if output is not None:
+                                method = "assessment_sequence_recovery.v1"
+                            else:
+                                output = recover_extra_nested_closer(content)
+                                if output is not None:
+                                    method = "extra_nested_closer_recovery.v1"
                 if output is None:
                     raise
                 self.response_normalization = {"method": method, "raw_hash": digest(content)}
@@ -361,8 +461,14 @@ def invoke(run_id, worker, epoch, state, *, stage, unit_id, data, system, role="
                 recovered = complete_object_prefix(raw.get("provider_content"))
                 method = "complete_object_redundant_closers.v1"
                 if recovered is None:
+                    recovered = recover_flat_clause_sequence(raw.get("provider_content"))
+                    method = "flat_clause_sequence_recovery.v1"
+                if recovered is None:
                     recovered = recover_assessment_sequence(raw.get("provider_content"))
                     method = "assessment_sequence_recovery.v1"
+                if recovered is None:
+                    recovered = recover_extra_nested_closer(raw.get("provider_content"))
+                    method = "extra_nested_closer_recovery.v1"
                 if recovered is not None:
                     return recovered, {"call_id": prior.call_id, "cache": "explicit_resume_local_parse_recovery",
                         "processing_method": method, "original_dispatch_outcome": "failed",

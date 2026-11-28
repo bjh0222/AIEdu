@@ -85,7 +85,7 @@ def normalize_directives(package):
     scope_ids = package.get("scope", {}).get("unit_ids", [])
     allowed_modes = set(package.get("scope", {}).get("allowed_change_modes", []))
     acceptance_items = {row.get("item_id") for row in package.get("acceptance_criteria", [])}
-    normalized, finding_ids, directive_ids = [], set(), set()
+    normalized, finding_ids, directive_ids, layer_normalizations = [], set(), set(), []
     for raw in directives:
         if not isinstance(raw, dict) or set(raw) != {
                 "finding_id", "layer", "target", "change_mode", "required_change",
@@ -97,8 +97,17 @@ def normalize_directives(package):
         if raw.get("layer") not in LAYERS:
             raise DomainError("REPAIR_DIRECTIVE_INVALID", 422, field="layer")
         original_finding = finding_rows[finding_id]
-        if (original_finding.get("quality_layer")
-                and original_finding["quality_layer"] != raw["layer"]):
+        bound_layer = original_finding.get("quality_layer")
+        layer = raw["layer"]
+        if bound_layer in LAYERS and bound_layer != layer:
+            layer_normalizations.append({
+                "finding_id": finding_id,
+                "from": layer,
+                "to": bound_layer,
+                "reason": "confirmed_finding_quality_layer",
+            })
+            layer = bound_layer
+        elif bound_layer and bound_layer not in LAYERS:
             raise DomainError("REPAIR_DIRECTIVE_LAYER_MISMATCH", 422, finding_id=finding_id)
         target = raw.get("target")
         if (not isinstance(target, dict) or set(target) != {"unit_id", "item_ordinal", "location_hash"}
@@ -129,7 +138,7 @@ def normalize_directives(package):
         }
         row = {
             "finding_id": finding_id,
-            "layer": raw["layer"],
+            "layer": layer,
             "target": deepcopy(target),
             "change_mode": raw["change_mode"],
             "required_change": raw["required_change"],
@@ -153,6 +162,8 @@ def normalize_directives(package):
                           extra=sorted(finding_ids - findings))
     result = deepcopy(package)
     result["directives"] = normalized
+    if layer_normalizations:
+        result["directive_layer_normalizations"] = layer_normalizations
     return result, normalized
 
 

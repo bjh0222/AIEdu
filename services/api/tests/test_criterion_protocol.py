@@ -338,6 +338,27 @@ def test_metadata_boundary_clauses_accept_context_evidence_only_for_their_scope(
     assert "content_evidence_required" in weakened["rows"][0]["clauses"][0]["protocol_errors"]
 
 
+def test_q6_support_may_record_an_unknown_from_sources_and_tool_noncoverage():
+    request = req("Q6.exercise", None, {"bindings": "来源边界", "support": "专业支持与无来源边界"})
+    fields = review_fields(data())
+    observed = output(request, result="undecidable", rating=None)
+    clauses = {c["clause_id"]: c for c in observed["assessments"][0]["clauses"]}
+    clauses["bindings"]["evidence"] = [{"field": "unit:body", "quote": fields["unit:body"]}]
+    clauses["support"]["evidence"] = [
+        {"field": "context:sources", "quote": fields["context:sources"]},
+        {"field": "context:literal_tool_observations", "quote": fields["context:literal_tool_observations"]},
+    ]
+    bound = bind_observations(observed, [request], fields, {}, "u")
+    assert bound["complete"]
+    assert bound["rows"][0]["clauses"][1]["result"] == "undecidable"
+    assert bound["normalization"]["criterion_semantic_normalizations"] == [{
+        "method_version": "source-support-abstention.v1",
+        "request_id": "r",
+        "clause_id": "support",
+        "result": "undecidable",
+    }]
+
+
 def test_frozen_unknown_abstention_keeps_reason_and_context_evidence_requirements():
     request, out = _frozen_unknown_request("not_applicable")
     out["assessments"][0]["clauses"][2]["reason"] = "短"

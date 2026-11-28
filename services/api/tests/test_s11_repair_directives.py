@@ -90,6 +90,22 @@ def test_directive_normalization_uses_executable_modes_and_whitelisted_assertion
     assert package["directives"][0]["acceptance_assertion"]["criterion_check"]["kind"] == "acceptance_item"
 
 
+def test_directive_layer_is_bound_to_the_confirmed_finding_layer():
+    from app.v2.repair_directives import normalize_directives
+
+    package = _package()
+    package["confirmed_findings"][0]["quality_layer"] = "correctness"
+    package["directives"][0]["layer"] = "quality_specific"
+    normalized, directives = normalize_directives(package)
+    assert directives[0]["layer"] == "correctness"
+    assert normalized["directive_layer_normalizations"] == [{
+        "finding_id": "f1",
+        "from": "quality_specific",
+        "to": "correctness",
+        "reason": "confirmed_finding_quality_layer",
+    }]
+
+
 def test_directive_rejects_non_executable_mode_and_unknown_deterministic_method():
     from app.v2.repair_directives import normalize_directives
 
@@ -131,6 +147,74 @@ def test_new_blueprint_package_requires_directives_while_legacy_package_stays_re
     assert exc.value.code == "REPAIR_DIRECTIVE_REQUIRED"
     normalized = validate_package(package, version, require_directives=True)
     assert normalized["directives"][0]["directive_id"].startswith("rd:")
+
+
+def test_planner_notes_are_archived_outside_the_executable_directive_package():
+    from app.v2.optimization import OPTIMIZATION_SKILL, validate_package
+
+    package = _package()
+    package["skill"] = {key: OPTIMIZATION_SKILL[key] for key in ("id", "version", "hash")}
+    package["optimizations"] = [{"target": "u1", "action": "optional review", "basis": "unverified"}]
+    package["unverified_hypotheses"] = [{
+        "claim": "An unverified hypothesis.",
+        "verification_task": "Verify it independently.",
+        "evidence_required": {"method": "independent_review"},
+    }]
+    version = SimpleNamespace(id="v1", content_hash="c" * 64)
+    normalized = validate_package(package, version, require_directives=True)
+    assert normalized["optimizations"] == []
+    assert normalized["unverified_hypotheses"] == []
+    notes = normalized["non_executable_planner_notes"]
+    assert len(notes["optimizations"]) == 1
+    assert len(notes["unverified_hypotheses"]) == 1
+    assert notes["optimizations_hash"] == digest(notes["optimizations"])
+    assert notes["unverified_hypotheses_hash"] == digest(notes["unverified_hypotheses"])
+
+
+def test_only_a_missing_frozen_skill_identity_is_injected_and_audited():
+    from app.v2.optimization import OPTIMIZATION_SKILL, validate_package
+
+    package = _package()
+    package.pop("skill")
+    version = SimpleNamespace(id="v1", content_hash="c" * 64)
+    normalized = validate_package(package, version, require_directives=True)
+    assert normalized["skill"] == {
+        key: OPTIMIZATION_SKILL[key] for key in ("id", "version", "hash")
+    }
+    assert normalized["optimization_metadata_normalization"] == {
+        "method_version": "optimization-skill-injection.v1",
+        "injected": ["skill"],
+        "skill": normalized["skill"],
+    }
+
+    wrong = _package()
+    wrong["skill"] = {"id": "wrong", "version": "0", "hash": "wrong"}
+    with pytest.raises(DomainError) as exc:
+        validate_package(wrong, version, require_directives=True)
+    assert exc.value.code == "OPTIMIZATION_SKILL_MISMATCH"
+
+
+def test_only_missing_scope_unit_ids_are_injected_from_the_frozen_plan():
+    from app.v2.optimization import OPTIMIZATION_SKILL, validate_package
+
+    package = _package()
+    package["skill"] = {key: OPTIMIZATION_SKILL[key] for key in ("id", "version", "hash")}
+    package["scope"].pop("unit_ids")
+    version = SimpleNamespace(id="v1", content_hash="c" * 64)
+    normalized = validate_package(package, version, require_directives=True, unit_ids=["u1", "u2"])
+    assert normalized["scope"]["unit_ids"] == ["u1", "u2"]
+    assert normalized["optimization_metadata_normalization"] == {
+        "method_version": "optimization-metadata-injection.v1",
+        "injected": ["scope.unit_ids"],
+        "scope_unit_ids": ["u1", "u2"],
+    }
+
+    wrong = _package()
+    wrong["skill"] = {key: OPTIMIZATION_SKILL[key] for key in ("id", "version", "hash")}
+    wrong["scope"]["unit_ids"] = ["foreign"]
+    with pytest.raises(DomainError) as exc:
+        validate_package(wrong, version, require_directives=True, unit_ids=["u1"])
+    assert exc.value.code == "REPAIR_DIRECTIVE_TARGET_INVALID"
 
 
 def test_candidate_requires_top_level_and_per_unit_directive_mapping():

@@ -358,3 +358,55 @@ Verification:
   not reach final: one run stopped on incomplete required correctness checks,
   and the following run was explicitly stopped by provider HTTP 429. Those
   failures remain recorded; no failed run was retried or signed final.
+
+## ADR-2026-11-28-01: Lossless repair of provider wire-shape and immutable package metadata
+
+Status: implemented and verified; live comparison ended without final delivery.
+
+Context:
+
+DeepSeek Flash produced complete semantic observations that differed from the
+wire contract in narrow, deterministic ways: an extra nested closer, flat
+criterion clause rows, a directive layer copied incorrectly from the finding,
+missing frozen optimization metadata, and planner notes mixed into the
+executable directive package. Treating all of these as unparseable output
+prevented valid findings and repairs from reaching the bounded next stage.
+
+Decision:
+
+- Recover only complete JSON values. An extra nested closer is removed one
+  token at a time only outside strings and only when the resulting full JSON
+  parses. Flat clause rows are grouped by request ID without changing result,
+  reason or evidence. Missing fields, duplicate identities, truncation and
+  semantic changes remain failures.
+- A directive layer is metadata of its confirmed finding. If the model labels
+  it differently, normalize it to the finding's frozen `quality_layer` and
+  record the previous value. The target, required change and acceptance
+  assertion are not rewritten.
+- Q6 `support=undecidable` may cite the exact source catalog and literal-tool
+  non-coverage as a complete unknown boundary. This never becomes satisfied
+  and does not relax other Q6 clauses.
+- Free-form `optimizations` and `unverified_hypotheses` are archived in
+  `non_executable_planner_notes` when directives are present. B receives only
+  executable directives.
+- Only an omitted frozen skill identity or empty `scope.unit_ids` may be
+  injected from request metadata or the frozen plan. Present-but-wrong values
+  remain hard failures.
+
+Consequences:
+
+- The provider raw bytes, receipts and original failure outcomes remain
+  immutable; normalization is separately audited.
+- The live DeepSeek comparison reached a real B candidate and change-scope
+  recheck, but the candidate was rejected and the second package exhausted the
+  configured two-attempt budget before another B dispatch. No final was signed.
+- The second real package passes offline validation after metadata injection,
+  but that code path was not live-rerun after the attempt budget was exhausted.
+
+Verification:
+
+- Focused provider, criterion and repair-directive tests: 124 passed.
+- Backend full suite: 2572 passed, 133 warnings.
+- Frontend TypeScript, targeted ESLint, isolated production build and
+  integration-entry 21/21 passed.
+- Contract generation reports 100 schemas / 72 routes; spec preview sync passes.

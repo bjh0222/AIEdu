@@ -30,6 +30,50 @@ def test_assessment_sequence_recovery_is_narrow_and_lossless():
     assert recover_assessment_sequence('{"assessments":[]},{"request_id":"b","clauses":[]') is None
 
 
+def test_extra_nested_closer_recovery_is_narrow_and_lossless():
+    from app.v2.inference import recover_extra_nested_closer
+    assert recover_extra_nested_closer('{"items":[{"id":"a","value":1}}]}') == {
+        "items": [{"id": "a", "value": 1}]
+    }
+    assert recover_extra_nested_closer('{"items":[{"id":"a","value":1}]}') is None
+    assert recover_extra_nested_closer('{"items":[{"id":"a","value":1}]') is None
+    assert recover_extra_nested_closer('{"text":"}}]"}}') is None
+    assert recover_extra_nested_closer('{"items":[{"id":"a","value":1}}] } prose') is None
+
+
+def test_flat_clause_sequence_is_grouped_without_changing_judgments():
+    from app.v2.inference import recover_flat_clause_sequence
+
+    content = (
+        '{"assessments":[{"request_id":"a","clause_id":"one","result":"satisfied","reason":"reason-a",'
+        '"evidence":[{"evidence_id":"E0001"}]}],"rating":null},'
+        '{"request_id":"a","clause_id":"two","result":"undecidable","reason":"reason-b",'
+        '"evidence":[{"evidence_id":"E0002"}]},'
+        '{"request_id":"b","clause_id":"one","result":"violated","reason":"reason-c",'
+        '"evidence":[{"evidence_id":"E0003"}]}]}'
+    )
+    assert recover_flat_clause_sequence(content) == {"assessments": [
+        {"request_id": "a", "rating": None, "clauses": [
+            {"clause_id": "one", "result": "satisfied", "reason": "reason-a",
+             "evidence": [{"evidence_id": "E0001"}]},
+            {"clause_id": "two", "result": "undecidable", "reason": "reason-b",
+             "evidence": [{"evidence_id": "E0002"}]},
+        ]},
+        {"request_id": "b", "rating": None, "clauses": [
+            {"clause_id": "one", "result": "violated", "reason": "reason-c",
+             "evidence": [{"evidence_id": "E0003"}]},
+        ]},
+    ]}
+    assert recover_flat_clause_sequence(
+        '{"assessments":[{"request_id":"a","clause_id":"one","result":"satisfied","reason":"reason-a",'
+        '"evidence":[],"extra":1}],"rating":null}'
+    ) is None
+    assert recover_flat_clause_sequence(
+        '{"assessments":[{"request_id":"a","clause_id":"one","result":"satisfied","reason":"reason-a",'
+        '"evidence":[]}],"rating":true}'
+    ) is None
+
+
 def test_stopped_assessment_sequence_is_recovered_before_binding(monkeypatch):
     from app.v2.inference import AuditedProvider
     content = ('{"assessments":[{"request_id":"a","rating":null,"clauses":[]}]},'
@@ -74,6 +118,33 @@ def test_complete_json_plus_redundant_closer_is_exactly_normalized(monkeypatch):
     result, _, _ = provider.complete_json("json", "input")
     assert result == {"ok": True}
     assert provider.response_normalization["method"] == "complete_object_redundant_closers.v1"
+
+
+def test_json_with_one_extra_nested_closer_is_exactly_normalized(monkeypatch):
+    from app.v2.inference import AuditedProvider
+    monkeypatch.setattr("app.v2.inference.httpx.post", lambda *a, **k: httpx.Response(200,
+        json={"choices": [{"finish_reason": "stop", "message": {"content": '{"items":[{"id":"a"}}]}'}}]}))
+    provider = AuditedProvider(profile())
+    result, _, _ = provider.complete_json("json", "input")
+    assert result == {"items": [{"id": "a"}]}
+    assert provider.response_normalization["method"] == "extra_nested_closer_recovery.v1"
+
+
+def test_flat_clause_sequence_is_normalized_at_provider_boundary(monkeypatch):
+    from app.v2.inference import AuditedProvider
+    content = (
+        '{"assessments":[{"request_id":"a","clause_id":"one","result":"satisfied","reason":"reason-a",'
+        '"evidence":[{"evidence_id":"E0001"}]}],"rating":null},'
+        '{"request_id":"a","clause_id":"two","result":"undecidable","reason":"reason-b",'
+        '"evidence":[{"evidence_id":"E0002"}]}]}'
+    )
+    monkeypatch.setattr("app.v2.inference.httpx.post", lambda *a, **k: httpx.Response(200,
+        json={"choices": [{"finish_reason": "stop", "message": {"content": content}}]}))
+    provider = AuditedProvider(profile())
+    result, _, _ = provider.complete_json("json", "input")
+    assert len(result["assessments"]) == 1
+    assert [row["clause_id"] for row in result["assessments"][0]["clauses"]] == ["one", "two"]
+    assert provider.response_normalization["method"] == "flat_clause_sequence_recovery.v1"
 
 
 @pytest.mark.parametrize("exception,phase", [(httpx.ReadTimeout, "read"),

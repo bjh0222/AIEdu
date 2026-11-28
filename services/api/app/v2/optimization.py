@@ -1224,11 +1224,31 @@ def bind_frozen_bindings(package: dict, expected: dict):
 
 def validate_package(package: dict, version, skill: dict = OPTIMIZATION_SKILL,
                      expected_bindings: dict | None = None,
-                     require_directives: bool = False) -> dict:
+                     require_directives: bool = False,
+                     unit_ids: list[str] | None = None) -> dict:
     required = {"schema_version", "skill", "base_version", "base_content_hash", "objective", "scope",
                 "frozen_bindings",
                 "confirmed_findings", "unverified_hypotheses", "optimizations", "priority_order",
                 "dependencies", "optimization_prompt", "acceptance_criteria", "stop_conditions", "recheck_scope"}
+    if (isinstance(package, dict) and "skill" not in package
+            and required - {"skill"} <= set(package)):
+        package["skill"] = {key: skill[key] for key in ("id", "version", "hash")}
+        package.setdefault("optimization_metadata_normalization", {
+            "method_version": "optimization-skill-injection.v1",
+            "injected": ["skill"],
+            "skill": deepcopy(package["skill"]),
+        })
+    if (isinstance(package, dict) and isinstance(package.get("scope"), dict)
+            and not package["scope"].get("unit_ids") and unit_ids):
+        package["scope"]["unit_ids"] = list(dict.fromkeys(unit_ids))
+        normalization = package.setdefault("optimization_metadata_normalization", {
+            "method_version": "optimization-metadata-injection.v1",
+            "injected": [],
+        })
+        normalization["injected"] = list(dict.fromkeys([
+            *normalization.get("injected", []), "scope.unit_ids",
+        ]))
+        normalization["scope_unit_ids"] = deepcopy(package["scope"]["unit_ids"])
     if not isinstance(package, dict) or not required <= set(package):
         raise DomainError("OPTIMIZATION_PACKAGE_INVALID", 422, missing=sorted(required - set(package or {})))
     if package.get("schema_version") != SCHEMA_VERSION:
@@ -1278,7 +1298,17 @@ def validate_package(package: dict, version, skill: dict = OPTIMIZATION_SKILL,
     if package.get("directives"):
         package, _ = normalize_directives(package)
         if package.get("unverified_hypotheses") or package.get("optimizations"):
-            raise DomainError("REPAIR_DIRECTIVE_EXTRA_WORK_FORBIDDEN", 422)
+            optimizations = deepcopy(package.get("optimizations") or [])
+            hypotheses = deepcopy(package.get("unverified_hypotheses") or [])
+            package["non_executable_planner_notes"] = {
+                "method_version": "planner-notes-archived.v1",
+                "optimizations": optimizations,
+                "unverified_hypotheses": hypotheses,
+                "optimizations_hash": digest(optimizations),
+                "unverified_hypotheses_hash": digest(hypotheses),
+            }
+            package["optimizations"] = []
+            package["unverified_hypotheses"] = []
     return package
 
 
@@ -1707,6 +1737,7 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
                     state.get("check_plan", {}).get("quality_layers")
                     or state.get("plan", {}).get("blueprint")
                 ),
+                unit_ids=[u["unit_id"] for u in units],
             )
             expected_finding_ids = {f["finding_id"] for f in old_confirmed}
             actual_finding_ids = {f["finding_id"] for f in package["confirmed_findings"]}
