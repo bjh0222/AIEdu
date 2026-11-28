@@ -301,6 +301,7 @@ def evaluate(run_id, worker, epoch, state, units, version_id, provider_factory=N
         checks,
         findings,
         calibration="not_calibrated",
+        repair_policy=state.get("optimization_policy"),
     )
     result.update(
         item_correctness={

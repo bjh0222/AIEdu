@@ -1988,6 +1988,14 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
             if unit_content_identity(updated_unit) != unit_content_identity(old_unit):
                 updated_unit["network_research"] = network_trace
         new_version = str(uuid4())
+        if correctness_only and rounds >= 1:
+            from .optimization_recheck import finalize_second_correctness_repair
+            finalize_second_correctness_repair(
+                run_id, worker, epoch, state, version, units, new_units,
+                quality, package, b_audit, network_trace, new_version, rounds,
+                repair_ledger=repair_ledger,
+            )
+            return
         from .recheck_scope import evaluate_candidate
         try:
             checked = evaluate_candidate(

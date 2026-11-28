@@ -473,3 +473,62 @@ Verification:
 - Earlier failed live runs from the same validation series remain recorded for
   quantity scope, A0 query limits, A1 capacity, nested evidence aliases,
   derived-design idempotency and knowledge-chain endpoint normalization.
+
+## ADR-2026-11-28-03: Correctness repair termination, full-v2 archive and source-span fidelity
+
+Status: implemented; requires final live verification after reload.
+
+Context:
+
+The first correctness-only live run proved the happy path but an independent
+audit found four remaining risks: A0's newly persisted strategy was not passed
+to the research executor; Evidence records could cite byte ranges and quote
+hashes that did not match the read source; B's blueprint compliance was only a
+self-report; and the reader forced Markdown soft line breaks into hard breaks,
+changing option layout. The full quality implementation also needed a
+maintainable frozen snapshot after the correctness-only cut.
+
+Decision:
+
+- Reload task state immediately after A0 freezes its strategy and pass that
+  state to `execute_research`. A0 queries are no longer capped at three;
+  execution is bounded by the existing network round/request policy and records
+  the declared indexes, executed indexes and request budget.
+- A1 receives only source spans that overlap its exact bounded excerpts. When
+  a source contains spans, every Evidence location is normalized to a unique
+  actual span or rejected with `BLUEPRINT_EVIDENCE_LOCATION_UNBOUND`. The
+  normalization records before/after locations without changing source bytes.
+- B item normalization compares actual question forms with the frozen
+  `question_blueprint` quantities. A mismatch is a hard contract error.
+- New item tasks that explicitly require answers and explanations in the same
+  item freeze `answer_placement=item_inline`; rendering places each answer and
+  concise explanation after its item and omits a separate answer section.
+- Correctness-only first-pass success skips optimization entirely. After one
+  failed repair, a second B candidate is finalized without a third C call; the
+  report stores `rechecked_after_final_repair=false`, `Q.item_correctness=not_run`
+  and the frozen repair policy. This is a process requirement, not a claim that
+  the second candidate was rechecked.
+- Built-in format specifications are code-owned. Startup synchronizes a stale
+  built-in row from the current seed, increments its version only when fields
+  differ, records the changed field names, and never mutates user-created specs.
+- The modified full quality system is frozen under
+  `services/api/quality_suite_archive/full_v2`; a verifier test recomputes every
+  manifest size, SHA-256 and tree hash. `full_v1` remains a historical snapshot.
+- The reader preserves authored Markdown hard breaks and does not synthesize
+  `<br>` elements for soft line breaks. The exercise specification's 4/2/1
+  width-based option-layout rule is unchanged.
+- A v7 live verification exposed a complete provider response with one extra
+  final mapping closer (`}`), not truncation. The lossless JSON recovery now
+  removes one outside-string closing `}` or `]` only when the entire candidate
+  parses as one object; missing closers and all other malformed output still
+  fail. Per the user's instruction, the failed live task was not retried.
+
+Consequences:
+
+- A final signed after a second B repair remains explicitly marked as not
+  rechecked by C. It must not be described as a third-pass correctness success.
+- Evidence provenance now fails closed when a source is readable but the cited
+  span is ambiguous or nonexistent.
+- Existing built-in formats receive code corrections on the next controlled
+  backend startup; user-created specifications are unaffected.
+- Historical full-v1 runs remain readable and immutable.

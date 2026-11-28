@@ -194,6 +194,28 @@ def test_a1_research_projection_is_bounded_and_preserves_exact_source_excerpts()
     assert projected["source_claims"][0]["source_id"] == "public-1"
 
 
+def test_a1_projection_keeps_only_spans_that_overlap_its_excerpts():
+    from app.v2.planning import planning_research_projection, research_strategy
+
+    text = "prefix " + ("assessment item design " * 30) + "tail " + ("unrelated " * 300)
+    result = {
+        "sources": [{
+            "source_id": "public-1",
+            "source_hash": sha(text),
+            "text": text,
+            "spans": [
+                {"span_id": "hit", "start_byte": 0, "end_byte": 30, "sha256": sha(text[0:30]), "text": text[0:30]},
+                {"span_id": "far", "start_byte": len(text) - 20, "end_byte": len(text), "sha256": sha(text[-20:]), "text": text[-20:]},
+            ],
+        }],
+    }
+    projected = planning_research_projection(
+        result, research_strategy(_strategy()), per_source_chars=500, total_chars=500)
+    ids = [span["span_id"] for span in projected["sources"][0]["spans"]]
+    assert "hit" in ids
+    assert "far" not in ids
+
+
 def test_research_strategy_disabled_path_is_deterministic_and_unknown_evidence_is_not_needed():
     from app.v2.planning import disabled_research_strategy, research_strategy
 
@@ -243,6 +265,78 @@ def test_blueprint_binds_evidence_decisions_layout_and_hashes():
     )
     assert aliased["hash"] == artifact["hash"]
     assert aliased["evidence_hash"] == artifact["evidence_hash"]
+
+
+def test_blueprint_snaps_evidence_to_a_unique_actual_source_span():
+    from app.v2.planning import bind_a1_artifact
+
+    text = "Context.\nTargets should be observable.\nFollowing section."
+    start = len("Context.\n")
+    end = start + len("Targets should be observable.")
+    state = {
+        "research_result": {
+            "sources": [{
+                "source_id": "m1",
+                "source_hash": sha(text),
+                "text": text,
+                "spans": [{
+                    "span_id": "m1:0",
+                    "start_byte": start,
+                    "end_byte": end,
+                    "sha256": sha("Targets should be observable."),
+                    "text": "Targets should be observable.",
+                }],
+            }],
+            "source_claims": [],
+        },
+        "plan": {},
+    }
+    evidence = _evidence()
+    evidence["source"]["source_hash"] = sha(text)
+    evidence["location"]["start_byte"] = end
+    evidence["location"]["end_byte"] = end + 5
+    artifact = bind_a1_artifact(
+        {"blueprint": _blueprint(), "evidence_records": [evidence]},
+        teaching_content=_teaching(), context=_context(), state=state,
+    )
+    location = artifact["evidence_records"][0]["location"]
+    assert location == {
+        "locator": "m1:0",
+        "quote_hash": sha("Targets should be observable."),
+        "start_byte": start,
+        "end_byte": end,
+    }
+    assert artifact["normalizations"][0]["reason"] == "evidence_location_snapped_to_unique_source_span"
+
+
+def test_blueprint_rejects_evidence_that_cannot_be_located_in_source_spans():
+    from app.v2.planning import bind_a1_artifact
+
+    state = {
+        "research_result": {
+            "sources": [{
+                "source_id": "m1",
+                "source_hash": sha("source"),
+                "text": "Different source text.",
+                "spans": [{
+                    "span_id": "m1:0",
+                    "start_byte": 0,
+                    "end_byte": 7,
+                    "sha256": sha("Different"),
+                    "text": "Different",
+                }],
+            }],
+        },
+    }
+    evidence = _evidence()
+    evidence["location"]["start_byte"] = 100
+    evidence["location"]["end_byte"] = 105
+    with pytest.raises(DomainError) as exc:
+        bind_a1_artifact(
+            {"blueprint": _blueprint(), "evidence_records": [evidence]},
+            teaching_content=_teaching(), context=_context(), state=state,
+        )
+    assert exc.value.code == "BLUEPRINT_EVIDENCE_LOCATION_UNBOUND"
 
 
 def test_blueprint_rejects_unbound_evidence_and_layout_mismatch():

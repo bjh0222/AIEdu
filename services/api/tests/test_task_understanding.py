@@ -111,6 +111,27 @@ def test_difficulty_modes_cover_default_basic_equal_harder():
     assert "高考压轴" in resolve_difficulty(goal, None)["instruction"]
 
 
+def test_difficulty_words_do_not_treat_knowledge_names_as_basic_level():
+    profile = {"source_refs": [{"kind": "material", "id": "m1", "version": None, "hash": None, "location": "x"}]}
+    for text in ("矩阵基础", "基础概念教程", "高中数学基础"):
+        goal = _goal(title=text, motivation="理解知识关系")
+        assert resolve_difficulty(goal, profile)["mode"] == "above_reference"
+    assert resolve_difficulty(_goal(title="矩阵基础", hard_constraints="基础难度"), profile)["mode"] == "below_reference"
+    assert resolve_difficulty(_goal(title="基础概念", hard_constraints="简单一点"), profile)["mode"] == "below_reference"
+    excluded = resolve_difficulty(_goal(title="基础概念", hard_constraints="不要基础题"), profile)
+    assert excluded["mode"] == "explicit"
+    assert "不要基础题" in excluded["instruction"]
+
+
+def test_pause_recommendation_respects_negation():
+    from app.services.pipeline import _recommendation_requests_pause
+
+    assert _recommendation_requests_pause("不建议暂缓，建议推进") is False
+    assert _recommendation_requests_pause("当前无需暂缓") is False
+    assert _recommendation_requests_pause("暂缓：先缩小范围") is True
+    assert _recommendation_requests_pause("不建议推进当前方案") is True
+
+
 # ---------------------------------------------------------------- 硬约束与冲突
 
 def test_hard_constraints_survive_verbatim_and_conflicts_visible():

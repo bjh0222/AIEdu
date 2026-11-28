@@ -69,19 +69,61 @@ function remarkQuestionBlocks() {
         /^\d+\.$/.test(ordinal.children?.map((child) => child.value ?? "").join("") ?? "");
       if (startsQuestion) inQuestion = true;
       if (!inQuestion) continue;
-      const children: MdNode[] = [];
-      for (const child of node.children ?? []) {
-        if (child.type !== "text" || !child.value?.includes("\n")) {
-          children.push(child);
+      const firstText = node.children?.find((child) => child.type === "text")?.value?.trimStart() ?? "";
+      const isOptions = !startsQuestion && /^[A-H][.．、]/.test(firstText);
+      if (isOptions) {
+        const groups: MdNode[][] = [];
+        let current: MdNode[] = [];
+        const pushChild = (child: MdNode) => {
+          if (child.type !== "text" || !child.value) {
+            current.push(child);
+            return;
+          }
+          const parts = child.value.split(/(?:\n|　{2,}|\s{4,})(?=[A-H][.．、])/);
+          parts.forEach((part, partIndex) => {
+            if (partIndex) {
+              groups.push(current);
+              current = [];
+            }
+            if (part) current.push({ ...child, value: part });
+          });
+        };
+        for (let index = 0; index < (node.children?.length ?? 0); index++) {
+          const child = node.children![index];
+          if (child.type === "break") {
+            const next = node.children![index + 1];
+            const nextText = next?.type === "text" ? next.value?.trimStart() ?? "" : "";
+            if (/^[A-H][.．、]/.test(nextText)) {
+              groups.push(current);
+              current = [];
+              continue;
+            }
+          }
+          pushChild(child);
+        }
+        groups.push(current);
+        const optionGroups = groups.filter((group) => group.length);
+        if (optionGroups.length >= 2) {
+          node.data = {
+            ...(node.data ?? {}),
+            hName: "div",
+            hProperties: {
+              ...((node.data?.hProperties as object) ?? {}),
+              className: ["question-block", "question-options"],
+              dataColumns: "1",
+            },
+          };
+          node.children = optionGroups.map((children) => ({
+            type: "emphasis",
+            data: {
+              hName: "span",
+              hProperties: { className: ["question-option"] },
+            },
+            children,
+          }));
           continue;
         }
-        const parts = child.value.split(/\n(?=[A-H][.．、])/);
-        parts.forEach((part, index) => {
-          if (index) children.push({ type: "break" });
-          if (part) children.push({ type: "text", value: part });
-        });
       }
-      node.children = children;
       const classes = ["question-block", ...(startsQuestion ? ["question-start"] : [])];
       node.data = {
         ...(node.data ?? {}),
@@ -204,6 +246,7 @@ const schema = {
     ...defaultSchema.attributes,
     "*": [...(defaultSchema.attributes?.["*"] ?? []), "dataPin", "dataState", "dataPinBlock"],
     aside: ["className", "dataCallout"],
+    div: [...(defaultSchema.attributes?.div ?? []), "className", "dataColumns"],
     p: [...(defaultSchema.attributes?.p ?? []), "className"],
     span: [...(defaultSchema.attributes?.span ?? []), "className", "dataPin", "dataState"],
     code: [...(defaultSchema.attributes?.code ?? []), ["className", /^language-[\w-]+$/, "math-inline", "math-display"]],
@@ -494,6 +537,45 @@ export default function Prose({ source, wikiTargets, assets, pins = [], onPinCli
       el.removeEventListener("keydown", key);
     };
   }, [onPinClick]);
+
+  useEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    const update = () => {
+      for (const block of root.querySelectorAll<HTMLElement>(".question-options")) {
+        const options = Array.from(block.querySelectorAll<HTMLElement>(":scope > .question-option"));
+        if (options.length !== 4) continue;
+        const fontSize = Number.parseFloat(getComputedStyle(block).fontSize) || 16;
+        const gap = Number.parseFloat(getComputedStyle(block).columnGap) || fontSize * 3;
+        for (const option of options) {
+          option.style.width = "max-content";
+          option.style.maxWidth = "none";
+          option.style.whiteSpace = "nowrap";
+        }
+        const widths = options.map((option) => option.scrollWidth);
+        for (const option of options) {
+          option.style.width = "";
+          option.style.maxWidth = "";
+          option.style.whiteSpace = "";
+        }
+        const available = block.clientWidth;
+        block.dataset.columns =
+          widths.reduce((sum, width) => sum + width, 0) + gap * 3 <= available
+            ? "4"
+            : Math.max(...widths) * 2 + gap <= available
+              ? "2"
+              : "1";
+      }
+    };
+    const frame = requestAnimationFrame(update);
+    const observer = new ResizeObserver(update);
+    observer.observe(root);
+    void document.fonts?.ready.then(update);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [rendered]);
 
   const remarkPlugins = useMemo(() => [remarkGfm, remarkEmptyTasks, [remarkMath, { singleDollarTextMath: true }], remarkPins(mappedPins), remarkAnswerLabels, remarkQuestionBlocks, remarkMark, remarkCallout] as never, [mappedPins]);
 

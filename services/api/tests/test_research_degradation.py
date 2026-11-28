@@ -80,15 +80,33 @@ def test_worker_freezes_degraded_research_and_continues_planning(client, monkeyp
         state["context"]["research_request"] = {"enabled": True}
         obj.state_json = dump(state)
         obj.state_revision += 1
-    monkeypatch.setattr(
-        rubric_research, "execute_research",
-        lambda *args, **kwargs: degraded_result(),
-    )
-    monkeypatch.setattr(
-        worker, "ensure_research_strategy",
-        lambda *args, **kwargs: {"hash": "s" * 64, "content": {"necessity": "required"}},
-    )
+    strategy = {
+        "hash": "s" * 64,
+        "content": {
+            "method_version": "A0-research-strategy.v1",
+            "necessity": "required",
+            "search_strategy": {"queries": ["a0 query"]},
+        },
+    }
+    captured = {}
+
+    def fake_execute(*args, **kwargs):
+        captured["strategy"] = args[3].get("research_strategy")
+        return degraded_result()
+
+    def fake_strategy(run_id, worker_id, epoch, provider_factory=None):
+        with write() as db:
+            current = job(db, run_id)
+            state = load(current.state_json)
+            state["research_strategy"] = strategy
+            current.state_json = dump(state)
+            current.state_revision += 1
+        return strategy
+
+    monkeypatch.setattr(rubric_research, "execute_research", fake_execute)
+    monkeypatch.setattr(worker, "ensure_research_strategy", fake_strategy)
     worker.run_research_before_planning(run["run_id"], "worker", lease["epoch"])
+    assert captured["strategy"] == strategy
     with write() as db:
         obj = job(db, run["run_id"])
         state = load(obj.state_json)

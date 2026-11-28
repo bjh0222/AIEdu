@@ -58,10 +58,23 @@ class OutputDesign(BaseModel):
     request_quotes: list[str] = Field(min_length=1)
     question_form: Literal["constructed_response_only", "mixed", "not_applicable"]
     explanation_policy: Literal["full", "concise", "answer_only"]
-    answer_placement: Literal["unit_end", "document_end"] = "unit_end"
+    answer_placement: Literal["item_inline", "unit_end", "document_end"] = "unit_end"
     template_adaptations: list[dict[str, str]] = Field(default_factory=list)
     difficulty_target: DifficultyTarget | None = None
     quantity_per_group: int | None = Field(default=None, ge=1, le=100)
+
+
+def _requires_inline_answers(raw_input: str) -> bool:
+    patterns = (
+        r"同一(?:个)?\s*item.{0,24}(?:题干|题目).{0,16}答案",
+        r"(?:每题|每小题).{0,16}(?:必须|需要|要|应|须).{0,16}答案.{0,16}(?:解析|推理)",
+    )
+    negative = re.compile(r"(?:不要|不需要|禁止|不得|无需|无须)\s*(?:在|将|把)?\s*$")
+    for pattern in patterns:
+        for match in re.finditer(pattern, raw_input):
+            if not negative.search(raw_input[max(0, match.start() - 10):match.start()]):
+                return True
+    return False
 
 
 def derive_output_design(context, blueprint):
@@ -123,6 +136,8 @@ def derive_output_design(context, blueprint):
             context.get("raw_input", ""),
         )
     }
+    raw_input = context.get("raw_input", "")
+    inline_answers = _requires_inline_answers(raw_input)
     result = {
         "mode": mode,
         "grouping_basis": "blueprint question groups",
@@ -130,7 +145,7 @@ def derive_output_design(context, blueprint):
         "request_quotes": [context.get("raw_input", "")],
         "question_form": question_form,
         "explanation_policy": "concise" if artifact_roles & {"exercise", "paper"} else "full",
-        "answer_placement": "unit_end",
+        "answer_placement": "item_inline" if inline_answers else "unit_end",
         "template_adaptations": [],
         "difficulty_target": {
             "level": level,
@@ -156,6 +171,8 @@ def validated_design(value, context):
         raise DomainError("OUTPUT_DESIGN_REQUEST_UNBOUND", 422)
     artifacts = set(context.get("requested_artifacts", []))
     item_task = bool(artifacts & {"exercise", "paper"})
+    if item_task and _requires_inline_answers(raw):
+        design["answer_placement"] = "item_inline"
     if item_task and design["question_form"] == "not_applicable":
         raise DomainError("TASK_QUESTION_FORM_REQUIRED", 422)
     tutorial_only = "tutorial" in artifacts and not item_task
@@ -412,6 +429,23 @@ def validate_quantity(items, unit_contract):
     quantity = unit_contract.get("teaching_arrangement", {}).get("quantity")
     if type(quantity) is int and len(items) != quantity:
         raise DomainError("TASK_ITEM_QUANTITY_MISMATCH", 422, required=quantity, received=len(items))
+    groups = (unit_contract.get("teaching_arrangement") or {}).get("question_blueprint", [])
+    expected = {}
+    for row in groups:
+        form = row.get("question_form")
+        if form:
+            expected[form] = expected.get(form, 0) + int(row.get("quantity", 0))
+    actual = {}
+    for item in items:
+        form = item.get("question_form")
+        if form:
+            actual[form] = actual.get(form, 0) + 1
+    if expected and actual != expected:
+        raise DomainError(
+            "TASK_BLUEPRINT_FORM_MISMATCH", 422,
+            required_forms=expected,
+            received_forms=actual,
+        )
 
 
 def render(items, unit, answers_only=False):
@@ -423,7 +457,20 @@ def render(items, unit, answers_only=False):
         for item in items:
             gap = ["", "", ""] if item.get("question_form") == "constructed_response" else [""]
             lines.extend([f"**{item['ordinal']}.** {item['stem_markdown'].strip()}", *gap])
-    if not answers_only and unit["output_design"].get("answer_placement") == "document_end":
+        if unit["output_design"].get("answer_placement") == "item_inline":
+            policy = unit["output_design"]["explanation_policy"]
+            for item in items:
+                final = item["answer"]["final"].strip()
+                answer_label = "" if re.match(r"^(?:答案|答)\s*[:：]", final) else "答案："
+                lines.extend([f"**{item['ordinal']}.** {answer_label}{final}"])
+                if policy != "answer_only":
+                    explanation = (item["answer"].get("display_reasoning")
+                                   if policy == "concise" else item["answer"]["reasoning"])
+                    explanation = (explanation or item["answer"]["reasoning"]).strip()
+                    explanation_label = "" if re.match(r"^解析\s*[:：]", explanation) else "解析："
+                    lines.extend([f"{explanation_label}{explanation}"])
+                lines.append("")
+    if not answers_only and unit["output_design"].get("answer_placement") in {"item_inline", "document_end"}:
         return "\n".join(lines)
     lines.extend(["### 参考答案", ""])
     policy = unit["output_design"]["explanation_policy"]

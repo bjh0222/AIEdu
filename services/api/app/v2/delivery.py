@@ -95,6 +95,36 @@ def delivery_decision(
         for row in quality.get("findings", [])
         if isinstance(row, dict) and row.get("finding_id")
     }
+    profile = plan.get("quality_profile") or {}
+    finalization = quality.get("correctness_repair_finalization") or {}
+    if (profile_binding_current
+            and profile.get("id") == "correctness_only.v1"
+            and finalization.get("status") == "final"
+            and finalization.get("reason") == "second_b_repair_completed"
+            and finalization.get("rechecked_after_final_repair") is False):
+        decision = {
+            "schema_version": VERSION,
+            "state": "eligible",
+            "final_allowed": True,
+            "hard_blockers": [],
+            "soft_blockers": [],
+            "soft_item_ids": [],
+            "waiver_auto_enabled": bool(auto_waiver_enabled),
+            "waiver_status": "not_present",
+            "certificate_status": "not_present",
+            "delivery_calibration_status": "not_calibrated",
+            "required_certificate_scope": {
+                "domains": [],
+                "claim_classes": ["anchored"],
+                "artifact_roles": [],
+                "scenes": [],
+            },
+            "quality_unchanged": True,
+            "finalization_basis": "second_b_repair_completed_without_final_c_recheck",
+            "correctness_after_final_repair": "not_rechecked",
+        }
+        decision["decision_hash"] = digest(decision)
+        return decision
     hard = []
     soft = []
     seen = set()

@@ -77,6 +77,16 @@ def test_B_cannot_drop_quantity_use_judgment_or_declare_routine_as_hard(fault, c
         normalize_items(output, "exercise", unit["unit_id"], LAYOUT, [], unit)
 
 
+def test_B_item_forms_must_match_question_blueprint_group_counts():
+    unit, output = planned(), candidates()
+    unit["teaching_arrangement"]["question_blueprint"] = [{
+        "question_form": "judgement",
+        "quantity": 3,
+    }]
+    with pytest.raises(DomainError, match="TASK_BLUEPRINT_FORM_MISMATCH"):
+        normalize_items(output, "exercise", unit["unit_id"], LAYOUT, [], unit)
+
+
 @pytest.mark.parametrize("fault,code", [("quote", "OUTPUT_DESIGN_REQUEST_UNBOUND"), ("low", "HARD_TASK_DIFFICULTY_TARGET_TOO_LOW"),
     ("quantity", "EXPLICIT_PER_GROUP_QUANTITY_NOT_BOUND")])
 def test_A_cannot_weaken_explicit_task_or_invent_request_quote(fault, code):
@@ -95,6 +105,54 @@ def test_document_end_answers_are_projection_of_exact_coupled_items():
     answers = document_end_answers([unit])
     assert "参考答案" in answers and answers.count("合成的完整关键推导") == 3
     assert "合成大题" not in answers
+
+
+def test_inline_answers_follow_each_item_without_separate_answer_section():
+    unit, output = planned(), candidates()
+    blueprint = {
+        "content": {
+            "design": {
+                "difficulty_strategy": ["Use nonroutine reasoning."],
+                "teaching_or_assessment_strategy": ["Keep each answer with its item."],
+            },
+            "structure": {"units": [{
+                "title": unit["title"],
+                "question_blueprint": [{"question_form": "constructed_response"}],
+            }]},
+        },
+    }
+    ctx = {
+        "raw_input": "每题必须在同一个 item 内给出题干、答案和必要解析。",
+        "hard_constraints": [],
+        "requested_artifacts": ["exercise", "answer"],
+        "material_ids": [],
+        "spec_bindings": [],
+        "teaching_arrangement_units": [{
+            "question_blueprint": [{"question_form": "constructed_response"}],
+        }],
+    }
+    from app.v2.adaptive_format import derive_output_design
+
+    unit["output_design"] = derive_output_design(ctx, blueprint)
+    unit["items"] = normalize_items(output, "exercise", unit["unit_id"], LAYOUT, [], unit)
+    body = render_unit_items(unit["items"], unit)
+    assert unit["output_design"]["answer_placement"] == "item_inline"
+    assert "参考答案" not in body
+    assert body.count("答案：") == len(unit["items"])
+    assert body.count("解析：") == len(unit["items"])
+    assert body.index("答案：") < body.index("解析：")
+
+
+def test_negated_inline_answer_request_does_not_override_unit_end_placement():
+    unit, output = planned(design(answer_placement="unit_end")), candidates()
+    ctx = context() | {
+        "raw_input": "不要在同一个 item 内给答案，答案统一放末尾。",
+    }
+    unit["output_design"] = validated_design(
+        design(answer_placement="unit_end", request_quotes=[ctx["raw_input"]]), ctx)
+    unit["items"] = normalize_items(output, "exercise", unit["unit_id"], LAYOUT, [], unit)
+    assert unit["output_design"]["answer_placement"] == "unit_end"
+    assert "参考答案" in render_unit_items(unit["items"], unit)
 
 
 def test_selected_sources_cannot_disappear_in_adaptive_plan():

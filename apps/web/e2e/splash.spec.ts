@@ -8,7 +8,9 @@ test("cold start plays one splash, auto-closes, refresh does not replay", async 
   await expect(splash).toBeVisible();
   await expect(splash.locator("p")).toHaveCount(1);
   await expect(splash.locator("p")).toContainText(/愿你有天蓝可往|愿你踏遍山川|愿你始终自由/);
-  await expect(splash.locator('img[src*="sky.webp"]')).toHaveCount(1);
+  const splashImage = splash.locator('img[src*="/splash/"]');
+  await expect(splashImage).toHaveCount(1);
+  await expect(splashImage).toHaveAttribute("src", /\/splash\/(sky|green|distance)\.webp$/);
   await expect(splash.locator('img[src*="ai-edu-mark"]')).toHaveCount(1);
 
   await page.waitForTimeout(3600);

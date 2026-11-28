@@ -314,8 +314,17 @@ def execute_run(run_id: str, provider_factory=None):
         if state.get("review_only_source_version"):
             pass
         elif state.get("optimization_policy"):
-            from .optimization import execute_optimization
-            execute_optimization(run_id, worker, epoch, provider_factory)
+            if correctness_only and quality.get("tqi_verdict") == "pass":
+                with write() as db:
+                    obj = job(db, run_id)
+                    fence(obj, worker, epoch)
+                    current = load(obj.state_json)
+                    current["optimization_stop_reason"] = "optimization_not_needed"
+                    current.setdefault("stages", {})["optimizing"] = "not_needed"
+                    obj.state_json, obj.state_revision = dump(current), obj.state_revision + 1
+            else:
+                from .optimization import execute_optimization
+                execute_optimization(run_id, worker, epoch, provider_factory)
         elif correctness_only:
             if quality.get("tqi_verdict") != "pass":
                 raise DomainError("CORRECTNESS_REPAIR_POLICY_REQUIRED", 409)
@@ -334,7 +343,8 @@ def execute_run(run_id: str, provider_factory=None):
             if latest.get("optimization_policy") and not state.get("review_only_source_version"):
                 stop_reason = latest.get("optimization_stop_reason")
                 latest["stages"]["optimizing"] = (
-                    "done" if stop_reason in {
+                    "not_needed" if stop_reason == "optimization_not_needed"
+                    else "done" if stop_reason in {
                         "correctness_only_completed",
                         "optimization_completed_uncalibrated",
                     } else "stopped"
@@ -1231,6 +1241,10 @@ def run_research_before_planning(run_id, worker, epoch, provider_factory=None):
     strategy = ensure_research_strategy(run_id, worker, epoch, provider_factory)
     if strategy is None:
         return
+    # A0 persists its strategy after the state snapshot above. Research execution
+    # must consume that new strategy, not the pre-A0 state.
+    with SessionLocal() as db:
+        state = load(job(db, run_id).state_json)
     necessity = strategy["content"]["necessity"]
     if necessity in {"not_needed", "disabled"}:
         with write() as db:

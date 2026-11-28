@@ -662,6 +662,80 @@ def bind_a1_artifact(output, *, teaching_content, context, state):
         raise DomainError("BLUEPRINT_EVIDENCE_INVALID", 422)
     evidence = [_validated(ResearchEvidence, row, "BLUEPRINT_EVIDENCE_INVALID")
                 for row in raw_evidence]
+    source_by_id = {
+        row.get("source_id"): row
+        for row in (state.get("research_result") or {}).get("sources", [])
+        if isinstance(row, dict) and row.get("source_id")
+    }
+    for row in evidence:
+        source = source_by_id.get(row["source"]["source_id"]) or {}
+        spans = [span for span in source.get("spans", []) if isinstance(span, dict)]
+        if not spans:
+            continue
+        location = row["location"]
+        span_by_id = next(
+            (span for span in spans if span.get("span_id") == location.get("locator")),
+            None,
+        )
+        candidates = [span_by_id] if span_by_id else [
+            span for span in spans
+            if span.get("start_byte") == location.get("start_byte")
+            and span.get("end_byte") == location.get("end_byte")
+        ]
+        if not candidates and location.get("quote_hash"):
+            candidates = [
+                span for span in spans if span.get("sha256") == location["quote_hash"]
+            ]
+        if not candidates and location.get("start_byte") is not None:
+            candidates.extend(
+                span for span in spans
+                if span.get("end_byte") == location["start_byte"]
+                and int(span.get("end_byte", 0)) > int(span.get("start_byte", 0))
+            )
+        if not candidates and location.get("start_byte") is not None:
+            candidates.extend(
+                span for span in spans
+                if int(span.get("start_byte", 0)) <= location["start_byte"]
+                < int(span.get("end_byte", 0))
+            )
+        unique = {
+            span.get("span_id"): span for span in candidates
+            if span.get("span_id")
+        }
+        if len(unique) != 1:
+            raise DomainError(
+                "BLUEPRINT_EVIDENCE_LOCATION_UNBOUND", 422,
+                evidence_id=row["evidence_id"],
+                reason="no_unique_source_span",
+            )
+        span = next(iter(unique.values()))
+        start, end = span.get("start_byte"), span.get("end_byte")
+        source_text = source.get("text")
+        span_text = span.get("text")
+        if (type(start) is not int or type(end) is not int
+                or not 0 <= start < end or not isinstance(source_text, str)
+                or not isinstance(span_text, str)
+                or sha(source_text.encode("utf-8")[start:end]) != span.get("sha256")
+                or sha(span_text) != span.get("sha256")):
+            raise DomainError(
+                "BLUEPRINT_EVIDENCE_LOCATION_UNBOUND", 422,
+                evidence_id=row["evidence_id"],
+                reason="source_span_integrity_mismatch",
+            )
+        normalized = {
+            "locator": span["span_id"],
+            "quote_hash": span["sha256"],
+            "start_byte": start,
+            "end_byte": end,
+        }
+        if normalized != location:
+            normalizations.append({
+                "reason": "evidence_location_snapped_to_unique_source_span",
+                "evidence_id": row["evidence_id"],
+                "before": deepcopy(location),
+                "after": deepcopy(normalized),
+            })
+            row["location"] = normalized
     evidence_ids = [row["evidence_id"] for row in evidence]
     if len(evidence_ids) != len(set(evidence_ids)):
         raise DomainError("BLUEPRINT_EVIDENCE_DUPLICATE", 422)
@@ -981,8 +1055,19 @@ def planning_research_projection(result, strategy, *, per_source_chars=6000, tot
             })
             used += len(excerpt)
         projected = {
-            key: deepcopy(value) for key, value in source.items() if key != "text"
+            key: deepcopy(value) for key, value in source.items()
+            if key not in {"text", "spans"}
         }
+        source_spans = [
+            span for span in source.get("spans", [])
+            if isinstance(span, dict)
+            and any(
+                span.get("start", span.get("start_byte", -1)) < excerpt["end_char"]
+                and span.get("end", span.get("end_byte", -1)) > excerpt["start_char"]
+                for excerpt in excerpts
+            )
+        ]
+        projected["spans"] = source_spans
         projected.update(
             excerpts=excerpts,
             projected_chars=used,

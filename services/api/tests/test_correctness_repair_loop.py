@@ -252,6 +252,64 @@ def test_correctness_repair_runs_one_b_call_target_recheck_then_final(client, mo
     assert state["optimization_history"][0]["full_recheck"] is False
 
 
+def test_correctness_only_pass_skips_optimization_without_b_or_c_calls(client, monkeypatch):
+    from app.v2.runtime import dump, job, load, write
+
+    run_id, base_version_id, _unit = configured_item_run(client, monkeypatch)
+    with write() as db:
+        obj = job(db, run_id)
+        state = load(obj.state_json)
+        state["version_id"] = base_version_id
+        obj.status = "queued"
+        obj.worker_instance_id = None
+        obj.lease_until = 0
+        obj.state_json = dump(state)
+
+    def passing_quality(*args, **kwargs):
+        checked_state = args[3]
+        return {
+            "tqi_verdict": "pass",
+            "quality_status": "passed",
+            "calibration_status": "not_calibrated",
+            "blocking_reasons": [],
+            "check_plan_hash": checked_state["check_plan"]["check_plan_hash"],
+            "checks": [{
+                "item_id": "Q.item_correctness",
+                "result": "satisfied",
+                "method_version": "correctness-only.v1",
+            }],
+            "findings": [],
+            "item_correctness": {
+                "quality_profile": checked_state["quality_profile"],
+                "unit_results": [{
+                    "unit_id": "unit-1",
+                    "result": "satisfied",
+                    "items": [{"item_id": "i1", "result": "correct"}],
+                }],
+            },
+        }
+
+    monkeypatch.setattr("app.v2.worker.run_research_before_planning", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.v2.quality_suite.evaluate", passing_quality)
+    monkeypatch.setattr(
+        "app.v2.optimization.execute_optimization",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("a passing correctness-only run must not enter optimization")
+        ),
+    )
+    from app.v2.worker import execute_run
+    execute_run(run_id)
+
+    from app.db import SessionLocal
+    with SessionLocal() as db:
+        obj = job(db, run_id)
+        state = load(obj.state_json)
+    assert obj.status == "completed"
+    assert state["optimization_stop_reason"] == "optimization_not_needed"
+    assert state["stages"]["optimizing"] == "not_needed"
+    assert state["stop_reason"] == "optimization_not_needed"
+
+
 def test_correctness_repair_allows_one_second_b_round_then_final(client, monkeypatch):
     from app.v2 import generation_tools, model_roles
     from app.v2.optimization import CANDIDATE_SCHEMA_VERSION, execute_optimization
@@ -412,10 +470,23 @@ def test_correctness_repair_allows_one_second_b_round_then_final(client, monkeyp
     from app.db import SessionLocal
     with SessionLocal() as db:
         state = load(job(db, run_id).state_json)
+        final_version = db.get(__import__("app.models", fromlist=["TutorialVersion"]).TutorialVersion,
+                               state["version_id"])
+        final_quality = load(final_version.quality_report)
     assert len(b_calls) == 2
+    assert len(checks) == 1
     assert b_base_versions[0] == base_version_id
     assert b_base_versions[1] != base_version_id
     assert best_before_second == [base_version_id]
     assert state["optimization_stop_reason"] == "correctness_only_completed"
     assert state["optimization_rounds"] == 2
     assert [row["full_recheck"] for row in state["optimization_history"]] == [False, False]
+    assert final_quality["correctness_repair_finalization"]["status"] == "final"
+    assert final_quality["correctness_repair_finalization"]["rechecked_after_final_repair"] is False
+    assert final_quality["checks"][0]["result"] == "not_run"
+    assert final_quality["repair_policy"]["policy_version"] == "aiedu.repair.v2"
+    assert final_quality["repair_policy"]["max_repair_rounds_per_run"] == 2
+    from app.v2.delivery import delivery_decision
+    assert delivery_decision(
+        final_quality, state["check_plan"], profile_binding_current=True
+    )["final_allowed"] is True

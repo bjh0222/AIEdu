@@ -62,12 +62,14 @@ _TASK_TYPE_ALIASES = {
     "practical_tutorial": "practical_tutorial",
 }
 
-# 用户显式难度表达（难度期望字段为空时按原话归一；显式选择优先于默认拔高）
-_DIFFICULTY_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("basic", ("基础", "简单", "容易", "入门", "基础题", "基础达标", "由浅入深")),
-    ("equal", ("同等难度", "等难", "与参考相当", "和参考一样", "难度一致", "同难度")),
-    ("harder", ("更难", "拔高", "高于参考", "加难", "难一点", "比参考难")),
+# 用户显式难度表达。只匹配难度语义，不让「矩阵基础」「基础概念」等知识名称
+# 被误当成用户要求降低难度。
+_DIFFICULTY_HINTS: tuple[tuple[str, str], ...] = (
+    ("basic", r"(?:难度|水平)\s*(?:明显|整体|略)?\s*(?:基础|简单|容易|入门)|(?:基础|简单|容易|入门)\s*(?:难度|题|一点|一些|水平)|由浅入深"),
+    ("equal", r"同等难度|等难|与参考相当|和参考一样|难度一致|同难度"),
+    ("harder", r"更难|拔高|高于参考|加难|难一点|比参考难"),
 )
+_NEGATED_DIFFICULTY_RE = re.compile(r"(?:不要|不需要|避免|不用|无需|无须|非)\s*$")
 
 # 「不要答案」与「要答案」并存等同级冲突检测
 _CONFLICT_PATTERNS: tuple[tuple[str, str, str], ...] = (
@@ -161,8 +163,10 @@ def resolve_difficulty(goal: LearningGoal, profile: dict | None) -> dict:
         # 用户原话里的难度词归一（同义表达；显式字段缺失时仍尊重原意）
         text = " ".join(str(getattr(goal, f, "") or "") for f in
                         ("title", "motivation", "application_context", "hard_constraints", "user_notes"))
-        for pref, words in _DIFFICULTY_HINTS:
-            if any(word in text for word in words):
+        for pref, pattern in _DIFFICULTY_HINTS:
+            matches = (match for match in re.finditer(pattern, text)
+                       if not _NEGATED_DIFFICULTY_RE.search(text[max(0, match.start() - 8):match.start()]))
+            if any(matches):
                 mode_pref = pref
                 break
     explicit_instruction = note or _explicit_difficulty_line(str(getattr(goal, "hard_constraints", "") or ""))

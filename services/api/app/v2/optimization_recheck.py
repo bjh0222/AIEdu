@@ -193,6 +193,141 @@ def execute_recheck(run_id, worker, epoch, provider_factory=None):
         _stop(run_id, worker, epoch, "candidate_recheck_completed_uncalibrated")
 
 
+def finalize_second_correctness_repair(
+        run_id, worker, epoch, state, version, units, new_units, previous_recheck,
+        package, b_audit, network_trace, new_version, rounds, repair_ledger=None):
+    from .optimization import OPTIMIZATION_SKILL, _persist_artifact, _stop, unit_content_identity
+    from .quality import POLICY as DEFAULT_REPAIR_POLICY
+    from .repair_directives import update_ledger
+
+    changed_ids = {
+        candidate["unit_id"] for base, candidate in zip(units, new_units)
+        if unit_content_identity(base) != unit_content_identity(candidate)
+    }
+    candidate_hash = digest([
+        (unit["unit_id"], unit_content_identity(unit)) for unit in new_units
+    ])
+    finalization = {
+        "schema_version": "correctness-repair-finalization.v1",
+        "status": "final",
+        "reason": "second_b_repair_completed",
+        "profile_id": "correctness_only.v1",
+        "candidate_version": new_version,
+        "candidate_hash": candidate_hash,
+        "parent_version_id": version.id,
+        "directive_ids": [
+            row["directive_id"] for row in package.get("directives", [])
+        ],
+        "finding_ids": [
+            row["finding_id"] for row in package.get("confirmed_findings", [])
+        ],
+        "previous_recheck_quality_hash": digest(previous_recheck),
+        "rechecked_after_final_repair": False,
+    }
+    unit_results = [{
+        "unit_id": unit["unit_id"],
+        "result": "not_rechecked",
+        "items": [
+            {"item_id": item.get("item_id"), "result": "not_rechecked"}
+            for item in unit.get("items", [])
+        ],
+    } for unit in new_units]
+    report = {
+        **deepcopy(previous_recheck),
+        "tqi_verdict": "conditional_pass",
+        "quality_status": "needs_review",
+        "calibration_status": "not_calibrated",
+        "blocking_reasons": [],
+        "checks": [{
+            "item_id": "Q.item_correctness",
+            "result": "not_run",
+            "reason": "second_b_repair_completed_without_final_c_recheck",
+            "method_version": "correctness-only.v1",
+        }],
+        "findings": [],
+        "item_correctness": {
+            "method_version": "correctness-only.v1",
+            "quality_profile": deepcopy(state.get("quality_profile")),
+            "unit_results": unit_results,
+            "repair_directives": [],
+            "repair_acceptance": [],
+            "traces": [],
+            "scope": "generated_item_fields_only",
+            "scope_description": (
+                "correctness_only: checks only generated question and answer errors. "
+                "It does not certify professional correctness, teaching quality, "
+                "measured difficulty, learning gain, or the archived full quality suite."
+            ),
+            "professional_certification": False,
+        },
+        "correctness_repair_finalization": finalization,
+        "repair_policy": deepcopy(state.get("optimization_policy") or DEFAULT_REPAIR_POLICY),
+        "repair_correctness": "not_calibrated",
+        "optimization_skill": OPTIMIZATION_SKILL,
+        "optimization_package_hash": digest(package),
+        "network_trace": network_trace,
+        "semantic_recheck": {
+            "method_version": "second-repair-finalization.v1",
+            "changed_unit_ids": sorted(changed_ids),
+            "full_semantic_rerun": False,
+            "final_c_recheck": False,
+        },
+        "_version_id": new_version,
+    }
+    ledger = None
+    if repair_ledger and repair_ledger.get("events"):
+        results = [{
+            "directive_id": row["directive_id"],
+            "finding_id": row["finding_id"],
+            "result": "not_rechecked",
+        } for row in package.get("directives", [])]
+        ledger = update_ledger(
+            repair_ledger,
+            candidate_hash=candidate_hash,
+            candidate_version=new_version,
+            recheck_scope=report["semantic_recheck"],
+            results=results,
+            status="finalized",
+            call_ids=[b_audit.get("call_id")],
+        )
+        report["repair_ledger"] = ledger
+        _persist_artifact(run_id, worker, epoch, ledger, "repair_ledger", b_audit)
+    _persist_artifact(
+        run_id, worker, epoch,
+        {"report": report, "candidate_hash": candidate_hash},
+        "correctness_second_repair_finalization",
+        b_audit,
+    )
+    published = publish(
+        run_id, worker, epoch, new_units, report,
+        f"{run_id}:correctness-second-repair-final:{rounds}",
+        base_version=version.id,
+    )
+    with write() as db:
+        obj = job(db, run_id)
+        fence(obj, worker, epoch)
+        current = load(obj.state_json)
+        current["best_so_far_version"] = published
+        current["optimization_rounds"] = rounds + 1
+        if ledger is not None:
+            current["repair_ledger"] = ledger
+        current.setdefault("optimization_history", []).append({
+            "version_id": published,
+            "parent_version_id": version.id,
+            "package_hash": digest(package),
+            "skill_hash": OPTIMIZATION_SKILL["hash"],
+            "candidate_call_id": b_audit.get("call_id"),
+            "full_recheck": False,
+            "network_sources": len(network_trace.get("receipts", [])),
+            "professional_progress": "not_run",
+            "new_deterministic_regressions": False,
+            "status": "finalized_without_recheck",
+        })
+        obj.state_json, obj.state_revision = dump(current), obj.state_revision + 1
+    _stop(run_id, worker, epoch, "correctness_only_completed")
+    return published
+
+
 def finish_candidate(run_id, worker, epoch, state, version, units, new_units, quality, checked,
                      package, c_audit, b_audit, network_trace, citations, new_version, rounds, provider_factory=None,
                      *, prior_observations=None, repair_ledger=None):

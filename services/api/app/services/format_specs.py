@@ -1210,45 +1210,69 @@ def get_exercise_spec_dict(db: Session) -> dict:
     return spec_dict(spec) if spec is not None else {}
 
 
-def ensure_builtin_specs(db: Session) -> None:
-    """首次启动写入两份内置规范；已有记录不会被覆盖。"""
-    existing_scenes = {
-        item.scene for item in db.query(FormatSpec).filter(FormatSpec.is_builtin.is_(True)).all()
+def _builtin_spec_values(item: dict) -> dict:
+    return {
+        "name": item["name"],
+        "description": item["description"],
+        "scene": item["scene"],
+        "is_builtin": True,
+        "applicable_tasks": item["applicable_tasks"],
+        "applicable_intents": jdump(item["applicable_intents"]),
+        "excluded_scenarios": jdump(item.get("excluded_scenarios", [])),
+        "excluded_intents": jdump(item["excluded_intents"]),
+        "trigger_keywords": jdump(item.get("trigger_keywords", [])),
+        "excluded_keywords": jdump(item.get("excluded_keywords", [])),
+        "allow_keyword_trigger": True,
+        "allow_semantic_recommendation": True,
+        "allow_explicit_selection": True,
+        "target_reader": item["target_reader"],
+        "output_goal": item["output_goal"],
+        "deliverables": jdump(item.get("deliverables", [])),
+        "content_structure": item["content_structure"],
+        "format_rules": item["format_rules"],
+        "required_rules": item["required_rules"],
+        "forbidden_rules": item["forbidden_rules"],
+        "suggested_rules": item.get("suggested_rules", ""),
+        "flexible_rules": item.get("flexible_rules", ""),
+        "acceptance_criteria": item["acceptance_criteria"],
+        "reference_examples": item.get("reference_examples", ""),
+        "custom_markdown": item.get("custom_markdown", ""),
+    }
+
+
+def ensure_builtin_specs(db: Session) -> list[dict]:
+    """Create missing builtins and propagate code-owned seed revisions once."""
+    existing = {
+        item.scene: item
+        for item in db.query(FormatSpec).filter(FormatSpec.is_builtin.is_(True)).all()
     }
     changed = False
+    synced = []
     for item in _BUILTINS:
-        if item["scene"] in existing_scenes:
+        values = _builtin_spec_values(item)
+        spec = existing.get(item["scene"])
+        if spec is not None:
+            changed_fields = [
+                key for key, value in values.items()
+                if getattr(spec, key) != value
+            ]
+            if not changed_fields:
+                continue
+            for key in changed_fields:
+                setattr(spec, key, values[key])
+            spec.version = (spec.version or 1) + 1
+            synced.append({
+                "scene": spec.scene,
+                "spec_id": spec.id,
+                "version": spec.version,
+                "changed_fields": changed_fields,
+            })
+            changed = True
             continue
         spec = FormatSpec(
-            name=item["name"],
-            description=item["description"],
-            scene=item["scene"],
-            is_builtin=True,
             is_default=False,
             version=1,
-            applicable_tasks=item["applicable_tasks"],
-            applicable_intents=jdump(item["applicable_intents"]),
-            excluded_scenarios=jdump(item.get("excluded_scenarios", [])),
-            excluded_intents=jdump(item["excluded_intents"]),
-            trigger_keywords=jdump(item.get("trigger_keywords", [])),
-            excluded_keywords=jdump(item.get("excluded_keywords", [])),
-            allow_keyword_trigger=True,
-            allow_semantic_recommendation=True,
-            allow_explicit_selection=True,
-            target_reader=item["target_reader"],
-            output_goal=item["output_goal"],
-            deliverables=jdump(item.get("deliverables", [])),
-            content_structure=item["content_structure"],
-            format_rules=item["format_rules"],
-            required_rules=item["required_rules"],
-            forbidden_rules=item["forbidden_rules"],
-            suggested_rules=item.get("suggested_rules", ""),
-            flexible_rules=item.get("flexible_rules", ""),
-            acceptance_criteria=item["acceptance_criteria"],
-            # 漏传 reference_examples 会让全新安装永远拿不到排版正反例（种子白写）：
-            # 该字段在 outline / section 阶段注入，是纠正「题号按题型重置」的主要手段。
-            reference_examples=item.get("reference_examples", ""),
-            custom_markdown=item.get("custom_markdown", ""),
+            **values,
         )
         db.add(spec)
         changed = True
@@ -1267,6 +1291,7 @@ def ensure_builtin_specs(db: Session) -> None:
         if fallback is not None:
             fallback.is_default = True
             db.commit()
+    return synced
 
 
 def _match_form(text: str) -> str:

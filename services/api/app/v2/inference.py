@@ -100,19 +100,18 @@ def recover_extra_nested_closer(content):
             outside[index] = False
             in_string = True
     for end in range(len(raw)):
-        if raw[end] != "]" or not outside[end]:
-            continue
-        start = end
-        while start > 0 and raw[start - 1] == "}" and outside[start - 1]:
-            start -= 1
-        if end - start < 2:
+        if raw[end] not in "}]" or not outside[end]:
             continue
         candidate = raw[: end - 1] + raw[end:]
         try:
             result = json.loads(candidate)
         except ValueError:
             continue
-        if isinstance(result, dict):
+        # Keep the recovery narrow: only structured task payloads with at least
+        # one nested object/array qualify. A scalar-only object with a stray
+        # closer remains rejected rather than being rewritten by guesswork.
+        if isinstance(result, dict) and any(
+                isinstance(value, (dict, list)) for value in result.values()):
             return result
     return None
 

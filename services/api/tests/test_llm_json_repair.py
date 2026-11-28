@@ -49,6 +49,15 @@ def test_extract_json_raises_readable_error():
     assert "无法解析为 JSON" in str(exc.value)
 
 
+def test_v2_recovers_one_extra_final_mapping_closer_only_when_full_json_parses():
+    from app.v2.inference import recover_extra_nested_closer
+
+    malformed = '{"dimensions":[{"limitations":["one","two"]}]}}'
+    recovered = recover_extra_nested_closer(malformed)
+    assert recovered == {"dimensions": [{"limitations": ["one", "two"]}]}
+    assert recover_extra_nested_closer('{"dimensions":[{"x":1}') is None
+
+
 class _FakeProvider:
     """返回非对象 JSON 的假 provider。"""
 

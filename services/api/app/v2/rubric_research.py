@@ -876,14 +876,37 @@ def _execute_research_strict(run_id, worker, epoch, state, provider_factory=None
             "Cover educational knowledge structure/explanation and assessment item validity/cognitive demand. Never include private material or user text.", provider_factory)
     from .generation_tools import _public_query
     query_list = queries.get("queries", [])
-    if not isinstance(query_list, list) or not 1 <= len(query_list) <= 3:
+    if not isinstance(query_list, list) or not query_list:
         raise DomainError("RESEARCH_QUERIES_INVALID", 422)
     discovery, candidates, seen = [], [], set()
-    indexes = ((strategy["content"]["search_strategy"].get("preferred_indexes") if strategy else None)
-               or request.get("indexes") or ["openalex", "crossref", "europepmc"])
-    if (not isinstance(indexes, list) or not indexes
-            or any(index not in {"crossref", "openalex", "europepmc"} for index in indexes)):
+    declared_indexes = ((strategy["content"]["search_strategy"].get("preferred_indexes") if strategy else None)
+                        or request.get("indexes") or ["openalex", "crossref", "europepmc"])
+    if not isinstance(declared_indexes, list) or not declared_indexes:
         raise DomainError("RESEARCH_INDEXES_INVALID", 422)
+    supported = {"crossref", "openalex", "europepmc"}
+    indexes = list(dict.fromkeys(value for value in declared_indexes if value in supported))
+    if not indexes:
+        indexes = ["openalex", "crossref", "europepmc"]
+    rounds = state.get("execution_policy", {}).get("network_tool_rounds", 3)
+    requests_per_round = state.get("execution_policy", {}).get("network_requests_per_round", 4)
+    if (type(rounds) is not int or not 0 <= rounds <= 12
+            or type(requests_per_round) is not int or not 1 <= requests_per_round <= 4):
+        raise DomainError("NETWORK_TOOL_POLICY_INVALID", 422)
+    request_budget = max(1, rounds * requests_per_round)
+    if len(query_list) > request_budget:
+        raise DomainError(
+            "RESEARCH_QUERY_BUDGET_EXCEEDED", 422,
+            query_count=len(query_list),
+            request_budget=request_budget,
+        )
+    indexes = indexes[:max(1, request_budget // len(query_list))]
+    execution_plan = {
+        "declared_indexes": declared_indexes,
+        "executed_indexes": indexes,
+        "query_count": len(query_list),
+        "search_request_budget": request_budget,
+        "planned_search_requests": len(indexes) * len(query_list),
+    }
     frozen_discovery = _previous(run_id, "discovery")
     frozen_reads = _previous(run_id, "source_reads")
     for index in indexes:
@@ -917,7 +940,13 @@ def _execute_research_strict(run_id, worker, epoch, state, provider_factory=None
             "index": "academic_seed", "open_urls": [url], "duplicate": False}
         candidates.append(candidate)
         discovery.append({"index": "academic_seed", "query": "explicit academic seed", "status": "ok", "candidates": [candidate]})
-    _save(run_id, worker, epoch, "discovery", {"queries": queries, "query_call": q_audit, "results": discovery, "candidates": candidates})
+    _save(run_id, worker, epoch, "discovery", {
+        "queries": queries,
+        "query_call": q_audit,
+        "execution_plan": execution_plan,
+        "results": discovery,
+        "candidates": candidates,
+    })
     if len({r["index"] for r in discovery if r.get("status") == "ok"}) < min(2, len(indexes)):
         raise DomainError("RESEARCH_TWO_INDEXES_NOT_RETRIEVED", 422)
     screening_instruction = RESEARCH_STRATEGY_CONSUMER_INSTRUCTION if strategy else ""

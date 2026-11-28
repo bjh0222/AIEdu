@@ -31,6 +31,16 @@ _MATH_HINTS = ("数学", "统计", "概率", "数据分析", "推导", "证明",
 _CS_HINTS = ("代码", "编程", "python", "linux", "命令", "命令行", "api", "sql", "算法", "调试", "git", "grep", "awk", "日志", "shell", "bash")
 
 
+def _recommendation_requests_pause(recommendation: str) -> bool:
+    """Treat negated non-pause language as a recommendation to continue."""
+    scrubbed = re.sub(
+        r"(?:不建议|不推荐|不必|无需|无须|不要|不宜)\s*(?:暂缓|推迟|等待)",
+        "",
+        recommendation,
+    )
+    return bool(re.search(r"暂缓|不建议推进|不值得|无法推进", scrubbed))
+
+
 def infer_domain_key(text: str) -> str:
     """一次性入口不再要求用户先选学科；按明确线索推断，未命中时用通用学科。"""
     lowered = text.lower()
@@ -242,7 +252,7 @@ def quickstart(
         explicit_continue = assessment.user_decision in {"坚决执行", "采纳建议继续"}
         paused = not explicit_continue and (
             assessment.user_decision == "暂停"
-            or bool(re.search(r"暂缓|不建议推进|不值得|无法推进", recommendation))
+            or _recommendation_requests_pause(recommendation)
         )
         if paused:
             if pause_action == "proceed":

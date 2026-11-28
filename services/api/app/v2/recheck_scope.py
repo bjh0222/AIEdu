@@ -76,6 +76,7 @@ def merge_reports(base, deterministic, incremental, affected):
         checks,
         list(findings.values()),
         calibration=incremental.get("calibration_status", "not_calibrated"),
+        repair_policy=incremental.get("repair_policy"),
     )
     result.update(reduced)
     for key in ("automated_assessment", "diagnostic_review", "bound_profile_review",

@@ -487,7 +487,8 @@ def finding(item: dict, plan: dict, unit: dict, version_id: str, start: int, end
             "review_evidence": [], "context_conflict": False, "category": "structure"}
 
 
-def reduce_quality(plan: dict, checks: list[dict], findings: list[dict], calibration="not_calibrated") -> dict:
+def reduce_quality(plan: dict, checks: list[dict], findings: list[dict],
+                   calibration="not_calibrated", repair_policy=None) -> dict:
     # Disabled-layer rows are normalized to an honest policy-skipped state here:
     # the single reducer owns the "not passed, skipped by policy" semantics so
     # no dispatch path can render a disabled check as satisfied.
@@ -550,7 +551,7 @@ def reduce_quality(plan: dict, checks: list[dict], findings: list[dict], calibra
                 + [{"finding_id": f["finding_id"], "result": "unbound"} for f in unbound_blockers]
             ),
             "check_plan_hash": plan.get("check_plan_hash"), "check_items": plan.get("check_items", []),
-            "checks": checks, "findings": findings, "repair_policy": POLICY}
+            "checks": checks, "findings": findings, "repair_policy": repair_policy or POLICY}
 
 
 def deterministic_checks(plan: dict, units: list[dict], version_id: str, materials_complete=True,

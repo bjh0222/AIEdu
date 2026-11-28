@@ -67,6 +67,37 @@ def changed_context_specs(updated: dict, specs: list[dict]) -> list[dict]:
     ]
 
 
+def test_builtin_seed_sync_updates_stale_code_owned_row_only_once(client: TestClient):
+    from app.db import SessionLocal
+    from app.models import FormatSpec
+    from app.services import format_specs as fs
+
+    seed = next(item for item in fs._BUILTINS if item["scene"] == "exam_paper")
+    with SessionLocal() as db:
+        spec = db.query(FormatSpec).filter_by(scene="exam_paper", is_builtin=True).one()
+        original_version = spec.version
+        spec.format_rules = "stale code-owned seed"
+        db.commit()
+        spec_id = spec.id
+
+        synced = fs.ensure_builtin_specs(db)
+        db.refresh(spec)
+        assert synced[0]["spec_id"] == spec_id
+        assert synced[0]["changed_fields"] == ["format_rules"]
+        assert spec.format_rules == seed["format_rules"]
+        assert spec.version == original_version + 1
+        assert fs.ensure_builtin_specs(db) == []
+
+        custom = FormatSpec(name="user-owned", scene="exam_paper", is_builtin=False)
+        db.add(custom)
+        db.commit()
+        custom_id = custom.id
+        spec.format_rules = "stale again"
+        db.commit()
+        fs.ensure_builtin_specs(db)
+        assert db.get(FormatSpec, custom_id).name == "user-owned"
+
+
 def test_format_spec_crud_default_uniqueness_and_custom_markdown(client: TestClient):
     created = client.post("/api/format-specs", json=_payload())
     assert created.status_code == 200

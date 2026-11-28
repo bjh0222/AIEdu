@@ -105,7 +105,7 @@ $$
     await expect(page.locator(".prose p", { hasText: "第一题答案" })).not.toHaveClass(/question-block/);
   });
 
-  test("选择题题干与选项之间不应用三行题间距", async ({ page }) => {
+  test("选择题题干与选项零额外间距，并按宽度使用 4/2/1 列", async ({ page }) => {
     const body = String.raw`# 专题
 
 
@@ -118,6 +118,13 @@ D. 选项四
 
 **5.** 下一道题
 
+**6.** 长选项题
+
+A. 这是用于验证内容明显超过可用宽度的第一个长选项，必须独占一行显示
+B. 这是用于验证内容明显超过可用宽度的第二个长选项，必须独占一行显示
+C. 这是用于验证内容明显超过可用宽度的第三个长选项，必须独占一行显示
+D. 这是用于验证内容明显超过可用宽度的第四个长选项，必须独占一行显示
+
 ### 参考答案
 
 **4.** 答案四。`;
@@ -125,13 +132,16 @@ D. 选项四
     await mockBackend(page, { snapshot: () => runSnapshot({ quality: v.quality }), versions: { [IDS.v2]: v } });
     await page.goto(`/tasks/${IDS.task}/read`);
     const question = page.locator(".prose p.question-block", { hasText: "题干" });
-    const firstOption = page.locator(".prose p.question-block", { hasText: "A. 选项一" });
+    const options = page.locator(".prose > .question-options").first();
     const nextQuestion = page.locator(".prose p.question-block", { hasText: "下一道题" });
+    const longOptions = page.locator(".prose > .question-options").nth(1);
     await expect(question).toHaveClass(/question-start/);
-    await expect(firstOption).not.toHaveClass(/question-start/);
+    await expect(options).toBeVisible();
+    await expect(options.locator(":scope > .question-option")).toHaveCount(4);
     await expect(nextQuestion).toHaveClass(/question-start/);
-    await expect(firstOption.locator("br")).toHaveCount(3);
-    const optionSpacing = await firstOption.evaluate((node) => {
+    await expect(options).toHaveAttribute("data-columns", /^(4|2|1)$/);
+    await expect(longOptions).toHaveAttribute("data-columns", "1");
+    const optionSpacing = await options.evaluate((node) => {
       const style = getComputedStyle(node);
       return { gap: Number.parseFloat(style.marginTop), line: Number.parseFloat(style.lineHeight) };
     });
