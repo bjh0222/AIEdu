@@ -62,10 +62,17 @@ def merge_reports(base, deterministic, incremental, affected):
     for row in incremental.get("findings", []):
         findings.setdefault(row["normalized_claim_hash"], deepcopy(row))
     from .quality import reduce_quality
+    quality_profile = (
+        incremental.get("quality_profile")
+        or deterministic.get("quality_profile")
+        or ((incremental.get("item_correctness") or {}).get("quality_profile"))
+        or base.get("quality_profile")
+    )
     reduced = reduce_quality(
         {"check_items": deterministic.get("check_items", []),
          "check_plan_hash": deterministic.get("check_plan_hash"),
-         "quality_layers": deterministic.get("quality_layers")},
+         "quality_layers": deterministic.get("quality_layers"),
+         "quality_profile": deepcopy(quality_profile)},
         checks,
         list(findings.values()),
         calibration=incremental.get("calibration_status", "not_calibrated"),
@@ -87,6 +94,8 @@ def merge_reports(base, deterministic, incremental, affected):
         quality_preflight=deterministic.get("quality_preflight"),
         material_coverage=deterministic.get("material_coverage"),
         calibration_scope=deterministic.get("calibration_scope"),
+        item_correctness=deepcopy(incremental.get("item_correctness")),
+        quality_profile=deepcopy(quality_profile),
         recheck_scope={
             "method_version": "scope-aware-recheck.v1",
             "changed_unit_ids": sorted(affected),
@@ -114,7 +123,7 @@ def merge_reports(base, deterministic, incremental, affected):
 def evaluate_candidate(run_id, worker, epoch, state, base_units, new_units, base_quality,
                        package, version_id, provider_factory=None):
     if not state.get("research_strategy") and not package.get("directives"):
-        from .checker import evaluate
+        from .quality_suite import evaluate
         return evaluate(run_id, worker, epoch, state, new_units, version_id,
                         provider_factory)
     from .optimization import unit_content_identity
@@ -129,8 +138,13 @@ def evaluate_candidate(run_id, worker, epoch, state, base_units, new_units, base
     closure = dependency_closure(base_units, changed)
     affected = set(closure["unit_ids"])
     aggregate_bindings = {"criterion_aggregate.v1", "diagnostic_profile.v1"}
-    if any(item.get("verifier_binding") in aggregate_bindings
-           for item in state.get("check_plan", {}).get("check_items", [])):
+    from .quality_suite import quality_profile_is_correctness_only
+    profile_id = "correctness_only.v1" if quality_profile_is_correctness_only(state) else None
+    has_aggregate = any(
+        item.get("verifier_binding") in aggregate_bindings
+        for item in state.get("check_plan", {}).get("check_items", [])
+    )
+    if profile_id != "correctness_only.v1" and has_aggregate:
         closure["full_semantic_rerun"] = True
         closure["full_semantic_reason"] = "aggregate_checks_require_complete_scope"
     directives = package.get("directives", [])
@@ -145,7 +159,7 @@ def evaluate_candidate(run_id, worker, epoch, state, base_units, new_units, base
             directives=failed,
         )
     if closure.get("full_semantic_rerun"):
-        from .checker import evaluate
+        from .quality_suite import evaluate
         checked = evaluate(run_id, worker, epoch, state, new_units, version_id,
                            provider_factory, _l4=False)
         checked["recheck_scope"] = {
@@ -165,7 +179,7 @@ def evaluate_candidate(run_id, worker, epoch, state, base_units, new_units, base
         state.get("check_plan", {}).get("quality_layers")
     )
     affected_units = [row for row in new_units if row["unit_id"] in affected]
-    from .checker import evaluate
+    from .quality_suite import evaluate
     incremental = evaluate(run_id, worker, epoch, state, affected_units, version_id,
                            provider_factory, _l4=False)
     merged = merge_reports(base_quality, deterministic_report, incremental, affected)

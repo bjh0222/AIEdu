@@ -129,7 +129,8 @@ def enabled_findings_for_plan(plan: dict, findings: list[dict]) -> list[dict]:
     ]
 
 
-def compile_plan(task: dict, network_policy: dict | None = None, quality_layers: dict | None = None) -> dict:
+def compile_plan(task: dict, network_policy: dict | None = None, quality_layers: dict | None = None,
+                 quality_profile: dict | None = None) -> dict:
     items, conflicts = [], list(task.get("task_intent", {}).get("conflicts", []))
     declared_task_domains = sorted(task_domains(task))
 
@@ -406,6 +407,30 @@ def compile_plan(task: dict, network_policy: dict | None = None, quality_layers:
         item["hard_baseline"] = layer == "correctness"
     from .check_criteria import bind_criteria, VERSION
     bind_criteria(items)
+    if quality_profile and quality_profile.get("id") == "correctness_only.v1":
+        source = next(item for item in items if item["item_id"] == "C3.correctness")
+        items = [{
+            **deepcopy(source),
+            "item_id": "Q.item_correctness",
+            "system": "correctness_only",
+            "dimension": "generated item correctness",
+            "decision_type": "semantic_rubric",
+            "verifier_binding": "correctness-only.v1",
+            "severity_class": "blocker",
+            "required": True,
+            "required_evidence": ["correctness-only.v1"],
+            "pass_condition": "Every generated item and its answer are reviewed exactly once, and no item is marked incorrect.",
+            "scope": {"generated_items_only": True},
+            "applicability_reason": "correctness_only_profile",
+        }]
+        items[0].pop("criterion_contract", None)
+        derivation_contract = {
+            "schema_version": "aiedu.derivation-contract.v1",
+            "method_version": "assessment-source-derivation.v1",
+            "enabled": False,
+            "reason": "correctness_only_profile",
+        }
+        derivation_targets = []
     if derivation_targets:
         for target in derivation_targets:
             for source in target["sources"]:
@@ -439,6 +464,8 @@ def compile_plan(task: dict, network_policy: dict | None = None, quality_layers:
             "research_policy": deepcopy(research), "derivation_contract": derivation_contract}
     if quality_layers is not None:
         plan["quality_layers"] = deepcopy(quality_layers)
+    if quality_profile is not None:
+        plan["quality_profile"] = deepcopy(quality_profile)
     plan["check_plan_hash"] = digest(plan)
     return plan
 
@@ -502,6 +529,8 @@ def reduce_quality(plan: dict, checks: list[dict], findings: list[dict], calibra
         verdict, legacy = "needs_repair", "failed"
     elif any(not item.get("required") and by_id.get(item["item_id"],{}).get("result") != "satisfied" for item in plan.get("check_items",[])):
         verdict, legacy = "conditional_pass", "needs_review"
+    elif (plan.get("quality_profile") or {}).get("id") == "correctness_only.v1":
+        verdict, legacy = "pass", "passed"
     elif calibration != "calibrated":
         # Execute checks and repairs regardless of calibration, but keep the
         # user's final-delivery policy: diagnostics alone cannot certify pass.

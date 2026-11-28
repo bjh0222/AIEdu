@@ -64,7 +64,92 @@ class OutputDesign(BaseModel):
     quantity_per_group: int | None = Field(default=None, ge=1, le=100)
 
 
+def derive_output_design(context, blueprint):
+    if not isinstance(blueprint, dict):
+        raise DomainError("OUTPUT_DESIGN_REQUIRED", 422)
+    content = blueprint.get("content") or blueprint
+    design = content.get("design") or {}
+    units = content.get("structure", {}).get("units") or []
+    if not units:
+        raise DomainError("OUTPUT_DESIGN_REQUIRED", 422)
+    blueprint_by_title = {row.get("title"): row for row in units}
+    question_rows = []
+    teaching_units = content.get("teaching_units") or []
+    if teaching_units:
+        for unit in teaching_units:
+            question_rows.extend(unit.get("question_blueprint", []))
+    if not question_rows:
+        question_rows = [
+            row
+            for unit in context.get("teaching_arrangement_units", [])
+            for row in unit.get("question_blueprint", [])
+        ]
+    forms = {
+        row.get("question_form")
+        for row in question_rows
+        if isinstance(row, dict) and row.get("question_form")
+    }
+    question_form = (
+        "not_applicable" if not forms
+        else "constructed_response_only" if forms == {"constructed_response"}
+        else "mixed"
+    )
+    artifact_roles = set(context.get("requested_artifacts", []))
+    mode = (
+        "tutorial" if artifact_roles == {"tutorial"}
+        else "custom" if artifact_roles & {"exercise", "paper"}
+        else "tutorial"
+    )
+    strategy = [
+        *design.get("difficulty_strategy", []),
+        *design.get("teaching_or_assessment_strategy", []),
+    ]
+    rationale = " ".join(str(value).strip() for value in strategy if str(value).strip())
+    if len(rationale) < 12:
+        raise DomainError("OUTPUT_DESIGN_REQUIRED", 422)
+    def maximum(field, default):
+        values = []
+        for row in question_rows:
+            basis = row.get("difficulty_basis") if isinstance(row, dict) else None
+            value = basis.get(field) if isinstance(basis, dict) else None
+            if type(value) is int:
+                values.append(value)
+        return max(values) if values else default
+    level = next((value for value in design.get("difficulty_strategy", []) if value), "task_adaptive")
+    counts = {
+        int(match)
+        for match in re.findall(
+            r"每(?:一)?(?:类|组)[^\n。；]{0,18}?(\d+)\s*(?:个|道)[^\n。；]{0,8}?题",
+            context.get("raw_input", ""),
+        )
+    }
+    result = {
+        "mode": mode,
+        "grouping_basis": "blueprint question groups",
+        "rationale": rationale,
+        "request_quotes": [context.get("raw_input", "")],
+        "question_form": question_form,
+        "explanation_policy": "concise" if artifact_roles & {"exercise", "paper"} else "full",
+        "answer_placement": "unit_end",
+        "template_adaptations": [],
+        "difficulty_target": {
+            "level": level,
+            "minimum_nonroutine_operations": maximum("nonroutine_operations", 0),
+            "minimum_concept_interactions": maximum("concept_interactions", 1),
+            "minimum_dependency_depth": maximum("dependency_depth", 1),
+            "rationale": rationale,
+            "empirical_status": "not_measured",
+        } if artifact_roles & {"exercise", "paper"} else None,
+        "quantity_per_group": next(iter(counts)) if len(counts) == 1 else None,
+    }
+    return validated_design(result, context)
+
+
 def validated_design(value, context):
+    value = {
+        key: item for key, item in value.items()
+        if key not in {"method_version", "source_spec_hashes", "design_hash"}
+    }
     design = OutputDesign.model_validate(value).model_dump()
     raw = context.get("raw_input", "") + "\n" + "\n".join(context.get("hard_constraints", []))
     if any(not quote or quote not in raw for quote in design["request_quotes"]):

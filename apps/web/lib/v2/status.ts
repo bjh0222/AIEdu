@@ -156,6 +156,8 @@ export function checkView(result: string | undefined, reason?: string): CheckVie
 }
 
 export const REASON_TEXT: Record<string, string> = {
+  correctness_only_completed: "题目与答案完成规定范围的复检，未发现剩余错误，允许按 correctness-only 范围签 final。",
+  correctness_only_repair_failed: "修复次数或调用预算耗尽后仍存在题目或答案错误，任务不能签 final。",
   optimization_completed_uncalibrated: "有界优化及原条件复验已结束，专业质量仍未认证",
   diagnostic_regression: "候选出现逐维退化，已保留此前最佳草稿",
   regression_or_unresolved: "候选存在回归或未解决问题，已保留此前版本",

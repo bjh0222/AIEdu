@@ -40,10 +40,9 @@ test("上传入口保留原话、范围、研究和有界优化策略，不另�
   const input = writes.find((w) => w.path.endsWith("/input"))!.body.input as Record<string, unknown>;
   expect(input).toMatchObject({ raw_input: raw, generation_scope: "system", material_ids: ["selected-source"],
     research_request: { enabled: true }, execution_policy: { structured_arrangement: true, quality_loop: true,
-      task_adaptive_format: true,
-      quality_layers: { correctness: true, completeness: true, quality_specific: false },
+      task_adaptive_format: true, quality_profile: "correctness_only.v1", criterion_assessment: false,
+      quality_layers: { correctness: true, completeness: false, quality_specific: false },
       optimization_policy: { root_call_budget: 24, max_repair_rounds_per_run: 2, max_attempts_per_finding: 2 } } });
-  expect(input.execution_policy as Record<string, unknown>).not.toHaveProperty("criterion_assessment");
   expect(input).not.toHaveProperty("mode");
 });
 
@@ -101,7 +100,7 @@ test("已选资料可在提交前移除并重新选择同一文件", async ({ pa
   expect(uploads).toHaveLength(2);
 });
 
-test("真实生成默认不限调用，发送三层质检开关，保留安全护栏与软提醒", async ({ page }) => {
+test("真实生成默认不限调用，质检固定仅正确性，保留安全护栏与软提醒", async ({ page }) => {
   let submitted: Record<string, unknown> | undefined;
   await mockBackend(page, { onWrite: async (route, path) => {
     if (path !== "/task-starts") return false;
@@ -114,14 +113,15 @@ test("真实生成默认不限调用，发送三层质检开关，保留安全�
   } }));
   await page.goto("/new");
   await page.getByLabel("需求").fill("真实生成教程");
+  await expect(page.getByText("自动匹配与高级选项", { exact: true })).toBeVisible();
+  await page.locator("summary").click();
   await expect(page.getByLabel("模型调用上限")).toBeEmpty();
   await expect(page.getByText("留空表示不限", { exact: false })).toBeVisible();
   await expect(page.getByText(/无进展、取消和未知回执仍受保护/)).toBeVisible();
-  // S10: 三层质检。正确性必开不可关闭；演示入口与 Criterion 用户选项不再出现。
-  await expect(page.getByRole("checkbox", { name: /正确性检查/ })).toBeDisabled();
-  await expect(page.getByRole("checkbox", { name: /正确性检查/ })).toBeChecked();
-  await expect(page.getByRole("checkbox", { name: /完整性检查/ })).toBeChecked();
-  await expect(page.getByRole("checkbox", { name: /质量专项检查/ })).not.toBeChecked();
+  await expect(page.getByRole("checkbox", { name: /正确性检查/ })).toHaveCount(0);
+  await expect(page.getByRole("checkbox", { name: /完整性检查/ })).toHaveCount(0);
+  await expect(page.getByRole("checkbox", { name: /质量专项检查/ })).toHaveCount(0);
+  await expect(page.getByText("质检策略", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("checkbox", { name: /定向整改与优化/ })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /演示/ })).toHaveCount(0);
   await expect(page.getByLabel("启用 Criterion 评估")).toHaveCount(0);
@@ -129,13 +129,13 @@ test("真实生成默认不限调用，发送三层质检开关，保留安全�
   await expect(page).toHaveURL(new RegExp(`/tasks/${IDS.task}$`));
   expect(submitted?.mode).toBe("configured");
   expect(submitted?.execution_policy).toMatchObject({
-    structured_arrangement: true, quality_loop: true,
+    structured_arrangement: true, quality_loop: true, quality_profile: "correctness_only.v1",
+    criterion_assessment: false,
     task_adaptive_format: true,
-    quality_layers: { correctness: true, completeness: true, quality_specific: false },
+    quality_layers: { correctness: true, completeness: false, quality_specific: false },
     optimization_policy: { policy_version: "aiedu.repair.v2", enabled: true,
       root_call_budget: null, max_repair_rounds_per_run: 2, max_attempts_per_finding: 2 },
   });
-  expect(submitted?.execution_policy as Record<string, unknown>).not.toHaveProperty("criterion_assessment");
 });
 
 test("付费未开启时无法开始，不自动降级演示", async ({ page }) => {
@@ -160,7 +160,7 @@ test("付费未开启时无法开始，不自动降级演示", async ({ page }) 
   expect(submitted).toBeUndefined();
 });
 
-test("三层质检开关按用户选择发送，正确性无法关闭", async ({ page }) => {
+test("前端不能变更质检策略，提交固定仅正确性请求", async ({ page }) => {
   let submitted: Record<string, unknown> | undefined;
   await mockBackend(page, { onWrite: async (route, path) => {
     if (path !== "/task-starts") return false;
@@ -172,13 +172,17 @@ test("三层质检开关按用户选择发送，正确性无法关闭", async ({
     scenes: ["default_tutorial"], taxonomy: [], paid_calls_enabled: true, materials: { resource_policy_status: "ready" },
   } }));
   await page.goto("/new");
-  await page.getByLabel("需求").fill("关闭完整性、开启质量专项");
-  await page.getByRole("checkbox", { name: /完整性检查/ }).uncheck();
-  await page.getByRole("checkbox", { name: /质量专项检查/ }).check();
+  await page.getByLabel("需求").fill("固定质检策略");
+  await page.locator("summary").click();
+  await expect(page.getByText("质检策略", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("完整性检查", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("质量专项检查", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "开始生成" }).click();
   await expect(page).toHaveURL(new RegExp(`/tasks/${IDS.task}$`));
   expect(submitted?.execution_policy).toMatchObject({
-    quality_layers: { correctness: true, completeness: false, quality_specific: true },
+    quality_profile: "correctness_only.v1",
+    criterion_assessment: false,
+    quality_layers: { correctness: true, completeness: false, quality_specific: false },
   });
 });
 

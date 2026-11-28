@@ -1,0 +1,113 @@
+{
+  "schema_version": "aiedu.quality-suite-archive.v1",
+  "archive_id": "full_v1",
+  "frozen_at": "2026-11-28",
+  "source_commit": "b22a2bd11da220b7269eff6bec994f939b76e442",
+  "files": [
+    {
+      "name": "quality.py",
+      "bytes": 42104,
+      "sha256": "990e19e5cb27cc57cd12d6a51e9967791f0d17659a802495e208670619c6ea6b"
+    },
+    {
+      "name": "checker.py",
+      "bytes": 47052,
+      "sha256": "528ea93adcf3bc40a277c79699b087a211505d42acc3e4a605e790e02bf1af61"
+    },
+    {
+      "name": "checker_batch.py",
+      "bytes": 26990,
+      "sha256": "2f276d294be095c93ec826f1878d16821dce7ce10427d57200d10109c2281d64"
+    },
+    {
+      "name": "criterion_review.py",
+      "bytes": 26773,
+      "sha256": "cc701375f85b782b07094fe3877302ac2975c2f382a4b0ed19f9921d59c59354"
+    },
+    {
+      "name": "assessment_binding.py",
+      "bytes": 18868,
+      "sha256": "cd8af819edf5b4c5b1af5d7a966f1fd942098ddb7eee4d70be6851a19861575b"
+    },
+    {
+      "name": "derivation.py",
+      "bytes": 6449,
+      "sha256": "707bd206d56fe497ce4edc51dbab5a10dfa88e778a45342ceaf5568ff1f76abb"
+    },
+    {
+      "name": "optimization.py",
+      "bytes": 110245,
+      "sha256": "3f5fd3d0d2d3b1943e9282ab376856acc21ed9b43aebd81caa18c9eb3c82cb08"
+    },
+    {
+      "name": "optimization_recheck.py",
+      "bytes": 23219,
+      "sha256": "5b0ad347e9de53686968e28177647530d64497c64e8a7795b3e96c120f1036d9"
+    },
+    {
+      "name": "optimization_acceptance.py",
+      "bytes": 21652,
+      "sha256": "28f9e73ca2cc03b0b3cbe4434ffae8b78cc884a167904daf44d01d3163703531"
+    },
+    {
+      "name": "repair_directives.py",
+      "bytes": 28913,
+      "sha256": "ce16ff8633da20b8ea3800974ad9070ca3dd33b47208a7e506d93f7ac9e58f50"
+    },
+    {
+      "name": "recheck_scope.py",
+      "bytes": 7769,
+      "sha256": "e4546a3b394654b0b223f1284c28f96102bca8991b3bf71c2e254c02caff5482"
+    },
+    {
+      "name": "repairs.py",
+      "bytes": 13213,
+      "sha256": "3da98d6c5d39f5399a07ebed6914aa9809877b6d92bb86163797b32dcc2a1d14"
+    },
+    {
+      "name": "delivery.py",
+      "bytes": 9538,
+      "sha256": "3101178ddb6df86e12085ba4d2e7377dc2f1b4049e953f3c8bcfd84e638acccf"
+    },
+    {
+      "name": "delivery_waiver.py",
+      "bytes": 4034,
+      "sha256": "e6d7b3951145316d883dae7e3ab738cfdcf236486f065754f38b05a315053df8"
+    },
+    {
+      "name": "check_criteria.py",
+      "bytes": 9974,
+      "sha256": "cd792f0f157b7584760edfecb84f02288138ee4376d2a1c2e89eee1c9e61d444"
+    },
+    {
+      "name": "review_skill.md",
+      "bytes": 7994,
+      "sha256": "f1fb955b88a09865c024c7f2c42044dc5eb9137c6d6fc80439a92a390992a176"
+    },
+    {
+      "name": "assessment_assets.py",
+      "bytes": 14372,
+      "sha256": "483e7902d52610f2e0755bfaa8b9fc1d8ff9ed722c525ca1eb9c064eafa9f361"
+    },
+    {
+      "name": "math_item_review.py",
+      "bytes": 2851,
+      "sha256": "0f98ce50e00cfbeed695b6472e3745a333bb81282d0a95276454889154cc847b"
+    },
+    {
+      "name": "math_literal.py",
+      "bytes": 25886,
+      "sha256": "cd3d172e3a686de94fef60a097617a023f4790d8b04567db8845fe9dc0e13c85"
+    },
+    {
+      "name": "difficulty_review.py",
+      "bytes": 19846,
+      "sha256": "83a128707d71e8826a01cd1537bf3dbbe63988de1a2c9bfcc59e616d97c48ee6"
+    },
+    {
+      "name": "review_contract.py",
+      "bytes": 30714,
+      "sha256": "9538cfd53a00c7ba2ec41c08888dfa6148866731fbf1ccfff679c92a611fbc14"
+    }
+  ]
+}

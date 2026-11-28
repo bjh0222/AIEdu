@@ -131,6 +131,8 @@ def _context():
         "context_hash": "c" * 64,
         "material_ids": ["m1"],
         "import_understanding": [],
+        "spec_bindings": [],
+        "quality_profiles": [],
     }
 
 
@@ -152,6 +154,44 @@ def test_a0_a1_prompts_are_separate_and_strategy_preserves_user_and_autonomous_i
     assert value["content"]["user_requirements"] == ["Prefer official education sources."]
     assert value["content"]["autonomous_additions"][0]["direction_id"] == "d2"
     assert value["hash"] == digest(value["content"])
+
+
+def test_a0_allows_autonomous_strategy_to_name_more_than_three_queries():
+    from app.v2.planning import research_strategy
+
+    value = _strategy()
+    value["search_strategy"]["queries"] = [
+        "query one", "query two", "query three", "query four", "query five",
+    ]
+    normalized = research_strategy(value)
+    assert len(normalized["content"]["search_strategy"]["queries"]) == 5
+
+
+def test_a1_research_projection_is_bounded_and_preserves_exact_source_excerpts():
+    from app.v2.planning import planning_research_projection, research_strategy
+
+    strategy = research_strategy(_strategy())
+    text = "unrelated prefix " + ("assessment item design " * 2000) + "tail"
+    result = {
+        "sources": [{
+            "source_id": "public-1",
+            "source_hash": sha(text),
+            "url": "https://example.test/source",
+            "text": text,
+        }],
+        "source_claims": [{"claim_id": "c1", "source_id": "public-1", "quote": "assessment item design"}],
+    }
+    projected = planning_research_projection(
+        result, strategy, per_source_chars=1200, total_chars=1200)
+    source = projected["sources"][0]
+    assert projected["projected_source_chars"] <= 1200
+    assert projected["full_source_chars"] == len(text)
+    assert source["full_text_chars"] == len(text)
+    assert source["source_hash"] == sha(text)
+    assert source["excerpts"]
+    for excerpt in source["excerpts"]:
+        assert text[excerpt["start_char"]:excerpt["end_char"]] == excerpt["text"]
+    assert projected["source_claims"][0]["source_id"] == "public-1"
 
 
 def test_research_strategy_disabled_path_is_deterministic_and_unknown_evidence_is_not_needed():
@@ -227,6 +267,33 @@ def test_blueprint_rejects_unbound_evidence_and_layout_mismatch():
     assert exc.value.code == "BLUEPRINT_LAYOUT_UNBOUND"
 
 
+@pytest.mark.parametrize("field", ["evidence_records", "evidence"])
+def test_nested_blueprint_evidence_is_moved_losslessly_to_the_top_level(field):
+    from app.v2.planning import bind_a1_artifact
+
+    state = {
+        "research_result": {
+            "sources": [{"source_id": "m1", "source_hash": sha("source")}],
+            "source_claims": [],
+        },
+        "plan": {},
+    }
+    blueprint = _blueprint()
+    blueprint[field] = [_evidence()]
+    artifact = bind_a1_artifact(
+        {"blueprint": blueprint},
+        teaching_content=_teaching(),
+        context=_context(),
+        state=state,
+    )
+    assert artifact["evidence_records"] == [_evidence()]
+    assert artifact["normalizations"] == [{
+        "from": ["blueprint", field],
+        "to": ["evidence_records"],
+        "reason": "blueprint_evidence_moved_to_top_level",
+    }]
+
+
 def test_blueprint_completes_reciprocal_evidence_decision_links_without_changing_evidence_text():
     from app.v2.planning import bind_a1_artifact
 
@@ -294,6 +361,144 @@ def test_c_blueprint_review_targets_follow_frozen_unit_titles():
     blueprint = {"content": _blueprint()}
     assert [row["decision_id"] for row in blueprint_review_targets(blueprint, "Unit 1")] == ["d1"]
     assert blueprint_review_targets(blueprint, "Other") == []
+
+
+def test_b_generation_payload_scopes_blueprint_and_teaching_arrangement_to_current_unit():
+    from app.v2.planning import bind_a1_artifact, generation_blueprint, generation_teaching_arrangement
+    from app.v2.worker import generation_user_payload
+
+    blueprint_content = _blueprint()
+    blueprint_content["structure"]["units"].append({
+        "blueprint_unit_id": "bu2",
+        "title": "Unit 2",
+        "purpose": "Second unit.",
+        "required_content": ["Second target"],
+        "depends_on_titles": [],
+        "knowledge_relations": [],
+    })
+    blueprint_content["decisions"].append({
+        "decision_id": "d2",
+        "statement": "The second unit has one item.",
+        "requirement": "must_follow",
+        "blueprint_unit_ids": ["bu2"],
+        "evidence_ids": ["e1"],
+        "acceptance_method": "Count the second unit.",
+    })
+    artifact = bind_a1_artifact(
+        {"blueprint": blueprint_content, "evidence_records": [_evidence()]},
+        teaching_content={"units": [{"title": "Unit 1", "artifact_role": "tutorial"},
+                                    {"title": "Unit 2", "artifact_role": "tutorial"}]},
+        context=_context(),
+        state={"research_result": {
+            "sources": [{"source_id": "m1", "source_hash": sha("source")}],
+            "source_claims": [],
+        }, "plan": {}},
+    )
+    arrangement = {
+        "hash": "a" * 64,
+        "content": {
+            "goals": ["global"],
+            "units": [{"title": "Unit 1", "quantity": 2},
+                      {"title": "Unit 2", "quantity": 4}],
+        },
+    }
+    projected_blueprint = generation_blueprint(artifact, "Unit 1")
+    projected_arrangement = generation_teaching_arrangement(arrangement, "Unit 1")
+    assert [row["title"] for row in projected_blueprint["content"]["structure"]["units"]] == ["Unit 1"]
+    assert [row["decision_id"] for row in projected_blueprint["content"]["decisions"]] == ["d1"]
+    assert projected_blueprint["source_hash"] == artifact["hash"]
+    assert [row["title"] for row in projected_arrangement["content"]["units"]] == ["Unit 1"]
+    assert projected_arrangement["source_hash"] == arrangement["hash"]
+
+    payload = generation_user_payload(
+        {"context": _context(), "plan": {
+            "blueprint": artifact,
+            "teaching_arrangement": arrangement,
+        }},
+        {
+            "title": "Unit 1",
+            "artifact_role": "tutorial",
+            "teaching_arrangement": {"quantity": 2},
+            "subject_bindings": [],
+        },
+        upstream=[],
+        material_chunks=[],
+        knowledge_text="",
+    )
+    assert payload["blueprint"] == projected_blueprint
+    assert payload["teaching_arrangement"] == projected_arrangement
+    assert payload["teaching_arrangement"]["content"]["units"] == [{"title": "Unit 1", "quantity": 2}]
+
+
+def test_b_generation_payload_rejects_unbound_unit_scope():
+    from app.v2.planning import generation_blueprint, generation_teaching_arrangement
+
+    blueprint = {"content": _blueprint()}
+    with pytest.raises(DomainError, match="BLUEPRINT_GENERATION_SCOPE_UNBOUND"):
+        generation_blueprint(blueprint, "Unknown")
+    with pytest.raises(DomainError, match="TEACHING_ARRANGEMENT_GENERATION_SCOPE_UNBOUND"):
+        generation_teaching_arrangement(
+            {"content": {"units": [{"title": "Unit 1"}]}}, "Unknown")
+
+
+def test_repair_generation_plan_exposes_only_target_unit_blueprint():
+    from app.v2.planning import generation_plan_for_units
+
+    content = _blueprint()
+    content["structure"]["units"].append({
+        "blueprint_unit_id": "bu2",
+        "title": "Unit 2",
+        "purpose": "Second unit.",
+        "required_content": ["Second target"],
+        "depends_on_titles": [],
+        "knowledge_relations": [],
+    })
+    content["decisions"].append({
+        "decision_id": "d2",
+        "statement": "The second unit has one item.",
+        "requirement": "must_follow",
+        "blueprint_unit_ids": ["bu2"],
+        "evidence_ids": ["e1"],
+        "acceptance_method": "Count the second unit.",
+    })
+    plan = {
+        "plan_hash": "p" * 64,
+        "units": [{"unit_id": "u1", "title": "Unit 1"},
+                  {"unit_id": "u2", "title": "Unit 2"}],
+        "blueprint": {"hash": "b" * 64, "evidence_hash": "e" * 64,
+                      "content": content, "evidence_records": [_evidence()]},
+        "teaching_arrangement": {
+            "hash": "a" * 64,
+            "content": {"units": [{"title": "Unit 1"},
+                                  {"title": "Unit 2"}]},
+        },
+    }
+    projected = generation_plan_for_units(plan, ["u2"])
+    assert [row["unit_id"] for row in projected["units"]] == ["u2"]
+    assert [row["title"] for row in projected["blueprint"]["content"]["structure"]["units"]] == ["Unit 2"]
+    assert [row["decision_id"] for row in projected["blueprint"]["content"]["decisions"]] == ["d2"]
+    assert [row["title"] for row in projected["teaching_arrangement"]["content"]["units"]] == ["Unit 2"]
+    assert projected["source_plan_hash"] == plan["plan_hash"]
+
+
+def test_b_generation_payload_preserves_legacy_request_shape_without_blueprint():
+    from app.v2.worker import generation_user_payload
+
+    arrangement = {"content": {"units": [{"title": "Unit 1", "quantity": 2}]}}
+    payload = generation_user_payload(
+        {"context": _context(), "plan": {"teaching_arrangement": arrangement}},
+        {
+            "title": "Unit 1",
+            "artifact_role": "tutorial",
+            "teaching_arrangement": {"quantity": 2},
+            "subject_bindings": [],
+        },
+        upstream=[],
+        material_chunks=[],
+        knowledge_text="",
+    )
+    assert payload["teaching_arrangement"] == arrangement
+    assert "blueprint" not in payload
 
 
 def test_criterion_requests_include_one_existing_contract_row_per_blueprint_decision():

@@ -413,8 +413,39 @@ def quality_preflight(items: list[dict], units: list[dict], context: dict) -> di
     }
 
 
-def review_protocol_manifest() -> dict[str, Any]:
+def review_protocol_manifest(quality_profile=None) -> dict[str, Any]:
     """Freeze every behavior that can alter quality execution or evidence shape."""
+    if isinstance(quality_profile, dict) and quality_profile.get("id") == "correctness_only.v1":
+        module_dir = Path(__file__).resolve().parent
+        filenames = (
+            "quality.py",
+            "worker.py",
+            "optimization.py",
+            "optimization_recheck.py",
+            "repair_directives.py",
+            "recheck_scope.py",
+            "delivery.py",
+            "inference.py",
+            "quality_suite/protocol.py",
+            "quality_suite/correctness_only_v1.py",
+        )
+        components = {
+            "quality_profile": deepcopy(quality_profile),
+            "item_correctness": {"version": "correctness-only.v1"},
+            "repair_directive": {"version": "repair-directive.v1"},
+            "repair_ledger": {"version": "repair-ledger.v1"},
+            "scope_aware_recheck": {"version": "correctness-target-recheck.v1"},
+        }
+        manifest = {
+            "method_version": "quality-protocol.correctness-only.v1",
+            "components": components,
+            "implementation_files": {
+                filename: sha((module_dir / filename).read_bytes())
+                for filename in filenames
+            },
+        }
+        manifest["manifest_hash"] = digest(manifest)
+        return manifest
     from .skills import review_skill
     from .criterion_protocol import VERSION as CRITERION_PROTOCOL
     from .criterion_review import VERSION as CRITERION_REVIEW
@@ -496,7 +527,7 @@ def review_protocol_manifest() -> dict[str, Any]:
 
 def ensure_quality_protocol(state: dict) -> dict[str, Any]:
     """Return the frozen manifest; refuse silent protocol drift on a live run."""
-    current = review_protocol_manifest()
+    current = review_protocol_manifest(state.get("quality_profile"))
     frozen = state.get("quality_protocol")
     if frozen is not None and frozen != current:
         raise DomainError("QUALITY_PROTOCOL_DRIFT", 409,

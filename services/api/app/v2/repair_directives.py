@@ -10,6 +10,45 @@ LAYERS = {"correctness", "completeness", "quality_specific"}
 DETERMINISTIC_METHODS = {"maximum_codepoints", "required_literals"}
 
 
+def directive_with_identity(row):
+    directive_id = "rd:" + digest({"method_version": VERSION, "directive": row})[:24]
+    return {
+        **deepcopy(row),
+        "directive_id": directive_id,
+        "directive_hash": digest(row),
+        "method_version": VERSION,
+    }
+
+
+def correctness_repair_directive(finding, item_ordinal, acceptance_item_id):
+    field = (finding.get("acceptance_assertion") or {}).get("field")
+    forbidden = [
+        "item_count",
+        "unit_title",
+        "unrelated_items",
+        *(["stem_markdown"] if field != "stem_markdown" else []),
+    ]
+    return {
+        "finding_id": finding["finding_id"],
+        "layer": "correctness",
+        "target": {
+            "unit_id": finding["location"]["unit_id"],
+            "item_ordinal": item_ordinal,
+            "location_hash": finding["location"].get("span_hash"),
+        },
+        "change_mode": "whole_item",
+        "required_change": finding.get("suggested_fix") or finding.get("claim"),
+        "acceptance_assertion": {
+            "deterministic_test": None,
+            "criterion_check": {
+                "kind": "acceptance_item",
+                "item_id": acceptance_item_id,
+            },
+        },
+        "forbidden_changes": forbidden,
+    }
+
+
 def _text(value):
     return isinstance(value, str) and bool(value.strip())
 
@@ -145,17 +184,13 @@ def normalize_directives(package):
             "acceptance_assertion": normalized_assertion,
             "forbidden_changes": list(dict.fromkeys(forbidden)),
         }
-        directive_id = "rd:" + digest({"method_version": VERSION, "directive": row})[:24]
+        identified = directive_with_identity(row)
+        directive_id = identified["directive_id"]
         if directive_id in directive_ids:
             raise DomainError("REPAIR_DIRECTIVE_DUPLICATE", 422)
         finding_ids.add(finding_id)
         directive_ids.add(directive_id)
-        normalized.append({
-            **row,
-            "directive_id": directive_id,
-            "directive_hash": digest(row),
-            "method_version": VERSION,
-        })
+        normalized.append(identified)
     if finding_ids != findings:
         raise DomainError("REPAIR_DIRECTIVE_COVERAGE_MISMATCH", 422,
                           missing=sorted(findings - finding_ids),
@@ -199,7 +234,8 @@ def deterministic_results(directives, units):
     return rows
 
 
-def validate_candidate_bindings(candidate, package, changed_ids):
+def validate_candidate_bindings(candidate, package, changed_ids,
+                                base_units=None, new_units=None):
     directives = package.get("directives", [])
     if not directives:
         return
@@ -241,6 +277,61 @@ def validate_candidate_bindings(candidate, package, changed_ids):
             raise DomainError("REPAIR_DIRECTIVE_SCOPE_VIOLATION", 422,
                               directive_id=directive["directive_id"],
                               unit_id=target_unit)
+    if (package.get("objective") != "correctness_only.v1"
+            or base_units is None or new_units is None):
+        return
+    base_by_id = {unit["unit_id"]: unit for unit in base_units}
+    new_by_id = {unit["unit_id"]: unit for unit in new_units}
+    item_fields = {
+        "stem_markdown", "question_form", "answer", "formal_assertions",
+        "transfer_assertions", "question_type", "source_sections",
+        "score", "difficulty_basis",
+    }
+
+    def item_value(item):
+        return {key: deepcopy(item.get(key)) for key in item_fields if key in item}
+
+    allowed_ordinals = {}
+    for directive in directives:
+        target = directive["target"]
+        if isinstance(target.get("item_ordinal"), int):
+            allowed_ordinals.setdefault(target["unit_id"], set()).add(
+                target["item_ordinal"])
+
+    for directive in directives:
+        target = directive["target"]
+        unit_id = target["unit_id"]
+        ordinal = target.get("item_ordinal")
+        base_unit, new_unit = base_by_id.get(unit_id), new_by_id.get(unit_id)
+        if base_unit is None or new_unit is None or not isinstance(ordinal, int):
+            raise DomainError("REPAIR_DIRECTIVE_TARGET_STALE", 422,
+                              directive_id=directive["directive_id"])
+        if base_unit.get("title") != new_unit.get("title"):
+            raise DomainError("REPAIR_DIRECTIVE_FORBIDDEN_CHANGE", 422,
+                              directive_id=directive["directive_id"],
+                              field="unit_title")
+        base_items = base_unit.get("items") or []
+        new_items = new_unit.get("items") or []
+        if len(base_items) != len(new_items) or not 0 < ordinal <= len(base_items):
+            raise DomainError("REPAIR_DIRECTIVE_FORBIDDEN_CHANGE", 422,
+                              directive_id=directive["directive_id"],
+                              field="item_count")
+        allowed = allowed_ordinals.get(unit_id, set())
+        for index, (before, after) in enumerate(zip(base_items, new_items), 1):
+            if index not in allowed and item_value(before) != item_value(after):
+                raise DomainError("REPAIR_DIRECTIVE_FORBIDDEN_CHANGE", 422,
+                                  directive_id=directive["directive_id"],
+                                  field="unrelated_items")
+        before = item_value(base_items[ordinal - 1])
+        after = item_value(new_items[ordinal - 1])
+        if before == after:
+            raise DomainError("REPAIR_DIRECTIVE_TARGET_UNCHANGED", 422,
+                              directive_id=directive["directive_id"])
+        if "stem_markdown" in directive.get("forbidden_changes", []):
+            if before.get("stem_markdown") != after.get("stem_markdown"):
+                raise DomainError("REPAIR_DIRECTIVE_FORBIDDEN_CHANGE", 422,
+                                  directive_id=directive["directive_id"],
+                                  field="stem_markdown")
 
 
 def build_ledger(package, findings, base_version, base_content_hash):
@@ -571,11 +662,36 @@ def update_ledger(ledger, *, candidate_hash, candidate_version, recheck_scope, r
 def directive_recheck_results(package, checked, new_units, resolved_finding_ids):
     rows = deterministic_results(package.get("directives", []), new_units)
     by_id = {row["directive_id"]: row for row in rows}
+    profile_id = ((checked.get("item_correctness") or {}).get("quality_profile") or {}).get("id")
+    correctness_units = {
+        row.get("unit_id"): row
+        for row in ((checked.get("item_correctness") or {}).get("unit_results") or [])
+        if isinstance(row, dict)
+    }
     criteria = (checked.get("automated_assessment") or {}).get("criteria", [])
     acceptance = (checked.get("optimization_acceptance") or {}).get("criteria", [])
     for directive in package.get("directives", []):
         current = by_id.get(directive["directive_id"])
         check = (directive.get("acceptance_assertion") or {}).get("criterion_check")
+        if profile_id == "correctness_only.v1":
+            target = directive.get("target") or {}
+            unit = correctness_units.get(target.get("unit_id")) or {}
+            item_rows = unit.get("items") or []
+            ordinal = target.get("item_ordinal")
+            item = item_rows[ordinal - 1] if type(ordinal) is int and 0 < ordinal <= len(item_rows) else {}
+            criterion_result = (
+                "satisfied" if item.get("result") == "correct"
+                else "violated" if item.get("result") == "incorrect"
+                else "undecidable"
+            )
+            by_id[directive["directive_id"]] = {
+                "directive_id": directive["directive_id"],
+                "finding_id": directive["finding_id"],
+                "result": criterion_result,
+                "deterministic_result": current.get("result") if current else None,
+                "criterion_result": criterion_result,
+            }
+            continue
         if not check:
             continue
         if check["kind"] == "acceptance_item":

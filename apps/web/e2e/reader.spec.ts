@@ -85,15 +85,64 @@ $$
     const v = versionRead(IDS.v2, 2, body, []);
     await mockBackend(page, { snapshot: () => runSnapshot({ quality: v.quality }), versions: { [IDS.v2]: v } });
     await page.goto(`/tasks/${IDS.task}/read`);
+    const first = page.locator(".prose p.question-block", { hasText: "第一道解答题" });
     const second = page.locator(".prose p.question-block", { hasText: "第二道解答题" });
+    const continuation = page.locator(".prose p.question-block", { hasText: "并说明所用方法" });
+    await expect(first).toHaveClass(/question-start/);
+    await expect(continuation).not.toHaveClass(/question-start/);
     await expect(second).toContainText("第二道");
     const spacing = await second.evaluate((node) => {
       const style = getComputedStyle(node);
       return { gap: Number.parseFloat(style.marginTop), line: Number.parseFloat(style.lineHeight) };
     });
     expect(spacing.gap).toBeGreaterThanOrEqual(spacing.line * 3 - 1);
+    const continuationSpacing = await continuation.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return { gap: Number.parseFloat(style.marginTop), line: Number.parseFloat(style.lineHeight) };
+    });
+    expect(continuationSpacing.gap).toBeLessThan(continuationSpacing.line * 2);
     await expect(page.locator(".prose p.question-block")).toHaveCount(3);
     await expect(page.locator(".prose p", { hasText: "第一题答案" })).not.toHaveClass(/question-block/);
+  });
+
+  test("选择题题干与选项之间不应用三行题间距", async ({ page }) => {
+    const body = String.raw`# 专题
+
+**4.** 题干
+
+A. 选项一
+
+B. 选项二
+
+C. 选项三
+
+D. 选项四
+
+**5.** 下一道题
+
+### 参考答案
+
+**4.** 答案四。`;
+    const v = versionRead(IDS.v2, 2, body, []);
+    await mockBackend(page, { snapshot: () => runSnapshot({ quality: v.quality }), versions: { [IDS.v2]: v } });
+    await page.goto(`/tasks/${IDS.task}/read`);
+    const question = page.locator(".prose p.question-block", { hasText: "题干" });
+    const firstOption = page.locator(".prose p.question-block", { hasText: "A. 选项一" });
+    const nextQuestion = page.locator(".prose p.question-block", { hasText: "下一道题" });
+    await expect(question).toHaveClass(/question-start/);
+    await expect(firstOption).not.toHaveClass(/question-start/);
+    await expect(nextQuestion).toHaveClass(/question-start/);
+    const optionSpacing = await firstOption.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return { gap: Number.parseFloat(style.marginTop), line: Number.parseFloat(style.lineHeight) };
+    });
+    const questionSpacing = await nextQuestion.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return { gap: Number.parseFloat(style.marginTop), line: Number.parseFloat(style.lineHeight) };
+    });
+    expect(optionSpacing.gap).toBeLessThan(optionSpacing.line * 2);
+    expect(questionSpacing.gap).toBeGreaterThanOrEqual(questionSpacing.line * 3 - 1);
+    await expect(page.locator(".prose p", { hasText: "答案四" })).not.toHaveClass(/question-block/);
   });
 
   test("R01 表格：真实 DOM，宽表局部滚动，整页不溢出", async ({ page }) => {

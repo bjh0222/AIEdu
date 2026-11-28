@@ -1,7 +1,9 @@
 """Versioned A instruction and schema-checked arrangement, separate from scheduling."""
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
@@ -473,8 +475,7 @@ def research_strategy(value):
         raise DomainError("RESEARCH_STRATEGY_EXTRACTION_UNBOUND", 422)
     queries = content["search_strategy"]["queries"]
     if (content["necessity"] in {"required", "optional"}
-            and (not direction_ids or not 1 <= len(queries) <= 3)
-            or content["necessity"] == "required" and not queries):
+            and (not direction_ids or not queries)):
         raise DomainError("RESEARCH_STRATEGY_INCOMPLETE", 422)
     return {"status": "schema_validated", "content": content, "hash": digest(content)}
 
@@ -511,6 +512,50 @@ def research_source_catalog(state, context):
     catalog = {}
     for source_id in context.get("material_ids", []):
         catalog[str(source_id)] = None
+    understanding = context.get("subject_understanding") or {}
+    subject_refs = [
+        understanding.get("general"),
+        *((understanding.get("subjects") or [])),
+    ]
+    for value in subject_refs:
+        if isinstance(value, dict) and value.get("id"):
+            catalog[str(value["id"])] = value.get("hash")
+            catalog[f"subject-understanding:{value['id']}"] = value.get("hash")
+            for ref in (value.get("content") or {}).get("source_refs", []):
+                if isinstance(ref, str) and ref:
+                    catalog[ref] = None
+    for value in context.get("knowledge_guidance_eligible", []):
+        if isinstance(value, dict) and value.get("id"):
+            hashes = sorted({
+                value[key] for key in ("evidence_hash", "source_fingerprint")
+                if isinstance(value.get(key), str) and value.get(key)
+            })
+            expected = hashes[0] if len(hashes) == 1 else hashes
+            catalog[str(value["id"])] = expected
+            catalog[f"guidance:{value['id']}"] = expected
+            catalog[f"knowledge_guidance:{value['id']}"] = expected
+            catalog[f"knowledge_guidance_eligible:{value['id']}"] = expected
+            catalog[
+                f"profile:{value['id']}:{value.get('version', 1)}:{value.get('evidence_hash')}"
+            ] = value.get("evidence_hash")
+            if str(value["id"]).startswith("imported:"):
+                catalog[f"import:{str(value['id'])[len('imported:'):]}"] = value.get("evidence_hash")
+    for value in context.get("quality_profiles", []):
+        if isinstance(value, dict) and value.get("profile_id"):
+            catalog[str(value["profile_id"])] = value.get("profile_hash")
+            catalog[f"quality-profile:{value['profile_id']}"] = value.get("profile_hash")
+            catalog[f"quality_profiles:{value['profile_id']}"] = value.get("profile_hash")
+            framework = value.get("item_quality_framework") or {}
+            if framework.get("framework_id"):
+                catalog[
+                    f"quality_profiles:{value['profile_id']}:item_quality_framework:{framework['framework_id']}"
+                ] = framework.get("framework_hash")
+            for rule in value.get("rules", []):
+                if rule.get("source_ref"):
+                    catalog[str(rule["source_ref"])] = None
+    for value in context.get("research_rubrics", []):
+        if isinstance(value, dict) and value.get("id"):
+            catalog[f"research-rubric:{value['id']}"] = value.get("hash")
     result = state.get("research_result") or {}
     for source in result.get("sources", []):
         if source.get("source_id"):
@@ -531,14 +576,39 @@ def research_source_catalog(state, context):
             if value.get("id"):
                 catalog[str(value["id"])] = value.get("hash")
     frameworks = context.get("evaluation_frameworks") or {}
+    framework_evidence = {}
     for framework in frameworks.get("frameworks", []):
         framework_id = framework.get("id")
         if not framework_id:
             continue
         catalog[str(framework_id)] = framework.get("source_hash")
+        catalog[f"evaluation-framework:{framework_id}"] = framework.get("source_hash")
+        catalog[f"evaluation_framework:{framework_id}"] = framework.get("source_hash")
+        catalog[f"evaluation_frameworks:{framework_id}"] = framework.get("source_hash")
         for evidence in framework.get("evidence_refs", []):
             if evidence.get("id"):
                 catalog[f"{framework_id}:{evidence['id']}"] = None
+                catalog[f"{framework_id}#{evidence['id']}"] = None
+                if evidence.get("source_card"):
+                    catalog[str(evidence["source_card"])] = None
+                framework_evidence.setdefault(evidence["id"], []).append(evidence)
+    for evidence_id, rows in framework_evidence.items():
+        if len({digest(row) for row in rows}) == 1:
+            catalog[str(evidence_id)] = None
+    catalog.update({f"frozen:{key}": value for key, value in list(catalog.items())})
+    for binding in context.get("spec_bindings", []):
+        spec_id = binding.get("spec_id")
+        if not spec_id:
+            continue
+        spec_hash = binding.get("snapshot_hash") or digest(binding.get("snapshot", {}))
+        catalog[str(spec_id)] = spec_hash
+        catalog[f"spec_binding:{spec_id}"] = spec_hash
+        catalog[f"spec_bindings:{spec_id}"] = spec_hash
+    catalog.update({
+        key.replace("subject-understanding:", "subject_understanding:"): value
+        for key, value in list(catalog.items())
+    })
+    catalog.update({f"frozen:{key}": value for key, value in list(catalog.items())})
     return catalog
 
 
@@ -565,10 +635,29 @@ def a1_blueprint(value):
 def bind_a1_artifact(output, *, teaching_content, context, state):
     if not isinstance(output, dict) or "blueprint" not in output:
         raise DomainError("BLUEPRINT_REQUIRED", 422)
-    blueprint = a1_blueprint(output["blueprint"])
-    if "evidence_records" in output and "evidence" in output and output["evidence_records"] != output["evidence"]:
+    source = deepcopy(output)
+    normalizations = []
+    blueprint_value = source["blueprint"]
+    if isinstance(blueprint_value, dict):
+        if ("evidence_records" in blueprint_value and "evidence" in blueprint_value
+                and blueprint_value["evidence_records"] != blueprint_value["evidence"]):
+            raise DomainError("BLUEPRINT_EVIDENCE_INVALID", 422,
+                              field="blueprint.evidence")
+        for nested_field in ("evidence_records", "evidence"):
+            if nested_field not in blueprint_value:
+                continue
+            nested_evidence = blueprint_value.pop(nested_field)
+            if source.get("evidence_records") is None and source.get("evidence") is None:
+                source["evidence_records"] = nested_evidence
+                normalizations.append({
+                    "from": ["blueprint", nested_field],
+                    "to": ["evidence_records"],
+                    "reason": "blueprint_evidence_moved_to_top_level",
+                })
+    blueprint = a1_blueprint(blueprint_value)
+    if "evidence_records" in source and "evidence" in source and source["evidence_records"] != source["evidence"]:
         raise DomainError("BLUEPRINT_EVIDENCE_INVALID", 422, field="evidence_records")
-    raw_evidence = output.get("evidence_records", output.get("evidence"))
+    raw_evidence = source.get("evidence_records", source.get("evidence"))
     if not isinstance(raw_evidence, list):
         raise DomainError("BLUEPRINT_EVIDENCE_INVALID", 422)
     evidence = [_validated(ResearchEvidence, row, "BLUEPRINT_EVIDENCE_INVALID")
@@ -616,7 +705,8 @@ def bind_a1_artifact(output, *, teaching_content, context, state):
                               source_id=source_id)
         expected = catalog.get(source_id)
         supplied = row["source"].get("source_hash")
-        if expected and supplied and supplied != expected:
+        if (expected and supplied and (
+                supplied not in expected if isinstance(expected, list) else supplied != expected)):
             raise DomainError("BLUEPRINT_EVIDENCE_SOURCE_HASH_MISMATCH", 422,
                               evidence_id=row["evidence_id"],
                               source_id=source_id)
@@ -638,6 +728,7 @@ def bind_a1_artifact(output, *, teaching_content, context, state):
         "teaching_arrangement_hash": digest(teaching_content),
         "context_hash": context.get("context_hash"),
         "source_catalog_hash": digest(catalog),
+        "normalizations": normalizations,
     }
 
 
@@ -670,6 +761,26 @@ def validate_blueprint_execution(output, blueprint):
     return execution
 
 
+def blueprint_forbids_method_overview(blueprint):
+    if not isinstance(blueprint, dict):
+        return False
+    content = blueprint.get("content") or blueprint
+    design = content.get("design") or {}
+    texts = [*design.get("avoid", [])]
+    texts.extend(
+        row.get("statement", "")
+        for row in content.get("decisions", [])
+        if isinstance(row, dict)
+    )
+    terms = ("知识归纳", "知识总结", "教程正文", "method overview", "knowledge summary")
+    negatives = ("不", "禁止", "删除", "省略", "avoid", "do not", "without", "no ")
+    return any(
+        any(term in str(text).lower() for term in terms)
+        and any(negative in str(text).lower() for negative in negatives)
+        for text in texts
+    )
+
+
 def blueprint_review_targets(blueprint, title):
     if not blueprint:
         return []
@@ -680,6 +791,110 @@ def blueprint_review_targets(blueprint, title):
         if not titles or title in titles:
             result.append(decision)
     return result
+
+
+def generation_blueprint_for_titles(blueprint, titles):
+    if not blueprint:
+        return None
+    titles = set(titles)
+    content = deepcopy(blueprint.get("content") or blueprint)
+    structure_units = [row for row in content.get("structure", {}).get("units", [])
+                       if row.get("title") in titles]
+    if {row.get("title") for row in structure_units} != titles:
+        raise DomainError("BLUEPRINT_GENERATION_SCOPE_UNBOUND", 422,
+                          titles=sorted(titles),
+                          matches=[row.get("title") for row in structure_units])
+    structure_by_id = {row["blueprint_unit_id"]: row
+                       for row in content.get("structure", {}).get("units", [])}
+    decisions = [
+        deepcopy(row) for row in content.get("decisions", [])
+        if not row.get("blueprint_unit_ids")
+        or any(structure_by_id[unit_id].get("title") in titles
+               for unit_id in row["blueprint_unit_ids"])
+    ]
+    evidence_ids = {evidence_id for row in decisions for evidence_id in row["evidence_ids"]}
+    research_summary = deepcopy(content.get("research_summary", {}))
+    research_summary["evidence_ids"] = [
+        evidence_id for evidence_id in research_summary.get("evidence_ids", [])
+        if evidence_id in evidence_ids
+    ]
+    projection = {
+        "method_version": "B-blueprint-scope.v1",
+        "source_hash": blueprint.get("hash"),
+        "source_evidence_hash": blueprint.get("evidence_hash"),
+        "content": {
+            **content,
+            "research_summary": research_summary,
+            "structure": {**deepcopy(content.get("structure", {})),
+                          "units": deepcopy(structure_units)},
+            "decisions": decisions,
+        },
+        "evidence_records": [
+            deepcopy(row) for row in blueprint.get("evidence_records", [])
+            if row.get("evidence_id") in evidence_ids
+        ],
+    }
+    projection["projection_hash"] = digest(projection)
+    return projection
+
+
+def generation_blueprint(blueprint, title):
+    return generation_blueprint_for_titles(blueprint, [title])
+
+
+def generation_teaching_arrangement_for_titles(arrangement, titles):
+    if not isinstance(arrangement, dict):
+        return arrangement
+    titles = set(titles)
+    content = arrangement.get("content")
+    units = content.get("units") if isinstance(content, dict) else None
+    if not isinstance(units, list) or not units:
+        return arrangement
+    matches = [row for row in units if row.get("title") in titles]
+    if {row.get("title") for row in matches} != titles:
+        raise DomainError("TEACHING_ARRANGEMENT_GENERATION_SCOPE_UNBOUND", 422,
+                          titles=sorted(titles),
+                          matches=[row.get("title") for row in matches])
+    projection = deepcopy(arrangement)
+    projection["source_hash"] = arrangement.get("hash")
+    projection["content"] = {**deepcopy(content), "units": deepcopy(matches)}
+    projection["projection_hash"] = digest({
+        "source_hash": projection.get("source_hash"),
+        "content": projection["content"],
+    })
+    return projection
+
+
+def generation_teaching_arrangement(arrangement, title):
+    return generation_teaching_arrangement_for_titles(arrangement, [title])
+
+
+def generation_plan_for_units(plan, unit_ids):
+    unit_ids = set(unit_ids)
+    selected = [deepcopy(row) for row in plan.get("units", [])
+                if row.get("unit_id") in unit_ids]
+    if {row.get("unit_id") for row in selected} != unit_ids:
+        raise DomainError("GENERATION_PLAN_SCOPE_UNBOUND", 422,
+                          unit_ids=sorted(unit_ids))
+    titles = [row["title"] for row in selected]
+    projection = deepcopy(plan)
+    projection["units"] = selected
+    if plan.get("blueprint"):
+        projection["blueprint"] = generation_blueprint_for_titles(
+            plan["blueprint"], titles)
+    if plan.get("teaching_arrangement"):
+        projection["teaching_arrangement"] = generation_teaching_arrangement_for_titles(
+            plan["teaching_arrangement"], titles)
+    projection["source_plan_hash"] = plan.get("plan_hash")
+    projection["projection_hash"] = digest({
+        "source_plan_hash": plan.get("plan_hash"),
+        "unit_ids": sorted(unit_ids),
+        "blueprint_hash": (projection.get("blueprint") or {}).get("projection_hash"),
+        "teaching_arrangement_hash": (
+            projection.get("teaching_arrangement") or {}
+        ).get("projection_hash"),
+    })
+    return projection
 
 
 def skill():
@@ -706,6 +921,88 @@ def source_evidence(state):
     """Only actual source receipts, never A's conclusions, calls or ratings."""
     from .generation_tools import evidence_bundle
     return evidence_bundle(state.get("plan", {}).get("planning_network_research", {}))
+
+
+def planning_research_projection(result, strategy, *, per_source_chars=6000, total_chars=36000):
+    result = result if isinstance(result, dict) else {}
+    strategy_content = (strategy or {}).get("content") or {}
+    terms = []
+    for value in (
+        *strategy_content.get("user_requirements", []),
+        *(row.get("question", "") for row in strategy_content.get("research_directions", [])),
+        *(row.get("question", "") for row in strategy_content.get("autonomous_additions", [])),
+        *((strategy_content.get("search_strategy") or {}).get("queries", [])),
+    ):
+        if not isinstance(value, str):
+            continue
+        terms.extend(token.lower() for token in re.findall(r"[A-Za-z]{4,}", value))
+        compact = "".join(re.findall(r"[\u4e00-\u9fff]", value))
+        terms.extend(compact[index:index + 4] for index in range(max(0, len(compact) - 3)))
+    terms = list(dict.fromkeys(term for term in terms if term))
+    sources, remaining = [], total_chars
+    for source in result.get("sources", []):
+        if not isinstance(source, dict) or remaining <= 0:
+            continue
+        text = source.get("text")
+        if not isinstance(text, str):
+            sources.append(deepcopy(source))
+            continue
+        limit = min(per_source_chars, remaining)
+        lower = text.lower()
+        spans = []
+        for term in terms:
+            start = 0
+            while len(spans) < 12:
+                found = lower.find(term, start)
+                if found < 0:
+                    break
+                spans.append((max(0, found - 900), min(len(text), found + len(term) + 900)))
+                start = found + len(term)
+        spans.sort()
+        merged = []
+        for start, end in spans:
+            if merged and start <= merged[-1][1] + 200:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        if not merged:
+            merged = [(0, min(len(text), limit))]
+        excerpts, used = [], 0
+        for start, end in merged:
+            if used >= limit:
+                break
+            excerpt = text[start:min(end, start + limit - used)]
+            if not excerpt:
+                continue
+            excerpts.append({
+                "start_char": start,
+                "end_char": start + len(excerpt),
+                "text": excerpt,
+            })
+            used += len(excerpt)
+        projected = {
+            key: deepcopy(value) for key, value in source.items() if key != "text"
+        }
+        projected.update(
+            excerpts=excerpts,
+            projected_chars=used,
+            full_text_chars=len(text),
+            projection="query_centered_exact_excerpts",
+        )
+        sources.append(projected)
+        remaining -= used
+    source_ids = {row.get("source_id") for row in sources}
+    claims = [
+        deepcopy(row) for row in result.get("source_claims", [])
+        if not row.get("source_id") or row.get("source_id") in source_ids
+    ]
+    return {
+        "projection_version": "A1-research-evidence-projection.v1",
+        "sources": sources,
+        "source_claims": claims,
+        "projected_source_chars": sum(row.get("projected_chars", 0) for row in sources),
+        "full_source_chars": sum(row.get("full_text_chars", 0) for row in sources),
+    }
 
 
 def planning_context(context):
@@ -788,6 +1085,34 @@ def rebind_quality_target_refs(content, source_context, target_context):
     from copy import deepcopy
     proposed = content.get("quality_target_refs", [])
     source_index, target_index = _quality_rule_index(source_context), _quality_rule_index(target_context)
+    if not proposed:
+        return content, []
+    normalized = deepcopy(content)
+    normalization_rows = []
+    for ref in normalized["quality_target_refs"]:
+        key = (ref.get("profile_id"), ref.get("profile_version"), ref.get("profile_hash"),
+               ref.get("rule_id"), ref.get("rule_version"), ref.get("criterion_hash"))
+        if key in source_index:
+            continue
+        candidates = [
+            row for row in source_index.values()
+            if row.get("profile_id") == ref.get("profile_id")
+            and row.get("profile_version") == ref.get("profile_version")
+            and row.get("rule_id") == ref.get("rule_id")
+            and row.get("rule_version") == ref.get("rule_version")
+            and row.get("criterion_hash") == ref.get("criterion_hash")
+        ]
+        if len(candidates) == 1:
+            ref.update({key: candidates[0][key] for key in (
+                "profile_id", "profile_version", "profile_hash",
+                "rule_id", "rule_version", "criterion_hash",
+            )})
+            normalization_rows.append({
+                "profile_id": ref["profile_id"],
+                "rule_id": ref["rule_id"],
+                "reason": "frozen_quality_ref_identity_normalized",
+            })
+    proposed = normalized["quality_target_refs"]
     source_keys = {
         (ref.get("profile_id"), ref.get("profile_version"), ref.get("profile_hash"),
          ref.get("rule_id"), ref.get("rule_version"), ref.get("criterion_hash"))
@@ -795,8 +1120,8 @@ def rebind_quality_target_refs(content, source_context, target_context):
     }
     if not proposed or not source_keys <= set(source_index):
         return content, []
-    updated = deepcopy(content)
-    rebindings = []
+    updated = normalized
+    rebindings = normalization_rows
     target_rows = list(target_index.values())
     for ref in updated["quality_target_refs"]:
         source_key = (
@@ -836,6 +1161,74 @@ def rebind_quality_target_refs(content, source_context, target_context):
 def _allowed_evidence_refs(context, details):
     allowed = set(details.get("material_mapping", []))
     allowed.update(context.get("material_ids", []))
+    understanding = context.get("subject_understanding") or {}
+    subject_refs = [
+        understanding.get("general"),
+        *((understanding.get("subjects") or [])),
+    ]
+    for value in subject_refs:
+        if (not isinstance(value, dict) or not value.get("id")
+                or value.get("version") is None or not value.get("hash")):
+            continue
+        allowed.update({
+            str(value["id"]),
+            f"{value['id']}:{value['version']}:{value['hash']}",
+            f"profile:{value['id']}:{value['version']}:{value['hash']}",
+            f"understanding:{value['id']}:{value['version']}:{value['hash']}",
+        })
+    for value in context.get("quality_profiles", []):
+        if (not isinstance(value, dict) or not value.get("profile_id")
+                or value.get("version") is None or not value.get("profile_hash")):
+            continue
+        allowed.update({
+            str(value["profile_id"]),
+            f"quality-profile:{value['profile_id']}",
+            f"quality_profiles:{value['profile_id']}",
+            f"profile:{value['profile_id']}:{value['version']}:{value['profile_hash']}",
+            f"quality-profile:{value['profile_id']}:{value['version']}:{value['profile_hash']}",
+        })
+        framework = value.get("item_quality_framework") or {}
+        if framework.get("framework_id"):
+            allowed.add(
+                f"quality_profiles:{value['profile_id']}:item_quality_framework:{framework['framework_id']}"
+            )
+    for value in context.get("research_rubrics", []):
+        if isinstance(value, dict) and value.get("id") and value.get("hash"):
+            allowed.update({
+                str(value["id"]),
+                f"research-rubric:{value['id']}",
+                f"rubric:{value['id']}:{value.get('version')}:{value['hash']}",
+            })
+    for value in context.get("knowledge_guidance_eligible", []):
+        if isinstance(value, dict) and value.get("id"):
+            allowed.update({
+                str(value["id"]),
+                f"guidance:{value['id']}",
+                f"knowledge_guidance:{value['id']}",
+                f"knowledge_guidance_eligible:{value['id']}",
+                f"profile:{value['id']}:{value.get('version', 1)}:{value.get('evidence_hash')}",
+            })
+            if str(value["id"]).startswith("imported:"):
+                allowed.add(f"import:{str(value['id'])[len('imported:'):]}")
+    frameworks = context.get("evaluation_frameworks") or {}
+    for value in frameworks.get("frameworks", []):
+        if not isinstance(value, dict) or not value.get("id"):
+            continue
+        allowed.update({
+            str(value["id"]),
+            f"evaluation-framework:{value['id']}",
+            f"evaluation_framework:{value['id']}",
+            f"evaluation_frameworks:{value['id']}",
+            f"framework:{value['id']}:{value.get('version')}:{value.get('source_hash')}",
+        })
+    for binding in context.get("spec_bindings", []):
+        spec_id = binding.get("spec_id")
+        if spec_id:
+            allowed.update({
+                str(spec_id),
+                f"spec_binding:{spec_id}",
+                f"spec_bindings:{spec_id}",
+            })
     for binding in context.get("import_understanding", []):
         for kind in ("profile", "rubric"):
             value = binding.get(kind, {})
@@ -845,6 +1238,11 @@ def _allowed_evidence_refs(context, details):
                     f"{kind}:{value['id']}:{value['version']}:{value['hash']}",
                     f"{value['id']}:{value['version']}:{value['hash']}",
                 })
+    allowed.update({
+        value.replace("subject-understanding:", "subject_understanding:")
+        for value in list(allowed)
+    })
+    allowed.update({f"frozen:{value}" for value in list(allowed)})
     return allowed
 
 
@@ -968,22 +1366,76 @@ def review_requirements(state, unit):
     return deepcopy(result)
 
 
+def normalize_blueprint_group_refs(content):
+    rows = []
+    for unit in content.get("units", []):
+        groups = [row.get("group") for row in unit.get("question_blueprint", [])
+                  if isinstance(row.get("group"), str) and row.get("group")]
+        for misconception in unit.get("misconceptions", []):
+            current = misconception.get("blueprint_group")
+            if not current or current in groups:
+                continue
+            matches = [group for group in groups if group.startswith(current + "-")]
+            if len(matches) != 1:
+                continue
+            misconception["blueprint_group"] = matches[0]
+            rows.append({
+                "unit": unit.get("title"),
+                "from": current,
+                "to": matches[0],
+                "reason": "unique_blueprint_group_prefix",
+            })
+    return rows
+
+
 def arrangement(output):
     value = output.get("teaching_arrangement")
     if value is None:
         return {"status": "legacy_output_missing_arrangement", "content": None}
+    schema_normalizations = []
     try:
         validated = TeachingArrangement.model_validate(value).model_dump()
     except ValidationError as exc:
-        raise DomainError("TEACHING_ARRANGEMENT_INVALID", 422,
-                          validation_errors=exc.errors(include_input=False, include_url=False)) from None
+        errors = exc.errors(include_input=False, include_url=False)
+        if any(error.get("type") != "extra_forbidden" for error in errors):
+            raise DomainError("TEACHING_ARRANGEMENT_INVALID", 422,
+                              validation_errors=errors) from None
+        candidate = deepcopy(value)
+        for error in errors:
+            path = list(error.get("loc") or [])
+            if not path:
+                raise DomainError("TEACHING_ARRANGEMENT_INVALID", 422,
+                                  validation_errors=errors) from None
+            parent = candidate
+            for key in path[:-1]:
+                parent = parent[key]
+            removed = parent.pop(path[-1], None)
+            schema_normalizations.append({
+                "path": path,
+                "removed": removed,
+                "reason": "extra_field_outside_frozen_schema",
+            })
+        try:
+            validated = TeachingArrangement.model_validate(candidate).model_dump()
+        except ValidationError as corrected:
+            raise DomainError(
+                "TEACHING_ARRANGEMENT_INVALID",
+                422,
+                validation_errors=corrected.errors(include_input=False, include_url=False),
+            ) from None
     titles = [u["title"] for u in validated["units"]]
     if len(titles) != len(set(titles)):
         raise DomainError("TEACHING_ARRANGEMENT_DUPLICATE_UNIT", 422)
     for unit in validated["units"]:
         if not set(unit["depends_on_titles"]) <= set(titles) or unit["title"] in unit["depends_on_titles"]:
             raise DomainError("TEACHING_ARRANGEMENT_DEPENDENCY_INVALID", 422)
-    return {"status": "schema_validated", "content": validated, "hash": digest(validated)}
+    normalizations = [*schema_normalizations, *normalize_blueprint_group_refs(validated)]
+    return {
+        "status": "schema_validated",
+        "content": validated,
+        "hash": digest(validated),
+        "normalizations": normalizations,
+    }
 
 
 def apply_arrangement(plan, value, *, context=None, enforce_contract=False, require_complete=False):
@@ -1083,10 +1535,21 @@ def bind_legacy_optimization_plan(run_id, worker, epoch, provider_factory=None):
                 "version":planning_skill["version"],"sha256":planning_skill["hash"],"consumer":"A"}],
             output_tokens=32768)
         value, audit = arrangement(result), {**audit,"alignment":alignment}
-    if value.get("status") == "schema_validated" and value["content"]["unresolved_conflicts"]:
-        raise DomainError("UNRESOLVED_CONFLICT", 422)
+    if value.get("status") == "schema_validated":
+        from .adaptive_format import derive_output_design
+        content = value["content"]
+        if content.get("output_design") is None and isinstance(result.get("blueprint"), dict):
+            content["output_design"] = derive_output_design(
+                state["context"] | {
+                    "teaching_arrangement_units": content.get("units", []),
+                },
+                result.get("blueprint"),
+            )
+            value["hash"] = digest(content)
     plan = apply_arrangement(deepcopy(state["plan"]), value, context=state["context"],
                              enforce_contract=True, require_complete=True)
+    plan["planning_warnings"] = list(value["content"].get("unresolved_conflicts") or [])
+    plan["planning_normalizations"] = list(value.get("normalizations") or [])
     original_dependencies = {u["unit_id"]:u["depends_on"] for u in state["plan"]["units"]}
     if any(u["depends_on"] != original_dependencies[u["unit_id"]] for u in plan["units"]):
         raise DomainError("TEACHING_ARRANGEMENT_DEPENDENCY_FROZEN",422)

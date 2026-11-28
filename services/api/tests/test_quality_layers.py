@@ -619,11 +619,12 @@ def test_start_run_freezes_quality_layers_into_policy_and_plan(client, monkeypat
     # recheck/replan 复用同一 frozen 策略：同层重新编译得到同一 check_plan_hash。
     from app.v2.quality import compile_plan, frozen_quality_layers
     recompiled = compile_plan(state["context"], state["plan"].get("network_policy"),
-                              quality_layers=frozen_quality_layers(state))
+                                  quality_layers=frozen_quality_layers(state),
+                                  quality_profile=state["quality_profile"])
     assert recompiled["check_plan_hash"] == state["check_plan"]["check_plan_hash"]
 
 
-def test_legacy_start_run_keeps_current_behavior(client, monkeypatch):
+def test_legacy_start_run_without_quality_layers_keeps_full_profile(client, monkeypatch):
     from app.config import settings
     from app.v2.contracts import Confirmation, StartRun, TaskInput
     from app.v2.tasks import create_task, mutate_input, start_run
@@ -640,3 +641,4 @@ def test_legacy_start_run_keeps_current_behavior(client, monkeypatch):
     assert "quality_layers" not in state["check_plan"]
     from app.v2.checker_batch import semantic_check_items
     assert any(i["item_id"] == "C3.correctness" for i in semantic_check_items(state))
+    assert state["quality_profile"]["id"] == "full_v1"

@@ -5,7 +5,9 @@
 **/__pycache__/
 **/.pytest_cache/
 **/.next/
+**/.next-*/
 **/.next-optimization/
+**/.splash-preview/
 **/node_modules/
 **/data/
 *.db
@@ -14,6 +16,7 @@
 services/api/tests/test_materials*/
 services/api/tests/test_backups*/
 services/api/tests/test_analysis*/
+services/api/pytest-of-BJH/
 services/api/tests/test_model_settings*.json
 services/api/tests/.sqlite-tmp/
 *.log

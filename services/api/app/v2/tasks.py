@@ -279,17 +279,28 @@ def start_run(task_id, payload, key, automatic=False, envelope=None):
             "disabled_behavior": "all_public_web_tools_are_off",
         }
         adaptive = payload.mode == "configured" and bool(requested_policy.get("task_adaptive_format", True))
+        from .quality_suite import CORRECTNESS_ONLY_V1, FULL_V1, normalize_quality_profile
+        if "quality_profile" in requested_policy:
+            default_profile = requested_policy.get("quality_profile")
+        elif payload.mode == "configured" and quality_layers is not None:
+            default_profile = CORRECTNESS_ONLY_V1
+        else:
+            default_profile = FULL_V1
+        quality_profile = normalize_quality_profile(default_profile)
+        criterion_default = quality_profile["id"] != CORRECTNESS_ONLY_V1
         # Do not first bind a new task to a legacy layout and only later ask A
         # to design it. Existing runs already contain their immutable plans.
         units = [] if adaptive else build_units(context, chunks, demo=payload.mode == "demo")
         plan = {"schema_version": "aiedu.plan.v1", "units": units, "network_policy": network_policy}
         plan["plan_hash"] = digest(plan)
-        frozen = {"context": context, "plan": plan, "check_plan": compile_plan(context, network_policy, quality_layers=quality_layers), "mode": payload.mode,
+        frozen = {"context": context, "plan": plan, "quality_profile": quality_profile,
+                  "check_plan": compile_plan(context, network_policy, quality_layers=quality_layers,
+                                             quality_profile=quality_profile), "mode": payload.mode,
                   "artifact_id": artifact_id, "version_id": None, "stages": {}, "stop_reason": None,
                   "intent_pending": (adaptive or automatic or requested_policy.get("structured_arrangement", False)) and payload.mode == "configured", "automatic": automatic,
                   "budget": {"calls": None, "tokens": None, "amount": None, "seconds": None}}
         from .review_contract import review_protocol_manifest
-        frozen["quality_protocol"] = review_protocol_manifest()
+        frozen["quality_protocol"] = review_protocol_manifest(quality_profile)
         from ..model_settings import configured_concurrency
         concurrency = configured_concurrency()
         # Defaults belong to new configured runs, not to historical frozen runs.
@@ -314,8 +325,9 @@ def start_run(task_id, payload, key, automatic=False, envelope=None):
                                       "network_requests_per_round": context.get("execution_policy", {}).get("network_requests_per_round", 4),
                                       "network_stop_policy": "stop_after_budget_or_no_new_cached_evidence",
                                       "planning_source_tools": payload.mode == "configured" and planning_sources,
-                                      "criterion_assessment": payload.mode == "configured" and bool(requested_policy.get("criterion_assessment", True)),
+                                      "criterion_assessment": payload.mode == "configured" and bool(requested_policy.get("criterion_assessment", criterion_default)),
                                       "quality_layers": deepcopy(quality_layers) if quality_layers is not None else None,
+                                      "quality_profile": deepcopy(quality_profile),
                                       "task_adaptive_format": adaptive}
         frozen["execution_policy"]["quality_loop"] = bool(frozen.get("optimization_policy"))
         if envelope is not None:
@@ -538,8 +550,9 @@ def resume(run_id, payload, key):
         if not allowed or digest(state["plan"]) != payload.checkpoint_hash:
             raise DomainError("CHECKPOINT_STALE")
         from .review_contract import review_protocol_manifest
+        from .quality_suite import frozen_quality_profile
         frozen_protocol = state.get("quality_protocol")
-        current_protocol = review_protocol_manifest()
+        current_protocol = review_protocol_manifest(frozen_quality_profile(state))
         protocol_upgrade = None
         if frozen_protocol is not None and frozen_protocol != current_protocol:
             if not payload.quality_protocol_upgrade:
@@ -698,7 +711,8 @@ def resume(run_id, payload, key):
             }}
             new_state["plan"]["plan_hash"] = digest(new_state["plan"])
             new_state["check_plan"] = compile_plan(new_state["context"], new_state["plan"]["network_policy"],
-                quality_layers=frozen_quality_layers(new_state))
+                quality_layers=frozen_quality_layers(new_state),
+                quality_profile=new_state.get("quality_profile"))
             new_state.update(intent_pending=True, stages={}, replan_from_version_id=state.get("version_id"))
             for field in ("intent_call", "review_only_source_version", "optimization_request", "best_so_far_version",
                           "optimization_rounds", "optimization_stop_reason", "repair_rounds", "repair_stop_reason",
@@ -707,7 +721,11 @@ def resume(run_id, payload, key):
             for field in list(new_state):
                 if field.startswith("optimization_") and field.endswith("_artifacts"):
                     new_state.pop(field)
-            new_state.setdefault("execution_policy", {}).update(task_adaptive_format=True, criterion_assessment=True)
+            from .quality_suite import quality_profile_is_correctness_only
+            new_state.setdefault("execution_policy", {}).update(
+                task_adaptive_format=True,
+                criterion_assessment=not quality_profile_is_correctness_only(new_state),
+            )
             if not new_state.get("optimization_policy"):
                 from .optimization import validate_policy
                 from .quality import POLICY
@@ -728,7 +746,8 @@ def resume(run_id, payload, key):
         if payload.refresh_check_plan:
             new_state["check_plan"] = compile_plan(
                 new_state["context"], new_state.get("plan", {}).get("network_policy"),
-                quality_layers=frozen_quality_layers(new_state))
+                quality_layers=frozen_quality_layers(new_state),
+                quality_profile=new_state.get("quality_profile"))
             new_state["check_plan_amendment"] = {
                 "method_version": "explicit-fixed-recheck.v1",
                 "parent_run_id": run_id, "source_version_id": previous_version.id,
@@ -736,7 +755,10 @@ def resume(run_id, payload, key):
                 "check_plan_hash": new_state["check_plan"]["check_plan_hash"],
                 "request_hash": body,
             }
-            new_state.setdefault("execution_policy", {})["criterion_assessment"] = True
+            from .quality_suite import quality_profile_is_correctness_only
+            new_state.setdefault("execution_policy", {})["criterion_assessment"] = not (
+                quality_profile_is_correctness_only(new_state)
+            )
         db.add(GenerationJob(id=root_id, run_id=new_id, root_job_id=root_id, parent_job_id=old.id,
                 goal_id=old.goal_id, job_type="task_v2", status="queued", state_json=dump(new_state),
                 action_key=key, request_hash=body, state_revision=0, cancel_epoch=0))
@@ -964,6 +986,7 @@ def snapshot(task_id, run_id=None):
                 "content_hash": version.content_hash if version else None, "context_hash": state["context"]["context_hash"],
                 "resolved_task":state["context"],
                 "plan_hash": state["plan"]["plan_hash"], "checkpoint_hash": digest(state["plan"]),
+                "quality_profile": deepcopy(state.get("quality_profile")),
                 "quality_phase": {
                     "started_at": state.get("quality_phase_started_at"),
                     "baseline_version_id": state.get("quality_restart_from_version"),

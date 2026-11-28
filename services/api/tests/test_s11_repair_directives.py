@@ -121,6 +121,93 @@ def test_directive_rejects_non_executable_mode_and_unknown_deterministic_method(
     assert exc.value.code == "REPAIR_DIRECTIVE_DETERMINISTIC_METHOD_INVALID"
 
 
+def test_correctness_binding_rejects_unchanged_target_and_forbidden_stem_edit():
+    from app.v2.repair_directives import normalize_directives, validate_candidate_bindings
+
+    package = _package()
+    package["objective"] = "correctness_only.v1"
+    package["directives"][0]["acceptance_assertion"] = {
+        "deterministic_test": None,
+        "criterion_check": {"kind": "acceptance_item", "item_id": "C3.correctness"},
+    }
+    package["directives"][0]["forbidden_changes"] = [
+        "item_count", "unit_title", "unrelated_items", "stem_markdown",
+    ]
+    package, directives = normalize_directives(package)
+    directive_id = directives[0]["directive_id"]
+    base_item = {
+        "stem_markdown": "2+2=?",
+        "answer": {"final": "5", "reasoning": "2+2=5"},
+    }
+    base_units = [{"unit_id": "u1", "title": "unit", "items": [base_item]}]
+    candidate = {
+        "directive_ids": [directive_id],
+        "units": [{"unit_id": "u1", "directive_ids": [directive_id]}],
+    }
+    unchanged = [{"unit_id": "u1", "title": "unit", "items": [deepcopy(base_item)]}]
+    with pytest.raises(DomainError) as exc:
+        validate_candidate_bindings(
+            candidate, package, {"u1"}, base_units=base_units, new_units=unchanged)
+    assert exc.value.code == "REPAIR_DIRECTIVE_TARGET_UNCHANGED"
+    changed_stem = [{"unit_id": "u1", "title": "unit", "items": [{
+        "stem_markdown": "What is two plus two?",
+        "answer": {"final": "4", "reasoning": "2+2=4"},
+    }]}]
+    with pytest.raises(DomainError) as exc:
+        validate_candidate_bindings(
+            candidate, package, {"u1"}, base_units=base_units, new_units=changed_stem)
+    assert exc.value.code == "REPAIR_DIRECTIVE_FORBIDDEN_CHANGE"
+
+
+def test_correctness_binding_allows_all_directive_targets_in_one_unit():
+    from copy import deepcopy
+    from app.v2.repair_directives import normalize_directives, validate_candidate_bindings
+
+    package = _package()
+    package["objective"] = "correctness_only.v1"
+    package["confirmed_findings"].append({
+        "finding_id": "f2",
+        "claim": "The second item is incorrect.",
+        "evidence": {},
+        "quality_layer": "correctness",
+    })
+    package["priority_order"].append("f2")
+    package["acceptance_criteria"].append({
+        "item_id": "correctness:f2",
+        "pass_condition": "The second item is corrected.",
+        "verification_method": "correctness-only.v1",
+    })
+    second = deepcopy(package["directives"][0])
+    second["finding_id"] = "f2"
+    second["target"]["item_ordinal"] = 2
+    second["acceptance_assertion"]["criterion_check"]["item_id"] = "correctness:f2"
+    package["directives"][0]["acceptance_assertion"] = {
+        "deterministic_test": None,
+        "criterion_check": {"kind": "acceptance_item", "item_id": "C3.correctness"},
+    }
+    package["directives"][0]["forbidden_changes"] = [
+        "item_count", "unit_title", "unrelated_items", "stem_markdown",
+    ]
+    package["directives"].append(second)
+    package, directives = normalize_directives(package)
+    ids = [row["directive_id"] for row in directives]
+    base_items = [
+        {"stem_markdown": "2+2=?", "answer": {"final": "5", "reasoning": "2+2=5"}},
+        {"stem_markdown": "3+3=?", "answer": {"final": "7", "reasoning": "3+3=7"}},
+    ]
+    new_items = [
+        {"stem_markdown": "2+2=?", "answer": {"final": "4", "reasoning": "2+2=4"}},
+        {"stem_markdown": "3+3=?", "answer": {"final": "6", "reasoning": "3+3=6"}},
+    ]
+    validate_candidate_bindings(
+        {"directive_ids": ids, "units": [{"unit_id": "u1", "directive_ids": ids}]},
+        package,
+        {"u1"},
+        base_units=[{"unit_id": "u1", "title": "unit", "items": base_items}],
+        new_units=[{"unit_id": "u1", "title": "unit", "items": new_items}],
+    )
+
+
 def test_directive_coverage_must_match_confirmed_findings():
     from app.v2.repair_directives import normalize_directives
 

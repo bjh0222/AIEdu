@@ -36,8 +36,6 @@ export default function NewTask() {
   const [conflicts, setConflicts] = useState<{ taskId: string; list: Conflict[] } | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [completeness, setCompleteness] = useState(true);
-  const [qualitySpecific, setQualitySpecific] = useState(false);
   const [research, setResearch] = useState(true);
   const [callBudget, setCallBudget] = useState<number | null>(null);
   const keyRef = useRef<string>("");
@@ -65,8 +63,9 @@ export default function NewTask() {
     {
       body.execution_policy = { structured_arrangement: true, quality_loop: true,
         task_adaptive_format: true,
-        // 三层质检：correctness 强制 true；completeness 默认开；quality_specific 默认关。
-        quality_layers: { correctness: true, completeness, quality_specific: qualitySpecific },
+        quality_profile: "correctness_only.v1",
+        criterion_assessment: false,
+        quality_layers: { correctness: true, completeness: false, quality_specific: false },
         optimization_policy: { policy_version: "aiedu.repair.v2", enabled: true,
           max_attempts_per_finding: 2, max_repair_rounds_per_run: 2, root_call_budget: callBudget } };
       if (research) {
@@ -230,27 +229,21 @@ export default function NewTask() {
                 </ul>
               )}
             </div>
-          </div>
-        </details>
-
-        <fieldset style={{ border: 0, padding: 0, margin: 0 }} className="field">
-          <legend className="label" style={{ fontWeight: 600, marginBottom: 6 }}>质检策略</legend>
-          {caps && !paidOk && (
-            <p className="hint" role="note">无法开始：后端未开启真实模型调用；演示入口已下线，不会自动降级为演示。</p>
-          )}
-          <>
-            <label><input type="checkbox" checked disabled /> 正确性检查</label>
-            <label><input type="checkbox" checked={completeness} onChange={(e) => setCompleteness(e.target.checked)} /> 完整性检查</label>
-            <label><input type="checkbox" checked={qualitySpecific} onChange={(e) => setQualitySpecific(e.target.checked)} /> 质量专项检查（命题/研究量规/领域条目质量）</label>
             <div className="field">
               <label htmlFor="call-budget">模型调用上限</label>
               <input id="call-budget" type="number" min={1} step={1} placeholder="不限" value={callBudget === null ? "" : callBudget} onChange={(e) => setCallBudget(Number.isNaN(e.target.valueAsNumber) ? null : e.target.valueAsNumber)} />
               <p className="hint">理解、研究、生成、检查和优化共用此上限；留空表示不限。若设置上限，预算耗尽会停止并保留最佳草稿；无进展、取消和未知回执仍受保护。</p>
             </div>
-            <label><input type="checkbox" checked={research} onChange={(e) => setResearch(e.target.checked)} /> 联网查阅教育文献，建立任务适用的逐维量规</label>
-            <p className="hint">{research ? "研究会增加模型调用；仅把需求主题用于公共教育检索，不发送附件原文。" : "不联网检索；按任务已有绑定与已导入资料质检。"}</p>
-          </>
-        </fieldset>
+            <div className="field">
+              <label><input type="checkbox" checked={research} onChange={(e) => setResearch(e.target.checked)} /> 联网查阅教育文献，建立任务适用的逐维量规</label>
+              <p className="hint">{research ? "研究会增加模型调用；仅把需求主题用于公共教育检索，不发送附件原文。" : "不联网检索；按任务已有绑定与已导入资料质检。"}</p>
+            </div>
+          </div>
+        </details>
+
+        {caps && !paidOk && (
+          <p className="hint" role="note">无法开始：后端未开启真实模型调用；演示入口已下线，不会自动降级为演示。</p>
+        )}
 
         {conflicts && (
           <div className="banner banner-warn" role="alert">

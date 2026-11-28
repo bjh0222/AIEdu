@@ -69,9 +69,10 @@ function remarkQuestionBlocks() {
         /^\d+\.$/.test(ordinal.children?.map((child) => child.value ?? "").join("") ?? "");
       if (startsQuestion) inQuestion = true;
       if (!inQuestion) continue;
+      const classes = ["question-block", ...(startsQuestion ? ["question-start"] : [])];
       node.data = {
         ...(node.data ?? {}),
-        hProperties: { ...((node.data?.hProperties as object) ?? {}), className: ["question-block"] },
+        hProperties: { ...((node.data?.hProperties as object) ?? {}), className: classes },
       };
     }
   };

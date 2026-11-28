@@ -73,6 +73,7 @@ def test_new_configured_API_defaults_cannot_skip_A_or_full_assessment(client, mo
     state, _ = state_of(run["run_id"])
     assert state["intent_pending"] and state["plan"]["units"] == []
     assert state["execution_policy"]["task_adaptive_format"] and state["execution_policy"]["criterion_assessment"]
+    assert state["quality_profile"]["id"] == "full_v1"
     assert state["execution_policy"]["quality_loop"] and state["budget"]["calls"] is None
 
 

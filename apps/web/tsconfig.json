@@ -68,7 +68,15 @@
     ".next-workflow/types/**/*.ts",
     ".next-workflow/dev/types/**/*.ts",
     ".next-render-fix/types/**/*.ts",
-    ".next-render-fix/dev/types/**/*.ts"
+    ".next-render-fix/dev/types/**/*.ts",
+    ".next-correctness-final/types/**/*.ts",
+    ".next-correctness-final/dev/types/**/*.ts",
+    ".next-e2e-s11-3102/types/**/*.ts",
+    ".next-e2e-s11-3102/dev/types/**/*.ts",
+    ".next-e2e-reader-fix/types/**/*.ts",
+    ".next-e2e-reader-fix/dev/types/**/*.ts",
+    ".next-e2e-reader-fix2/types/**/*.ts",
+    ".next-e2e-reader-fix2/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

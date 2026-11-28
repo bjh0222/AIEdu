@@ -142,8 +142,12 @@ def candidate_schema_for_units(units: list[dict], package: dict | None = None) -
     directive_mode = bool(package and package.get("directives"))
     if not directive_mode:
         schema.pop("directive_ids?", None)
+    schema_units = units
+    if directive_mode:
+        scope_ids = set(package.get("scope", {}).get("unit_ids", []))
+        schema_units = [unit for unit in units if unit.get("unit_id") in scope_ids]
     schema["units"] = []
-    for unit in units:
+    for unit in schema_units:
         row = {"unit_id": unit["unit_id"]}
         if directive_mode:
             row["directive_ids?"] = ["applied directive IDs for this changed unit"]
@@ -826,10 +830,38 @@ def optimization_trigger(plan: dict, quality: dict, *, units=None, version_id=No
             unit = unit_by_id.get(location["unit_id"])
             if unit is None or location.get("unit_hash") != unit.get("content_hash"):
                 continue
-            body = unit.get("body", "").encode()
             start, end = location["start_byte"], location["end_byte"]
-            if not 0 <= start < end <= len(body):
-                continue
+            if location.get("location_basis") == "structured_item_field":
+                field = location.get("field")
+                target_item_id = (finding.get("acceptance_assertion") or {}).get("item_id")
+                target_item = next(
+                    (item for item in unit.get("items", [])
+                     if item.get("item_id") == target_item_id),
+                    None,
+                )
+                if target_item is None:
+                    continue
+                if field in {"stem_markdown", "answer.final"}:
+                    text_value = (
+                        target_item.get("stem_markdown")
+                        if field == "stem_markdown"
+                        else (target_item.get("answer") or {}).get("final")
+                    )
+                elif field == "answer.reasoning":
+                    text_value = (target_item.get("answer") or {}).get("reasoning")
+                else:
+                    continue
+                if not isinstance(text_value, str):
+                    continue
+                text_bytes = text_value.encode()
+                if (location.get("field_content_hash") != sha(text_value.encode())
+                        or not 0 <= start < end <= len(text_bytes)
+                        or location.get("span_hash") != sha(text_bytes[start:end])):
+                    continue
+            else:
+                body = unit.get("body", "").encode()
+                if not 0 <= start < end <= len(body):
+                    continue
             if location.get("version_id") not in {None, version_id}:
                 continue
         actionable.append(finding)
@@ -1146,6 +1178,65 @@ def _require_records(value: Any, required: set[str], label: str):
             raise DomainError("OPTIMIZATION_PACKAGE_INVALID", 422, field=label, missing=missing)
 
 
+def correctness_package(state, version, units, findings):
+    from .repair_directives import correctness_repair_directive
+    unit_by_id = {unit["unit_id"]: unit for unit in units}
+    directives, acceptance = [], []
+    for finding in findings:
+        location = finding.get("location") or {}
+        unit = unit_by_id.get(location.get("unit_id"))
+        item_id = (finding.get("acceptance_assertion") or {}).get("item_id")
+        if unit is None or not item_id:
+            raise DomainError("CORRECTNESS_REPAIR_TARGET_INVALID", 422,
+                              finding_id=finding.get("finding_id"))
+        ordinal = next((index for index, item in enumerate(unit.get("items", []), 1)
+                        if item.get("item_id") == item_id), None)
+        if ordinal is None:
+            raise DomainError("CORRECTNESS_REPAIR_TARGET_INVALID", 422,
+                              finding_id=finding.get("finding_id"))
+        acceptance_id = "correctness:" + finding["finding_id"]
+        required_change = finding.get("suggested_fix") or finding.get("claim")
+        if not isinstance(required_change, str) or not required_change.strip():
+            raise DomainError("CORRECTNESS_REPAIR_DIRECTIVE_INVALID", 422,
+                              finding_id=finding.get("finding_id"))
+        acceptance.append({
+            "item_id": acceptance_id,
+            "pass_condition": finding["claim"],
+            "verification_method": "correctness-only.v1",
+        })
+        directives.append(correctness_repair_directive(
+            finding, ordinal, acceptance_id
+        ))
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "skill": {key: OPTIMIZATION_SKILL[key] for key in ("id", "version", "hash")},
+        "base_version": version.id,
+        "base_content_hash": version.content_hash,
+        "objective": "correctness_only.v1",
+        "frozen_bindings": _frozen_bindings(state),
+        "scope": {
+            "allowed_change_modes": ["whole_item"],
+            "unit_ids": sorted({row["target"]["unit_id"] for row in directives}),
+            "must_preserve": ["Q.item_correctness"],
+            "forbidden_changes": ["item_count", "item_identity", "unit_title", "unrelated_items"],
+        },
+        "confirmed_findings": [{
+            "finding_id": finding["finding_id"],
+            "claim": finding["claim"],
+            "evidence": deepcopy(finding.get("evidence") or {}),
+        } for finding in findings],
+        "unverified_hypotheses": [],
+        "optimizations": [],
+        "priority_order": [finding["finding_id"] for finding in findings],
+        "dependencies": [],
+        "optimization_prompt": OPTIMIZATION_SKILL["text"],
+        "acceptance_criteria": acceptance,
+        "directives": directives,
+        "stop_conditions": [],
+        "recheck_scope": "full",
+    }
+
+
 def _skill_version_matches(expected, received) -> bool:
     """Compare a dotted version label tolerant of JSON number vs string echo.
 
@@ -1454,13 +1545,19 @@ def validate_candidate(candidate: dict, package: dict, version, base_units: list
         changed.add(unit_id)
     if not changed:
         raise DomainError("OPTIMIZATION_NO_PROGRESS", 422)
-    affected = set(dependency_closure(base_units, changed)["unit_ids"])
+    affected = (
+        set(changed)
+        if package.get("objective") == "correctness_only.v1"
+        else set(dependency_closure(base_units, changed)["unit_ids"])
+    )
     if affected - allowed_ids:
         raise DomainError("DEPENDENCY_OUT_OF_SCOPE", 422, outside=sorted(affected-allowed_ids))
     if not set(package["scope"]["unit_ids"]) <= by_id.keys():
         raise DomainError("OPTIMIZATION_SCOPE_UNIT_INVALID", 422)
     from .repair_directives import validate_candidate_bindings
-    validate_candidate_bindings(candidate, package, changed)
+    validate_candidate_bindings(
+        candidate, package, changed, base_units=base_units, new_units=list(by_id.values())
+    )
     return list(by_id.values())
 
 
@@ -1562,6 +1659,7 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
     from .inference import invoke
     from .generation_tools import generation_with_sources
     from .model_roles import for_role
+    from .planning import generation_plan_for_units
     from .resolver import spec_entries
 
     with SessionLocal() as db:
@@ -1629,6 +1727,8 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
             _stop(run_id, worker, epoch, "ACTIONABLE_FINDING_REQUIRED", trigger)
             return
         old_confirmed = trigger["findings"]
+        from .quality_suite import quality_profile_is_correctness_only
+        correctness_only = quality_profile_is_correctness_only(state)
         attempt_keys = [f.get("normalized_claim_hash") or f["finding_id"] for f in old_confirmed]
         prior_attempts = state.get("optimization_attempts_by_finding", {})
         if any(int(prior_attempts.get(k, 0)) >= policy["max_attempts_per_finding"] for k in attempt_keys):
@@ -1692,22 +1792,31 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
                 per_finding[attempt_key] = int(per_finding.get(attempt_key, 0)) + 1
             latest["optimization_prompt_projection"] = projection_envelope(quality, projection_level)
             obj.state_json, obj.state_revision = dump(latest), obj.state_revision + 1
-        try:
-            package, c_audit = invoke(run_id, worker, epoch, state, stage="optimization_prompt",
-                unit_id="optimization", data=data, system=c_planner_system, role="review", profile=c_profile,
-                provider_factory=provider_factory, entries=spec_entries(state["context"], "generating") + [skill_entry(C_REVIEW_SKILL, "C")],
-                output_schema=PACKAGE_SCHEMA, output_tokens=32768,
-                key=f"{run_id}:optimization:plan:{rounds}")
-        except DomainError as exc:
-            if exc.code == "CALL_CAPACITY_EXCEEDED":
-                with write() as db:
-                    obj = job(db, run_id)
-                    fence(obj, worker, epoch)
-                    latest = load(obj.state_json)
-                    rollback_pre_dispatch_attempt(
-                        latest, attempts, attempt_keys, previous_attempts_by_finding, exc.code)
-                    obj.state_json, obj.state_revision = dump(latest), obj.state_revision + 1
-            raise
+        if correctness_only:
+            package = correctness_package(state, version, units, old_confirmed)
+            c_audit = {
+                "call_id": None,
+                "request_hash": digest(package),
+                "model_family": None,
+                "reuse": "wrapper_generated_from_confirmed_item_findings",
+            }
+        else:
+            try:
+                package, c_audit = invoke(run_id, worker, epoch, state, stage="optimization_prompt",
+                    unit_id="optimization", data=data, system=c_planner_system, role="review", profile=c_profile,
+                    provider_factory=provider_factory, entries=spec_entries(state["context"], "generating") + [skill_entry(C_REVIEW_SKILL, "C")],
+                    output_schema=PACKAGE_SCHEMA, output_tokens=32768,
+                    key=f"{run_id}:optimization:plan:{rounds}")
+            except DomainError as exc:
+                if exc.code == "CALL_CAPACITY_EXCEEDED":
+                    with write() as db:
+                        obj = job(db, run_id)
+                        fence(obj, worker, epoch)
+                        latest = load(obj.state_json)
+                        rollback_pre_dispatch_attempt(
+                            latest, attempts, attempt_keys, previous_attempts_by_finding, exc.code)
+                        obj.state_json, obj.state_revision = dump(latest), obj.state_revision + 1
+                raise
         package, binding_note = bind_frozen_bindings(package, expected_bindings)
         if binding_note:
             _persist_artifact(run_id, worker, epoch, {"normalization": binding_note},
@@ -1772,7 +1881,12 @@ def execute_optimization(run_id: str, worker: str, epoch: int, provider_factory=
                 "base_version": version.id, "base_content_hash": version.content_hash,
                 "package_hash": package_hash},
             "schema": candidate_schema_for_units(units, package), "round": rounds,
-            "frozen_A_plan": state["plan"], "frozen_task_contract": data["frozen_task_contract"],
+            "frozen_A_plan": (
+                generation_plan_for_units(state["plan"], package["scope"]["unit_ids"])
+                if correctness_only
+                else state["plan"]
+            ),
+            "frozen_task_contract": data["frozen_task_contract"],
             "import_understanding": state.get("context", {}).get("import_understanding", []),
             "research_rubrics": state.get("context", {}).get("research_rubrics", []),
             "mandatory_task_acceptance": original_task_acceptance(state["context"]),

@@ -143,6 +143,236 @@ def test_no_universal_step_count_can_replace_actual_challenge_evidence():
     assert validated_design(value, context())["difficulty_target"]["minimum_dependency_depth"] == 2
 
 
+def test_frozen_subject_understanding_is_an_allowed_knowledge_evidence_ref():
+    from app.v2.planning import _allowed_evidence_refs
+    ctx = {
+        "material_ids": [],
+        "subject_understanding": {
+            "general": {"id": "subject-understanding:general", "version": 1, "hash": "g" * 64},
+            "subjects": [{
+                "id": "subject-understanding:math_logic",
+                "version": 1,
+                "hash": "m" * 64,
+            }],
+        },
+        "quality_profiles": [{
+            "profile_id": "math_logic.exercise",
+            "version": "aiedu.domain-rubrics.v2",
+            "profile_hash": "p" * 64,
+            "item_quality_framework": {
+                "framework_id": "independent-math.v2",
+                "framework_hash": "q" * 64,
+            },
+        }],
+        "evaluation_frameworks": {"frameworks": [{
+            "id": "research-math-quality-v1",
+            "version": 1,
+            "source_hash": "f" * 64,
+        }]},
+        "knowledge_guidance_eligible": [{
+            "id": "imported:research-knowledge-structure-v1",
+            "evidence_hash": "k" * 64,
+        }],
+        "spec_bindings": [{
+            "spec_id": "spec-1",
+            "snapshot_hash": "s" * 64,
+        }],
+    }
+    allowed = _allowed_evidence_refs(ctx, {"material_mapping": []})
+    assert "profile:subject-understanding:math_logic:1:" + "m" * 64 in allowed
+    assert "profile:subject-understanding:general:1:" + "g" * 64 in allowed
+    assert "profile:math_logic.exercise:aiedu.domain-rubrics.v2:" + "p" * 64 in allowed
+    assert "evaluation_framework:research-math-quality-v1" in allowed
+    assert "frozen:evaluation-framework:research-math-quality-v1" in allowed
+    assert "frozen:guidance:imported:research-knowledge-structure-v1" in allowed
+    assert "frozen:import:research-knowledge-structure-v1" in allowed
+    assert "knowledge_guidance_eligible:imported:research-knowledge-structure-v1" in allowed
+    assert "knowledge_guidance:imported:research-knowledge-structure-v1" in allowed
+    assert "profile:imported:research-knowledge-structure-v1:1:" + "k" * 64 in allowed
+    assert "subject_understanding:math_logic" in allowed
+    assert "quality_profiles:math_logic.exercise" in allowed
+    assert "math_logic.exercise" in allowed
+    assert "quality_profiles:math_logic.exercise:item_quality_framework:independent-math.v2" in allowed
+    assert "evaluation_frameworks:research-math-quality-v1" in allowed
+    assert "spec_bindings:spec-1" in allowed
+
+
+def test_unique_blueprint_group_prefix_is_normalized_without_rewriting_content():
+    from app.v2.planning import normalize_blueprint_group_refs
+    content = {"units": [{
+        "title": "u",
+        "question_blueprint": [{"group": "G1-判断-定义域"}, {"group": "G2-选择-值域"}],
+        "misconceptions": [
+            {"blueprint_group": "G1", "plausible_idea": "a"},
+            {"blueprint_group": "G2", "plausible_idea": "b"},
+        ],
+    }]}
+    rows = normalize_blueprint_group_refs(content)
+    assert [row["from"] for row in rows] == ["G1", "G2"]
+    assert [row["to"] for row in rows] == ["G1-判断-定义域", "G2-选择-值域"]
+    assert [row["plausible_idea"] for row in content["units"][0]["misconceptions"]] == ["a", "b"]
+
+
+def test_frozen_understanding_and_guided_knowledge_are_valid_blueprint_sources():
+    from app.v2.planning import research_source_catalog
+    ctx = {
+        "material_ids": [],
+        "subject_understanding": {
+            "general": {"id": "subject-understanding:general", "hash": "g" * 64},
+            "subjects": [{"id": "subject-understanding:math_logic", "hash": "m" * 64}],
+        },
+        "knowledge_guidance_eligible": [{
+            "id": "imported:research-knowledge-structure-v1",
+            "evidence_hash": "k" * 64,
+        }],
+        "quality_profiles": [{
+            "profile_id": "math_logic.exercise",
+            "profile_hash": "p" * 64,
+            "item_quality_framework": {
+                "framework_id": "independent-math.v2",
+                "framework_hash": "q" * 64,
+            },
+        }],
+        "evaluation_frameworks": {"frameworks": [{
+            "id": "research-math-quality-v1",
+            "source_hash": "f" * 64,
+            "evidence_refs": [{
+                "id": "E15",
+                "title": "official",
+                "source_card": "研究/来源卡/数学与计算机/AP.md",
+            }],
+        }, {
+            "id": "research-general-quality-v1",
+            "source_hash": "r" * 64,
+            "evidence_refs": [
+                {"id": "E2", "title": "shared"},
+                {"id": "E2", "title": "shared"},
+            ],
+        }]},
+        "spec_bindings": [{
+            "spec_id": "spec-1",
+            "snapshot_hash": "s" * 64,
+        }],
+    }
+    catalog = research_source_catalog({"research_result": {}}, ctx)
+    assert catalog["subject-understanding:general"] == "g" * 64
+    assert catalog["subject-understanding:math_logic"] == "m" * 64
+    assert catalog["imported:research-knowledge-structure-v1"] == "k" * 64
+    assert catalog["quality-profile:math_logic.exercise"] == "p" * 64
+    assert catalog["evaluation-framework:research-math-quality-v1"] == "f" * 64
+    assert catalog["evaluation_framework:research-math-quality-v1"] == "f" * 64
+    assert "research-math-quality-v1#E15" in catalog
+    assert "研究/来源卡/数学与计算机/AP.md" in catalog
+    assert "frozen:evaluation-framework:research-math-quality-v1" in catalog
+    assert "frozen:guidance:imported:research-knowledge-structure-v1" in catalog
+    assert "frozen:import:research-knowledge-structure-v1" in catalog
+    assert "knowledge_guidance_eligible:imported:research-knowledge-structure-v1" in catalog
+    assert "knowledge_guidance:imported:research-knowledge-structure-v1" in catalog
+    assert catalog["profile:imported:research-knowledge-structure-v1:1:" + "k" * 64] == "k" * 64
+    assert catalog["subject_understanding:math_logic"] == "m" * 64
+    assert catalog["quality_profiles:math_logic.exercise"] == "p" * 64
+    assert catalog["math_logic.exercise"] == "p" * 64
+    assert catalog["quality_profiles:math_logic.exercise:item_quality_framework:independent-math.v2"] == "q" * 64
+    assert catalog["evaluation_frameworks:research-math-quality-v1"] == "f" * 64
+    assert catalog["spec_bindings:spec-1"] == "s" * 64
+    assert "E15" in catalog
+    assert "E2" in catalog
+
+
+def test_unknown_schema_field_is_removed_and_recorded_without_semantic_change():
+    value = {"teaching_arrangement": {
+        "goals": ["g"],
+        "learner_prerequisites": [],
+        "scope": "focused",
+        "quality_targets": ["q"],
+        "unresolved_conflicts": [],
+        "generation_prompt": "p",
+        "output_design": design() | {"source_spec_hashes": ["unexpected"]},
+        "units": [{
+            "title": "u",
+            "concepts": ["c"],
+            "question_types": [],
+            "difficulty_basis": {},
+            "quantity": None,
+            "material_mapping": [],
+            "acceptance_criteria": ["a"],
+            "artifact_role": "exercise",
+        }],
+    }}
+    result = arrangement(value)
+    assert "source_spec_hashes" not in result["content"]["output_design"]
+    assert result["normalizations"] == [{
+        "path": ["output_design", "source_spec_hashes"],
+        "removed": ["unexpected"],
+        "reason": "extra_field_outside_frozen_schema",
+    }]
+
+
+def test_quality_ref_hash_is_normalized_only_when_frozen_rule_identity_is_unique():
+    from app.v2.planning import rebind_quality_target_refs
+    from app.v2.profiles import domain_profile
+    profile = domain_profile("math_logic", "exercise")
+    rule = profile["rules"][0]
+    ctx = {"quality_profiles": [profile]}
+    content = {"quality_target_refs": [{
+        "profile_id": profile["profile_id"],
+        "profile_version": profile["version"],
+        "profile_hash": "wrong",
+        "rule_id": rule["rule_id"],
+        "rule_version": rule["version"],
+        "criterion_hash": rule["criterion_hash"],
+    }]}
+    normalized, rows = rebind_quality_target_refs(content, ctx, ctx)
+    assert normalized["quality_target_refs"][0]["profile_hash"] == profile["profile_hash"]
+    assert rows[0]["reason"] == "frozen_quality_ref_identity_normalized"
+
+
+def test_blueprint_avoid_rule_detects_forbidden_method_overview():
+    from app.v2.planning import blueprint_forbids_method_overview
+    blueprint = {"content": {
+        "design": {"avoid": ["教程正文、知识归纳、总结不得写入"]},
+        "decisions": [],
+    }}
+    assert blueprint_forbids_method_overview(blueprint) is True
+    blueprint["content"]["design"]["avoid"] = ["避免把算量当作难度"]
+    assert blueprint_forbids_method_overview(blueprint) is False
+
+
+def test_missing_output_design_is_derived_from_existing_blueprint_and_question_plan():
+    from app.v2.adaptive_format import derive_output_design, validated_design
+    ctx = context() | {"teaching_arrangement_units": [{
+        "question_blueprint": [
+            {"question_form": "judgement", "difficulty_basis": {
+                "nonroutine_operations": 1,
+                "concept_interactions": 2,
+                "dependency_depth": 2,
+            }},
+            {"question_form": "choice", "difficulty_basis": {
+                "nonroutine_operations": 1,
+                "concept_interactions": 3,
+                "dependency_depth": 2,
+            }},
+        ],
+    }]}
+    blueprint = {"content": {
+        "design": {
+            "difficulty_strategy": ["中等难度需要概念联动和非套路判断"],
+            "teaching_or_assessment_strategy": ["每题在同一个 item 内给出答案和必要解析"],
+            "avoid": ["教程正文、知识归纳、总结不得写入"],
+        },
+        "structure": {"units": [{"title": "合成方法甲"}]},
+    }}
+    derived = derive_output_design(ctx, blueprint)
+    assert derived["mode"] == "custom"
+    assert derived["question_form"] == "mixed"
+    assert derived["difficulty_target"]["minimum_concept_interactions"] == 3
+    assert derived["difficulty_target"]["minimum_dependency_depth"] == 2
+    validated = validated_design(derived, ctx)
+    assert validated["design_hash"] == digest({
+        key: item for key, item in validated.items() if key != "design_hash"
+    })
+
+
 def test_reading_adapts_headings_but_keeps_all_chapter_digest_dependencies():
     ctx = context() | {"raw_input": "按章导读这份资料，最后整合全书论证", "requested_artifacts": ["tutorial"], "material_ids": ["s"]}
     output = design(mode="reading", question_form="not_applicable", difficulty_target=None, quantity_per_group=None,

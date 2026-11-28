@@ -298,10 +298,136 @@ def finish_candidate(run_id, worker, epoch, state, version, units, new_units, qu
             unresolved_old.append(finding)
     new_confirmed = enabled_findings_for_plan(
         state.get("check_plan", {}), checked.get("findings", []))
+    from .quality_suite import quality_profile_is_correctness_only
+    correctness_only = quality_profile_is_correctness_only(state)
     if (new_violations - old_violations or unresolved_old
             or any(f.get("status") == "confirmed" for f in new_confirmed)):
         write_ledger("blocked", {row["finding_id"] for row in resolved_old})
+        if correctness_only:
+            policy = state.get("optimization_policy") or {}
+            if rounds + 1 < int(policy.get("max_repair_rounds_per_run", 0)):
+                package_hash = digest(package)
+                changed_ids = {
+                    b["unit_id"] for a, b in zip(units, new_units)
+                    if unit_content_identity(a) != unit_content_identity(b)
+                }
+                checked.update(
+                    semantic_recheck=dependency_closure(new_units, changed_ids),
+                    skipped_checks=[
+                        row["item_id"] for row in checked.get("checks", [])
+                        if row.get("result") == "not_run"
+                    ],
+                    repair_correctness="not_calibrated",
+                    optimization_skill=OPTIMIZATION_SKILL,
+                    optimization_package_hash=package_hash,
+                    network_trace=network_trace,
+                    _version_id=new_version,
+                )
+                published = publish(
+                    run_id, worker, epoch, new_units, checked,
+                    f"{run_id}:correctness-repair:{rounds}:publish",
+                    base_version=version.id,
+                )
+                _persist_artifact(run_id, worker, epoch, {
+                    "method_version": "correctness-repair-rejection.v1",
+                    "candidate_hash": candidate_hash,
+                    "candidate_version": new_version,
+                    "quality": checked,
+                }, "correctness_repair_rejected", b_audit)
+                old_issue_count = len(enabled_findings_for_plan(
+                    state.get("check_plan", {}), quality.get("findings", [])))
+                remaining_issue_count = (
+                    len(unresolved_old)
+                    + len(new_confirmed)
+                )
+                with write() as db:
+                    obj = job(db, run_id)
+                    fence(obj, worker, epoch)
+                    current = load(obj.state_json)
+                    rejected = current.setdefault("rejected_candidate_hashes", [])
+                    if candidate_hash not in rejected:
+                        rejected.append(candidate_hash)
+                    current["last_rejected_candidate_hash"] = candidate_hash
+                    if remaining_issue_count < old_issue_count:
+                        current["best_so_far_version"] = published
+                    else:
+                        current.setdefault("best_so_far_version", version.id)
+                    current["optimization_rounds"] = rounds + 1
+                    current.setdefault("optimization_history", []).append({
+                        "version_id": published,
+                        "candidate_version": new_version,
+                        "parent_version_id": version.id,
+                        "package_hash": package_hash,
+                        "skill_hash": OPTIMIZATION_SKILL["hash"],
+                        "plan_call_id": c_audit.get("call_id"),
+                        "candidate_call_id": b_audit.get("call_id"),
+                        "full_recheck": False,
+                        "network_sources": len(network_trace.get("receipts", [])),
+                        "professional_progress": "not_run",
+                        "new_deterministic_regressions": False,
+                        "status": "rejected",
+                    })
+                    obj.state_json, obj.state_revision = dump(current), obj.state_revision + 1
+                return True
+            _stop(run_id, worker, epoch, "correctness_only_repair_failed")
+            return False
         _stop(run_id, worker, epoch, "regression_or_unresolved")
+        return False
+    from .repair_directives import directive_recheck_results
+    if correctness_only:
+        directive_results = directive_recheck_results(
+            package, checked, new_units,
+            {row["finding_id"] for row in resolved_old},
+        )
+        if any(row.get("result") != "satisfied" for row in directive_results):
+            write_ledger("blocked", {row["finding_id"] for row in resolved_old})
+            _stop(run_id, worker, epoch, "REPAIR_DIRECTIVE_ACCEPTANCE_UNSATISFIED")
+            return False
+        package_hash = digest(package)
+        changed_ids = {
+            b["unit_id"] for a, b in zip(units, new_units)
+            if unit_content_identity(a) != unit_content_identity(b)
+        }
+        checked.setdefault("findings", []).extend(resolved_old)
+        checked.update(
+            semantic_recheck=dependency_closure(new_units, changed_ids),
+            skipped_checks=[
+                row["item_id"] for row in checked.get("checks", [])
+                if row.get("result") == "not_run"
+            ],
+            repair_correctness="not_calibrated",
+            optimization_skill=OPTIMIZATION_SKILL,
+            optimization_package_hash=package_hash,
+            network_trace=network_trace,
+            directive_recheck=directive_results,
+            _version_id=new_version,
+        )
+        published = publish(
+            run_id, worker, epoch, new_units, checked,
+            f"{run_id}:correctness-repair:{rounds}:publish",
+            base_version=version.id,
+        )
+        with write() as db:
+            obj = job(db, run_id)
+            fence(obj, worker, epoch)
+            current = load(obj.state_json)
+            current["best_so_far_version"] = published
+            current["optimization_rounds"] = rounds + 1
+            current.setdefault("optimization_history", []).append({
+                "version_id": published,
+                "parent_version_id": version.id,
+                "package_hash": package_hash,
+                "skill_hash": OPTIMIZATION_SKILL["hash"],
+                "plan_call_id": c_audit.get("call_id"),
+                "candidate_call_id": b_audit.get("call_id"),
+                "full_recheck": False,
+                "network_sources": len(network_trace.get("receipts", [])),
+                "professional_progress": "not_run",
+                "new_deterministic_regressions": False,
+            })
+            obj.state_json, obj.state_revision = dump(current), obj.state_revision + 1
+        write_ledger("resolved", {row["finding_id"] for row in resolved_old})
+        _stop(run_id, worker, epoch, "correctness_only_completed")
         return False
     acceptance = verify(run_id, worker, epoch, state, package, new_units, provider_factory,
                         network_trace=network_trace, recheck=checked, candidate_citations=citations,
@@ -330,7 +456,6 @@ def finish_candidate(run_id, worker, epoch, state, version, units, new_units, qu
         _stop(run_id, worker, epoch, "optimization_acceptance_unresolved")
         return False
     checked["optimization_acceptance"] = acceptance
-    from .repair_directives import directive_recheck_results
     directive_results = directive_recheck_results(
         package, checked, new_units,
         {row["finding_id"] for row in resolved_old},

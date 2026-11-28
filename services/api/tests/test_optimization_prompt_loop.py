@@ -225,6 +225,18 @@ def test_candidate_reuses_unchanged_dependencies_but_rejects_scope_and_body_drif
                                       {"unit_id": "u4", "body": "D"}]}
     with pytest.raises(Exception, match="OPTIMIZATION_UNIT_OUT_OF_SCOPE"):
         validate_candidate(outside, package, version, base + [{"unit_id": "u4", "body": "D", "content_hash": sha("D"), "depends_on": []}])
+    correctness_package = {
+        "objective": "correctness_only.v1",
+        "scope": {"unit_ids": ["u2"], "allowed_change_modes": ["whole_unit"]},
+    }
+    correctness_candidate = {
+        "schema_version": CANDIDATE_SCHEMA_VERSION, "base_version": "v1",
+        "base_content_hash": "a" * 64, "package_hash": digest(correctness_package),
+        "strategy": "whole_unit", "units": [{"unit_id": "u2", "body": "B2"}],
+    }
+    corrected = validate_candidate(
+        correctness_candidate, correctness_package, version, base)
+    assert [unit["body"] for unit in corrected] == ["A", "B2", "C"]
     item_unit = {"unit_id": "item", "artifact_role": "answer", "body": "old body", "content_hash": sha("old body"),
                  "items": [{"item_id": "q", "stem_markdown": "q", "answer": {"final": "a", "reasoning": "r"}}]}
     item_package = {"scope": {"unit_ids": ["item"], "allowed_change_modes": ["whole_item"]}}
