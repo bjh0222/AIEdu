@@ -1388,6 +1388,33 @@ def normalize_blueprint_group_refs(content):
     return rows
 
 
+def normalize_knowledge_chain_endpoints(content):
+    rows = []
+    prerequisites = set(content.get("learner_prerequisites", []))
+    for unit in content.get("units", []):
+        allowed = set(unit.get("concepts", [])) | prerequisites
+        for index, link in enumerate(unit.get("knowledge_chain", [])):
+            for field in ("source_concept", "target_concept"):
+                endpoint = link.get(field)
+                if endpoint in allowed:
+                    continue
+                matches = [candidate for candidate in allowed
+                           if isinstance(endpoint, str) and endpoint
+                           and candidate.startswith(endpoint)]
+                if len(matches) != 1:
+                    continue
+                link[field] = matches[0]
+                rows.append({
+                    "unit": unit.get("title"),
+                    "knowledge_chain_index": index,
+                    "field": field,
+                    "from": endpoint,
+                    "to": matches[0],
+                    "reason": "unique_concept_prefix",
+                })
+    return rows
+
+
 def arrangement(output):
     value = output.get("teaching_arrangement")
     if value is None:
@@ -1429,7 +1456,11 @@ def arrangement(output):
     for unit in validated["units"]:
         if not set(unit["depends_on_titles"]) <= set(titles) or unit["title"] in unit["depends_on_titles"]:
             raise DomainError("TEACHING_ARRANGEMENT_DEPENDENCY_INVALID", 422)
-    normalizations = [*schema_normalizations, *normalize_blueprint_group_refs(validated)]
+    normalizations = [
+        *schema_normalizations,
+        *normalize_blueprint_group_refs(validated),
+        *normalize_knowledge_chain_endpoints(validated),
+    ]
     return {
         "status": "schema_validated",
         "content": validated,

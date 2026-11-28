@@ -62,7 +62,7 @@
   color: rgba(46, 99, 123, 0.94);
   opacity: 0;
   filter: blur(4px);
-  animation: splashCopyIn 700ms cubic-bezier(0.22, 0.61, 0.21, 1) 1050ms both;
+  animation: splashCopyIn 700ms cubic-bezier(0.22, 0.61, 0.21, 1) 50ms both;
 }
 
 .copyLine {

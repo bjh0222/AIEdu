@@ -481,6 +481,36 @@ def test_repair_generation_plan_exposes_only_target_unit_blueprint():
     assert projected["source_plan_hash"] == plan["plan_hash"]
 
 
+def test_unique_short_knowledge_chain_endpoint_is_expanded_and_recorded():
+    from app.v2.planning import normalize_knowledge_chain_endpoints
+
+    content = {
+        "learner_prerequisites": [],
+        "units": [{
+            "title": "Unit 1",
+            "concepts": ["指数函数 $y=a^x$（$a>0$ 且 $a\\ne1$）"],
+            "knowledge_chain": [{
+                "source_concept": "指数函数 $y=a^x$",
+                "target_concept": "指数函数 $y=a^x$（$a>0$ 且 $a\\ne1$）",
+                "relation": "defines",
+                "condition": "",
+                "evidence_ref": "unknown:test",
+            }],
+        }],
+    }
+    rows = normalize_knowledge_chain_endpoints(content)
+    assert content["units"][0]["knowledge_chain"][0]["source_concept"] == (
+        "指数函数 $y=a^x$（$a>0$ 且 $a\\ne1$）")
+    assert rows == [{
+        "unit": "Unit 1",
+        "knowledge_chain_index": 0,
+        "field": "source_concept",
+        "from": "指数函数 $y=a^x$",
+        "to": "指数函数 $y=a^x$（$a>0$ 且 $a\\ne1$）",
+        "reason": "unique_concept_prefix",
+    }]
+
+
 def test_b_generation_payload_preserves_legacy_request_shape_without_blueprint():
     from app.v2.worker import generation_user_payload
 

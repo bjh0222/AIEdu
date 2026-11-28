@@ -410,3 +410,66 @@ Verification:
 - Frontend TypeScript, targeted ESLint, isolated production build and
   integration-entry 21/21 passed.
 - Contract generation reports 100 schemas / 72 routes; spec preview sync passes.
+
+## ADR-2026-11-28-02: Correctness-only execution with scoped A/B evidence
+
+Status: implemented; one isolated real run reached final eligibility.
+
+Context:
+
+The prior layered suite still ran Criterion assessment and broad semantic
+checks after a user selected only correctness. It also exposed the full task
+arrangement to every B unit, omitted the actual blueprint from B's request,
+and could not complete repair because finding/check method names, dependency
+scope and protocol manifests disagreed. Long external sources also exceeded
+the A1 provider capacity, and repeated wrapper validation rejected
+`output_design` metadata that the wrapper itself had added.
+
+Decision:
+
+- New web tasks freeze `correctness_only.v1`, explicitly set
+  `criterion_assessment=false`, and compile only `Q.item_correctness`.
+  Requests without `quality_layers` retain `full_v1` compatibility.
+- The correctness checker evaluates only `stem_markdown`, `answer.final` and
+  `answer.reasoning`. A located error creates a RepairDirective; B repairs
+  within the target unit; the changed questions are rechecked. A successful
+  target recheck stops with `correctness_only_completed`, while exhaustion
+  stops with `correctness_only_repair_failed`.
+- C report directives and the B repair package share the same canonical
+  directive identity. Candidate validation enforces directive coverage,
+  allowed target ordinals, item count, unrelated-item preservation and target
+  field changes.
+- B receives only the current unit's blueprint structure, relevant decisions
+  and evidence. Repair B receives the same scoped projection for all directive
+  target units instead of the complete plan.
+- A1 research input uses exact query-centered source excerpts with original
+  source identity, byte/character location, full-text length and hashes.
+  Research discovery is never embedded wholesale into A1.
+- The full quality implementation is frozen under
+  `services/api/quality_suite_archive/full_v1` with a recomputed SHA-256
+  manifest and the source commit. Runtime selection is isolated in
+  `app/v2/quality_suite`.
+
+Consequences:
+
+- Correctness-only final means every generated item was reviewed and no item
+  was marked incorrect. It does not claim professional certification,
+  measured difficulty, learning gain or completion of the archived full suite.
+- Failed and unknown historical calls remain immutable. New deterministic
+  normalizations are recorded separately and do not rewrite provider bytes.
+- The reader distinguishes a new question start from continuation paragraphs
+  and options, so the three-line inter-question rhythm no longer creates a
+  large blank between a stem and its A/B/C/D options.
+
+Verification:
+
+- Isolated real run `46b8630d-78df-4b9c-9477-86e9ddb36b73` reached
+  `quality_profile=correctness_only.v1`, one plan item `Q.item_correctness`,
+  six reviewed items, no findings, `tqi_verdict=pass`,
+  `calibration_status=not_calibrated` and `final_allowed=true`.
+- The version binds one A1 blueprint with 3 evidence records and 7 decisions,
+  6 coupled judgment/choice items, empty method overview after an audited
+  blueprint-based suppression, and no Criterion call.
+- Earlier failed live runs from the same validation series remain recorded for
+  quantity scope, A0 query limits, A1 capacity, nested evidence aliases,
+  derived-design idempotency and knowledge-chain endpoint normalization.

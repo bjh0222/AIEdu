@@ -108,14 +108,12 @@ $$
   test("选择题题干与选项之间不应用三行题间距", async ({ page }) => {
     const body = String.raw`# 专题
 
+
 **4.** 题干
 
 A. 选项一
-
 B. 选项二
-
 C. 选项三
-
 D. 选项四
 
 **5.** 下一道题
@@ -132,6 +130,7 @@ D. 选项四
     await expect(question).toHaveClass(/question-start/);
     await expect(firstOption).not.toHaveClass(/question-start/);
     await expect(nextQuestion).toHaveClass(/question-start/);
+    await expect(firstOption.locator("br")).toHaveCount(3);
     const optionSpacing = await firstOption.evaluate((node) => {
       const style = getComputedStyle(node);
       return { gap: Number.parseFloat(style.marginTop), line: Number.parseFloat(style.lineHeight) };
@@ -140,7 +139,7 @@ D. 选项四
       const style = getComputedStyle(node);
       return { gap: Number.parseFloat(style.marginTop), line: Number.parseFloat(style.lineHeight) };
     });
-    expect(optionSpacing.gap).toBeLessThan(optionSpacing.line * 2);
+    expect(optionSpacing.gap).toBe(0);
     expect(questionSpacing.gap).toBeGreaterThanOrEqual(questionSpacing.line * 3 - 1);
     await expect(page.locator(".prose p", { hasText: "答案四" })).not.toHaveClass(/question-block/);
   });

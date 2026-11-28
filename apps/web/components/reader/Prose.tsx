@@ -69,6 +69,19 @@ function remarkQuestionBlocks() {
         /^\d+\.$/.test(ordinal.children?.map((child) => child.value ?? "").join("") ?? "");
       if (startsQuestion) inQuestion = true;
       if (!inQuestion) continue;
+      const children: MdNode[] = [];
+      for (const child of node.children ?? []) {
+        if (child.type !== "text" || !child.value?.includes("\n")) {
+          children.push(child);
+          continue;
+        }
+        const parts = child.value.split(/\n(?=[A-H][.．、])/);
+        parts.forEach((part, index) => {
+          if (index) children.push({ type: "break" });
+          if (part) children.push({ type: "text", value: part });
+        });
+      }
+      node.children = children;
       const classes = ["question-block", ...(startsQuestion ? ["question-start"] : [])];
       node.data = {
         ...(node.data ?? {}),
